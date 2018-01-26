@@ -1,4 +1,3 @@
-# [zhpe-support](https://github.com/HewlettPackard/zhpe-support.git)
 Support for the Libfabric [zhpe](https://github.com/HewlettPackard/zhpe-libfabric/tree/zhpe) Provider
 -----------------------------------------------------
 # What is libzhpeq ?
@@ -59,91 +58,109 @@ you must have the libibverbs-dev and librdmacm-dev packages installed.
 In general, it might be best to insure that the build-dependencies for
 the distro OpenMPI release are installed before trying to build.
 
+## Notes about the build dependencies and test environment
+
+The code has been built and tested on Ubuntu Xenial. The build dependencies for Libfabric and Open MPI must be installed. Additionally, there is a issue with building Open MPI v3.0.0 from source with support for Libfabric with the patched version of libtool installed.
+
+The emulation provided by the libzhpeq library has been mostly tested using the Libfabric verbs provider over Infiniband/RoCE hardware, but this hardware is not required. In the absence of such hardware, the library should use the sockets provider. You can build the Libfabric software with support for InfiniBand verbs without hardware, you just need to install the proper libraries. These can either be the development libraries from the Ubuntu repository or [Mellanox OFED](http://www.mellanox.com/page/products_dyn?product_family=26).
+
+### 1. Install dependencies
+	$ sudo -i apt-get build-dep openmpi
+	$ sudo -i apt-get install valgrind libudev-dev
+	$ sudo -i apt-get librdmacm-dev # optional: not needed if OFED installed or verbs not required
+    
+### 2. Install libtool from source
+	$ wget http://ftpmirror.gnu.org/libtool/libtool-2.4.6.tar.gz
+	$ tar -xzf wget libtool-2.4.6.tar.gz
+	$ cd libtool-2.4.6
+	$ ./configure
+	$ make	
+	$ sudo make install
+Make sure the new version of libtoolize is first in your PATH.
+   
 ## Building just the driver and helper into ${TEST_DIR}
 
-### 1. Clone libfabric-stuff into ${SRC_DIR}
+### 1. Clone zhpe-support into ${SRC_DIR}
 	$ cd ${SRC_DIR}
-    $ git clone https://github.com/HewlettPackard/zhpe-support.git
+	$ git clone https://github.com/HewlettPackard/zhpe-support.git
 
 ### 2. Generate makefiles and build/install driver
-    $ cd ${SRC_DIR}/libfabric-stuff
-    $ ./prep.sh ${TEST_DIR}
+	$ cd ${SRC_DIR}/zhpe-support
+	$ ./prep.sh ${TEST_DIR}
 	$ make driver
 
-## Building libfabric-stuff, libfabric-zhpe, and OpenMPI (with libfabric support). Everything will be installed into ${TEST_DIR}
+## Building zhpe-support, zhpe-libfabric, and OpenMPI (with libfabric support). Everything will be installed into ${TEST_DIR}
 
 ### 1. Clone source trees in ${SRC_DIR}
 	$ cd ${SRC_DIR}
-    $ git clone https://github.com/HewlettPackard/zhpe-support.git
+	$ git clone https://github.com/HewlettPackard/zhpe-support.git
 	$ git clone -b zhpe https://github.com/HewlettPackard/zhpe-libfabric.git
 	$ git clone https://github.com/open-mpi/ompi.git
-	$ cd libfabric-zhpe
-	$ cd ../ompi
+	$ cd ompi
 	$ git checkout v3.0.0
 
 ### 2. Build and install zhpe library
-    $ cd ${SRC_DIR}/libfabric-stuff
-    $ ./prep.sh -f ${TEST_DIR} ${TEST_DIR}
+	$ cd ${SRC_DIR}/zhpe-support
+	$ ./prep.sh -f ${TEST_DIR} ${TEST_DIR}
 	$ make libzhpeq
 
-### 3. Build and install libfabric-zhpe with zhpe support
-	$ cd ${SRC_DIR}/libfabric-zhpe
+### 3. Build and install zhpe provider with zhpe support
+	$ cd ${SRC_DIR}/zhpe-libfabric
 	$ ./autogen.sh
-    $ ./configure --prefix=${TEST_DIR} --enable-zhpe=${TEST_DIR}
-    ... clipped ...
-    ***
-    *** Built-in providers:	zhpe shm rxd rxm tcp udp verbs sockets 
-    *** DSO providers:	
-    ***
+	$ ./configure --prefix=${TEST_DIR} --enable-zhpe=${TEST_DIR}
+	... clipped ...
+	***
+	*** Built-in providers:	zhpe shm rxd rxm tcp udp verbs sockets 
+	*** DSO providers:	
+	***
 	$ make -j install
 
 ### 4. Build the rest of the zhpe code that requires libfabric (except MPI tests)
-    $ cd ${SRC_DIR}/libfabric-stuff
+	$ cd ${SRC_DIR}/zhpe-support
 	$ make
 
 ### 5. Build and install OpenMPI with libfabric support
-    $ cd ${SRC_DIR}/ompi
+	$ cd ${SRC_DIR}/ompi
 	$ ./autogen.pl
-    $ LD_LIBRARY_PATH=${TEST_DIR}/lib ./configure --prefix=${TEST_DIR} --without-ucx --with-libfabric=${TEST_DIR}
-    ... clipped ...
-    Transports
-    -----------------------
-    Cray uGNI (Gemini/Aries): no
-    Intel Omnipath (PSM2): no
-    Intel SCIF: no
-    Intel TrueScale (PSM): no
-    Mellanox MXM: no
-    Open UCX: no
-    OpenFabrics Libfabric: yes
-    OpenFabrics Verbs: yes
-    Portals4: no
-    Shared memory/copy in+copy out: yes
-    Shared memory/Linux CMA: yes
-    Shared memory/Linux KNEM: no
-    Shared memory/XPMEM: no
-    TCP: yes
-    ... clipped ...
+	$ LD_LIBRARY_PATH=${TEST_DIR}/lib ./configure --prefix=${TEST_DIR} --without-ucx --with-libfabric=${TEST_DIR}
+	... clipped ...
+	Transports
+	-----------------------
+	Cray uGNI (Gemini/Aries): no
+	Intel Omnipath (PSM2): no
+	Intel SCIF: no
+	Intel TrueScale (PSM): no
+	Mellanox MXM: no
+	Open UCX: no
+	OpenFabrics Libfabric: yes
+	OpenFabrics Verbs: yes
+	Portals4: no
+	Shared memory/copy in+copy out: yes
+	Shared memory/Linux CMA: yes
+	Shared memory/Linux KNEM: no
+	Shared memory/XPMEM: no
+	TCP: yes
+	... clipped ...
 	$ make -j install
 
 ### 6. Build and install MPI tests
-    $ cd ${SRC_DIR}/libfabric-stuff
+	$ cd ${SRC_DIR}/zhpe-support
 	$ ./prep_mpi.sh -m ${TEST_DIR} ${TEST_DIR}
 	$ make mpi_tests
 
 ## Test low level APIs:  xingpong
 ### Invoke it without arguments for usage:
-    $ export LD_LIBRARY_PATH=${TEST_DIR}/lib
-    $ ${TEST_DIR}/libexec/xingpong
+	$ export LD_LIBRARY_PATH=${TEST_DIR}/lib
+	$ ${TEST_DIR}/libexec/xingpong
 
 ### Here is how to run xingpong on one or two nodes (the server is hostname1), using the sockets provider.
 (If another provider (e.g., verbs) is available on your system you may specify it using the -p option.)
 
-#### 1. Start the server on the hostname1 
-(In this example, we're starting the server as a background process so that we can run the client in the foreground):
-    $ ${TEST_DIR}/libexec/xingpong 2222  &
+#### 1. Start the server on the hostname1 (running the server in the backgroun)
+	$ ${TEST_DIR}/libexec/xingpong 2222  &
     
 #### 2. Start a client and point it at the server (hostname1 in the example below):
-    $ ${TEST_DIR}/libexec/xingpong -o -p sockets 2222 hostname1 1 1 1
+	$ ${TEST_DIR}/libexec/xingpong -o -p sockets 2222 hostname1 1 1 1
 
 ## Test libfabric RDMA APIs:  ringpong
 ringpong is very similar to xingpong, except that it uses the libfabric APIs
@@ -151,7 +168,7 @@ instead of the libzhpeq APIs to do the data transfers. Replace the command
 in above example with "ringpong" and use "-p zhpe" to exercise the libfabric
 zhpe provider.
 
-## Running OpenMPI over libfabric-zhpe (Using the right options.)
+## Running OpenMPI over zhpe-libfabric (Using the right options.)
 OpenMPI will try multiple providers automatically and getting it to
 run a specific provider under the correct circumstances is problematic.
 We want to use the libfabric-zhpe for all cross-node communication, but
@@ -159,6 +176,6 @@ not for same node communication. The verbose options below can allow you
 to verify the correct transports are being used, but are not required
 for correct operation.
 
-    $ export LD_LIBRARY_PATH=${TEST_DIR}/lib
+	$ export LD_LIBRARY_PATH=${TEST_DIR}/lib
 	$ ${TEST_DIR}/bin/mpirun -x LD_LIBRARY_PATH --hostfile ~/hostfile -n 2 --bind-to socket --mca btl ^openib --mca mtl_ofi_provider_include zhpe --mca btl_base_verbose 100 --mca mtl_base_verbose 100 --mca pml_base_verbose 100 <command>
 

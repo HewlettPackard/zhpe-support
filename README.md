@@ -65,8 +65,8 @@ The code has been built and tested on Ubuntu Xenial. The build dependencies for 
 The emulation provided by the libzhpeq library has been mostly tested using the Libfabric verbs provider over Infiniband/RoCE hardware, but this hardware is not required. In the absence of such hardware, the library should use the sockets provider. You can build the Libfabric software with support for InfiniBand verbs without hardware, you just need to install the proper libraries. These can either be the development libraries from the Ubuntu repository or [Mellanox OFED](http://www.mellanox.com/page/products_dyn?product_family=26).
 
 ### 1. Install dependencies
+	$ sudo -i apt-get install build-essential linux-headers-$(uname -r) cmake valgrind libudev-dev
 	$ sudo -i apt-get build-dep openmpi
-	$ sudo -i apt-get install valgrind libudev-dev
 	$ sudo -i apt-get librdmacm-dev # optional: not needed if OFED installed or verbs not required
     
 ### 2. Install libtool from source
@@ -84,10 +84,11 @@ Make sure the new version of libtoolize is first in your PATH.
 	$ cd ${SRC_DIR}
 	$ git clone https://github.com/HewlettPackard/zhpe-support.git
 
-### 2. Generate makefiles and build/install driver
+### 2. Generate makefiles and build and load driver.
 	$ cd ${SRC_DIR}/zhpe-support
 	$ ./prep.sh ${TEST_DIR}
 	$ make driver
+	$ sudo -i insmod ${TEST_DIR}/lib/zhpe.ko helper_path=${TEST_DIR}/bin/zhpe_helper 
 
 ## Building zhpe-support, zhpe-libfabric, and OpenMPI (with libfabric support). Everything will be installed into ${TEST_DIR}
 

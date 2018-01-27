@@ -67,11 +67,11 @@ The emulation provided by the libzhpeq library has been mostly tested using the 
 ### 1. Install dependencies
 	$ sudo -i apt-get install build-essential linux-headers-$(uname -r) cmake valgrind libudev-dev
 	$ sudo -i apt-get build-dep openmpi
-	$ sudo -i apt-get librdmacm-dev # optional: not needed if OFED installed or verbs not required
+	$ sudo -i apt-get install librdmacm-dev # optional: not needed if OFED installed or verbs not required
     
 ### 2. Install libtool from source
 	$ wget http://ftpmirror.gnu.org/libtool/libtool-2.4.6.tar.gz
-	$ tar -xzf wget libtool-2.4.6.tar.gz
+	$ tar -xzf libtool-2.4.6.tar.gz
 	$ cd libtool-2.4.6
 	$ ./configure
 	$ make	
@@ -88,7 +88,7 @@ Make sure the new version of libtoolize is first in your PATH.
 	$ cd ${SRC_DIR}/zhpe-support
 	$ ./prep.sh ${TEST_DIR}
 	$ make driver
-	$ sudo -i insmod ${TEST_DIR}/lib/zhpe.ko helper_path=${TEST_DIR}/bin/zhpe_helper 
+	$ sudo -i insmod ${TEST_DIR}/lib/modules/zhpe.ko helper_path=${TEST_DIR}/bin/zhpe_helper
 
 ## Building zhpe-support, zhpe-libfabric, and OpenMPI (with libfabric support). Everything will be installed into ${TEST_DIR}
 

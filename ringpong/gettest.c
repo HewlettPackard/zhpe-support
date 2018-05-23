@@ -53,9 +53,7 @@ struct cli_wire_msg {
     uint64_t            ring_entries;
     uint64_t            tx_avail;
     bool                aligned_mode;
-    bool                copy_mode;
     bool                once_mode;
-    bool                unidir_mode;
     uint8_t             ep_type;
 };
 
@@ -95,10 +93,8 @@ struct args {
     uint64_t            ring_ops;
     uint64_t            tx_avail;
     bool                aligned_mode;
-    bool                copy_mode;
     bool                once_mode;
     bool                seconds_mode;
-    bool                unidir_mode;
     uint8_t             ep_type;
 };
 
@@ -213,20 +209,6 @@ static int do_mem_setup(struct stuff *conn)
         goto done;
     }
 
-    if (!args->copy_mode)
-        goto done;
-
-    req = off = sizeof(*conn->rx_rcv) * args->ring_entries;
-    req += conn->ring_end_off;
-    ret = -posix_memalign((void **)&conn->rx_rcv, page_size, req);
-    if (ret < 0) {
-        conn->rx_rcv = NULL;
-        print_func_errn(__FUNCTION__, __LINE__, "posix_memalign", true,
-                        req, ret);
-        goto done;
-    }
-    conn->rx_data = (void *)conn->rx_rcv + off;
-
  done:
     return ret;
 }
@@ -254,329 +236,63 @@ static int do_mem_xchg(struct stuff *conn)
     return ret;
 }
 
-static void random_rx_rcv(struct stuff *conn, struct rx_queue_head *rx_head)
+static inline int
+do_fab_completions(const char *callf, uint line, struct fid_cq *cq)
 {
-    const struct args   *args = conn->args;
-    struct rx_queue     *tp;
-    struct rx_queue     *rp;
-    struct rx_queue     *cp;
-    size_t              t;
-    size_t              r;
+    int                 ret;
 
-    /* Partition shuffle the list. */
+    ret = _fab_completions(callf, line, cq, 0, NULL, NULL);
+    if (ret < 0)
+        print_func_fi_err(callf, line, __FUNCTION__, "", ret);
 
-    for (t = 0; t < args->ring_entries; t++) {
-        tp = conn->rx_rcv + t;
-        tp->idx = t;
-    }
-
-    for (t = args->ring_entries; t > 0; t--) {
-        tp = conn->rx_rcv + t - 1;
-        r = random() * t / ((uint64_t)RAND_MAX + 1);
-        rp = conn->rx_rcv + r;
-
-        cp = conn->rx_rcv + rp->idx;
-        rp->idx = tp->idx;
-        STAILQ_INSERT_TAIL(rx_head, cp, list);
-    }
-
-    /* Set buf to equivalent slot in rx_data. */
-    t = 0;
-    STAILQ_FOREACH(tp, rx_head, list) {
-        tp->buf = conn->rx_data + (tp - conn->rx_rcv) * args->ring_entry_len;
-        t++;
-    }
-    if (t != args->ring_entries) {
-        print_err("list contains %lu/%lu entries\n", t, args->ring_entries);
-    }
+    return ret;
 }
 
-static int do_server_pong(struct stuff *conn)
+#define do_fab_completions(...) \
+    do_fab_completions(__FUNCTION__, __LINE__, __VA_ARGS__)
+
+static ssize_t send_with_flags(const char *callf, uint line,
+                               struct fid_ep *ep, const void *buf,
+                               size_t len, void *desc, fi_addr_t dest_addr,
+                               void *context, uint64_t flags)
+{
+    int                 ret;
+    struct fi_msg       msg;
+    struct iovec        msg_iov;
+
+    memset(&msg, 0, sizeof(msg));
+    msg_iov.iov_base = (void *) buf;
+    msg_iov.iov_len = len;
+
+    msg.msg_iov = &msg_iov;
+    msg.desc = &desc;
+    msg.iov_count = 1;
+    msg.addr = dest_addr;
+    msg.context = context;
+
+    ret = fi_sendmsg(ep, &msg, flags);
+    if (ret < 0)
+        print_func_fi_err(callf, line, __FUNCTION__, "", ret);
+
+    return ret;
+}
+
+#define send_with_flags(...) \
+    send_with_flags(__FUNCTION__, __LINE__, __VA_ARGS__)
+
+static int do_server_source(struct stuff *conn)
 {
     int                 ret = 0;
     struct fab_conn     *fab_conn = &conn->fab_conn;
-    const struct args   *args = conn->args;
-    uint                tx_flag_in = TX_NONE;
-    size_t              tx_avail = conn->tx_avail;
-    size_t              tx_off = 0;
-    size_t              rx_off = 0;
-    size_t              tx_ctx = 0;
-    struct rx_queue_head rx_head = STAILQ_HEAD_INITIALIZER(rx_head);
-    struct rx_queue     *rx_ptr;
-    size_t              tx_count;
-    size_t              rx_count;
-    size_t              warmup_count;
-    size_t              op_count;
-    size_t              window;
-    uint8_t             *tx_addr;
-    volatile uint8_t    *rx_addr;
-    uint8_t             tx_flag_new;
 
-    /* Create a random receive list for copy mode */
-    if (args->copy_mode)
-        random_rx_rcv(conn, &rx_head);
-
-    /* Server starts with no ring entries available to transmit. */
-
-    for (tx_count = rx_count = warmup_count = 0;
-         tx_count != rx_count || tx_flag_in != TX_LAST; ) {
-        /* Receive packets up to window or first miss. */
-        for (window = RX_WINDOW; window > 0 && tx_flag_in != TX_LAST;
-             window--, rx_count++, rx_off = next_roff(conn, rx_off)) {
-            tx_addr = conn->tx_addr + rx_off;
-            rx_addr = conn->rx_addr + rx_off;
-            if (!(tx_flag_new = *rx_addr))
-                break;
-            if (tx_flag_new != tx_flag_in) {
-                if (tx_flag_in == TX_WARMUP)
-                    warmup_count = rx_count;
-                tx_flag_in = tx_flag_new;
-            }
-            *tx_addr = tx_flag_new;
-            /* If we're copying, grab an entry off the list; copy the
-             * ring entry into the data buf; and add it back to the end
-             * of the list.
-             */
-            if (args->copy_mode) {
-                smp_rmb();
-                rx_ptr = STAILQ_FIRST(&rx_head);
-                STAILQ_REMOVE_HEAD(&rx_head, list);
-                memcpy(rx_ptr->buf, (void *)rx_addr, args->ring_entry_len);
-                STAILQ_INSERT_TAIL(&rx_head, rx_ptr, list);
-            }
-            *(uint8_t *)rx_addr = 0;
-        }
-        /* Send all available buffers. */
-        for (window = TX_WINDOW; window > 0 && rx_count != tx_count;
-             (window--, tx_count++, tx_avail--,
-              tx_off = next_roff(conn, tx_off),
-              tx_ctx = next_ctx(conn, tx_ctx))) {
-            /* Check for tx slots. */
-            if (!tx_avail) {
-                ret = fab_completions(fab_conn->tx_cq, 0, NULL, NULL);
-                if (ret < 0)
-                    goto done;
-                tx_avail += ret;
-                if (!tx_avail)
-                    break;
-            }
-            /* Reflect buffer to same offset in client.*/
-            tx_addr = conn->tx_addr + tx_off;
-            rx_addr = (void *)conn->remote_addr + tx_off;
-            ret = fi_write(fab_conn->ep, tx_addr, args->ring_entry_len,
-                           fi_mr_desc(fab_conn->mrmem.mr), conn->dest_av,
-                           (uintptr_t)rx_addr, conn->remote_key,
-                           &conn->ctx[tx_ctx]);
-            if (ret < 0) {
-                print_func_fi_err(__FUNCTION__, __LINE__, "fi_write", "", ret);
-                goto done;
-            }
-        }
-    }
-    while (tx_avail != conn->tx_avail) {
-        ret = fab_completions(fab_conn->tx_cq, 0, NULL, NULL);
-        if (ret < 0)
-            goto done;
-        tx_avail += ret;
-    }
     /* Do a send-receive for the final handshake. */
-    ret = fi_recv(fab_conn->ep, conn->rx_addr + rx_off, args->ring_entry_len,
-                  fi_mr_desc(fab_conn->mrmem.mr), 0, &conn->ctx[0]);
+    ret = fi_recv(fab_conn->ep, NULL, 0, NULL, 0, &conn->ctx[0]);
     if (ret < 0) {
         print_func_fi_err(__FUNCTION__, __LINE__, "fi_recv", "", ret);
         goto done;
     }
-    while (!fab_completions(fab_conn->rx_cq, 0, NULL, NULL));
-    op_count = tx_count - warmup_count;
-    fab_print_info(fab_conn);
-    printf("%s:op_cnt/warmup %lu/%lu\n", appname, op_count, warmup_count);
+    while (!(ret = do_fab_completions(fab_conn->rx_cq)));
 
- done:
-
-    return ret;
-}
-
-static int do_client_pong(struct stuff *conn)
-{
-    int                 ret = 0;
-    struct fab_conn     *fab_conn = &conn->fab_conn;
-    const struct args   *args = conn->args;
-    uint                tx_flag_in = TX_NONE;
-    uint                tx_flag_out = TX_WARMUP;
-    size_t              tx_avail = conn->tx_avail;
-    size_t              ring_avail = args->ring_entries;
-    size_t              tx_off = 0;
-    size_t              rx_off = 0;
-    size_t              tx_ctx = 0;
-    size_t              tx_idx = 0;
-    size_t              rx_idx = 0;
-    uint64_t            lat_total1 = 0;
-    uint64_t            lat_total2 = 0;
-    uint64_t            lat_max2 = 0;
-    uint64_t            lat_min2 = 0;
-    uint64_t            lat_comp = 0;
-    uint64_t            lat_write = 0;
-    uint64_t            q_max1 = 0;
-    uint64_t            delta;
-    uint64_t            start;
-    uint64_t            now;
-    size_t              tx_count;
-    size_t              rx_count;
-    size_t              warmup_count;
-    size_t              op_count;
-    size_t              window;
-    uint8_t             *tx_addr;
-    volatile uint8_t    *rx_addr;
-
-    start = get_cycles(NULL);
-    for (tx_count = rx_count = warmup_count = 0;
-         tx_count != rx_count || tx_flag_out != TX_LAST;) {
-        /* Receive packets up to chunk or first miss. */
-        for (window = RX_WINDOW; window > 0 && tx_flag_in != TX_LAST;
-             (window--, rx_count++, ring_avail++,
-              rx_off = next_roff(conn, rx_off))) {
-            rx_addr = conn->rx_addr + rx_off;
-            if (!(tx_flag_in = *rx_addr))
-                break;
-            *rx_addr = 0;
-            if (!rx_off)
-                rx_idx = 0;
-            /* Reset statistics after warmup. */
-            if (rx_count == warmup_count) {
-                lat_total2 = 0;
-                lat_max2 = 0;
-                lat_min2 = ~(uint64_t)0;
-            }
-            /* Compute timestamp for entries. */
-            delta = get_cycles(NULL) - conn->ring_timestamps[rx_idx++];
-            lat_total2 += delta;
-            if (delta > lat_max2)
-                lat_max2 = delta;
-            if (delta < lat_min2)
-                lat_min2 = delta;
-        }
-        /* Send all available buffers. */
-        for (window = TX_WINDOW;
-             window > 0 && ring_avail > 0 && tx_flag_out != TX_LAST;
-             (window--, ring_avail--, tx_count++, tx_avail--,
-              tx_off = next_roff(conn, tx_off),
-              tx_ctx = next_ctx(conn, tx_ctx))) {
-
-            now = get_cycles(NULL);
-            /* Check for tx slots. */
-            if (!tx_avail) {
-                ret = fab_completions(fab_conn->tx_cq, 0, NULL, NULL);
-                lat_comp += get_cycles(NULL) - now;
-                if (ret < 0)
-                    goto done;
-                tx_avail += ret;
-                if (!tx_avail)
-                    break;
-            }
-
-            /* Compute delta based on cycles/ops. */
-            if (args->seconds_mode)
-                delta = now - start;
-            else
-                delta = tx_count;
-
-            /* Handle switching between warmup/running/last. */
-            switch (tx_flag_out) {
-
-            case TX_WARMUP:
-                if (delta < conn->ring_warmup)
-                    break;
-                tx_flag_out = TX_RUNNING;
-                warmup_count = tx_count;
-                /* Reset timers/counters after warmup. */
-                lat_total1 = get_cycles(NULL);
-                lat_comp = 0;
-                lat_write = 0;
-                q_max1 = 0;
-                /* FALLTHROUGH */
-
-            case TX_RUNNING:
-                if  (delta >= conn->ring_ops - 1)
-                    tx_flag_out = TX_LAST;
-                break;
-
-            default:
-                print_err("%s,%u:Unexpected state %d\n",
-                          __FUNCTION__, __LINE__, tx_flag_out);
-                ret = -EINVAL;
-                goto done;
-            }
-
-            /* Write buffer to same offset in server.*/
-            tx_addr = conn->tx_addr + tx_off;
-            rx_addr = (void *)conn->remote_addr + tx_off;
-            if (!tx_off)
-                tx_idx = 0;
-            /* Write op flag. */
-            *tx_addr = tx_flag_out;
-            /* Send data. */
-            now = get_cycles(NULL);
-            conn->ring_timestamps[tx_idx++] = now;
-            ret = fi_write(fab_conn->ep, tx_addr, args->ring_entry_len,
-                           fi_mr_desc(fab_conn->mrmem.mr), conn->dest_av,
-                           (uintptr_t)rx_addr, conn->remote_key,
-                           &conn->ctx[tx_ctx]);
-            lat_write += get_cycles(NULL) - now;
-            if (ret < 0) {
-                print_func_fi_err(__FUNCTION__, __LINE__, "fi_write", "", ret);
-                goto done;
-            }
-        }
-        delta = tx_count - rx_count;
-        if (delta > q_max1)
-            q_max1 = delta;
-    }
-    while (tx_avail != conn->tx_avail) {
-        now = get_cycles(NULL);
-        ret = fab_completions(fab_conn->tx_cq, 0, NULL, NULL);
-        lat_comp += get_cycles(NULL) - now;
-        if (ret < 0)
-            goto done;
-        tx_avail += ret;
-    }
-    lat_total1 = get_cycles(NULL) - lat_total1;
-    /* Do a send-receive for the final handshake. */
-    ret = fi_send(fab_conn->ep, conn->tx_addr + tx_off, args->ring_entry_len,
-                  fi_mr_desc(fab_conn->mrmem.mr), 0, &conn->ctx[0]);
-    if (ret < 0) {
-        print_func_fi_err(__FUNCTION__, __LINE__, "fi_send", "", ret);
-        goto done;
-    }
-    while (!fab_completions(fab_conn->tx_cq, 0, NULL, NULL));
-    op_count = tx_count - warmup_count;
-    fab_print_info(fab_conn);
-    printf("%s:op_cnt/warmup %lu/%lu\n", appname, op_count, warmup_count);
-    printf("%s:lat ave1/ave2/min2/max2 %.3lf/%.3lf/%.3lf/%.3lf\n", appname,
-           cycles_to_usec(lat_total1, op_count * 2),
-           cycles_to_usec(lat_total2, op_count * 2),
-           cycles_to_usec(lat_min2, 2), cycles_to_usec(lat_max2, 2));
-    printf("%s:lat comp/write %.3lf/%.3lf qmax %lu\n", appname,
-           cycles_to_usec(lat_comp, op_count),
-           cycles_to_usec(lat_write, op_count), q_max1);
-
- done:
-    return ret;
-}
-
-static int do_server_sink(struct stuff *conn)
-{
-    int                 ret = 0;
-    struct fab_conn     *fab_conn = &conn->fab_conn;
-    const struct args   *args = conn->args;
-
-    /* Do a send-receive for the final handshake. */
-    ret = fi_recv(fab_conn->ep, conn->rx_addr, args->ring_entry_len,
-                  fi_mr_desc(fab_conn->mrmem.mr), 0, &conn->ctx[0]);
-    if (ret < 0) {
-        print_func_fi_err(__FUNCTION__, __LINE__, "fi_recv", "", ret);
-        goto done;
-    }
-    while (!fab_completions(fab_conn->rx_cq, 0, NULL, NULL));
     fab_print_info(fab_conn);
 
  done:
@@ -584,7 +300,7 @@ static int do_server_sink(struct stuff *conn)
     return ret;
 }
 
-static int do_client_unidir(struct stuff *conn)
+static int do_client_get(struct stuff *conn)
 {
     int                 ret = 0;
     struct fab_conn     *fab_conn = &conn->fab_conn;
@@ -613,7 +329,7 @@ static int do_client_unidir(struct stuff *conn)
         now = get_cycles(NULL);
         /* Check for tx slots. */
         while (!tx_avail) {
-            ret = fab_completions(fab_conn->tx_cq, 0, NULL, NULL);
+            ret = do_fab_completions(fab_conn->tx_cq);
             if (ret < 0)
                 goto done;
             tx_avail += ret;
@@ -643,8 +359,6 @@ static int do_client_unidir(struct stuff *conn)
         case TX_RUNNING:
             if  (delta >= conn->ring_ops - 1) {
                 tx_flag_out = TX_LAST;
-                /* Force the last packet to use the first entry. */
-                tx_off = 0;
             }
             break;
 
@@ -656,36 +370,38 @@ static int do_client_unidir(struct stuff *conn)
         }
 
         /* Write buffer to same offset in server.*/
-        tx_addr = conn->tx_addr + tx_off;
-        rx_addr = (void *)conn->remote_addr + tx_off;
+        rx_addr = conn->tx_addr + tx_off;
+        tx_addr = (void *)conn->remote_addr + tx_off;
         now = get_cycles(NULL);
-        ret = fi_write(fab_conn->ep, tx_addr, args->ring_entry_len,
-                       fi_mr_desc(fab_conn->mrmem.mr), conn->dest_av,
-                       (uintptr_t)rx_addr, conn->remote_key,
-                       &conn->ctx[tx_ctx]);
+        ret = fi_read(fab_conn->ep, rx_addr, args->ring_entry_len,
+                      fi_mr_desc(fab_conn->mrmem.mr), conn->dest_av,
+                      (uintptr_t)tx_addr, conn->remote_key,
+                      &conn->ctx[tx_ctx]);
         lat_write += get_cycles(NULL) - now;
         if (ret < 0) {
-            print_func_fi_err(__FUNCTION__, __LINE__, "fi_write", "", ret);
+            print_func_fi_err(__FUNCTION__, __LINE__, "fi_read", "", ret);
             goto done;
         }
     }
     while (tx_avail != conn->tx_avail) {
         now = get_cycles(NULL);
-        ret = fab_completions(fab_conn->tx_cq, 0, NULL, NULL);
+        ret = do_fab_completions(fab_conn->tx_cq);
         lat_comp += get_cycles(NULL) - now;
         if (ret < 0)
             goto done;
         tx_avail += ret;
     }
     lat_total1 = get_cycles(NULL) - lat_total1;
+
     /* Do a send-receive for the final handshake. */
-    ret = fi_send(fab_conn->ep, conn->tx_addr + tx_off, args->ring_entry_len,
-                  fi_mr_desc(fab_conn->mrmem.mr), 0, &conn->ctx[0]);
-    if (ret < 0) {
-        print_func_fi_err(__FUNCTION__, __LINE__, "fi_send", "", ret);
+    ret = send_with_flags(fab_conn->ep, NULL, 0, NULL, 0, NULL,
+                          FI_DELIVERY_COMPLETE);
+    if (ret < 0)
         goto done;
-    }
-    while (!fab_completions(fab_conn->rx_cq, 0, NULL, NULL));
+    while (!(ret = do_fab_completions(fab_conn->tx_cq)));
+    if (ret < 0)
+        goto done;
+
     op_count = tx_count - warmup_count;
     fab_print_info(fab_conn);
     printf("%s:op_cnt/warmup %lu/%lu\n", appname, op_count, warmup_count);
@@ -739,9 +455,7 @@ static int do_server_one(const struct args *oargs, int conn_fd)
     args->ring_entries = be64toh(cli_msg.ring_entries);
     args->tx_avail = be64toh(cli_msg.tx_avail);
     args->aligned_mode = !!cli_msg.aligned_mode;
-    args->copy_mode = !!cli_msg.copy_mode;
     args->once_mode = !!cli_msg.once_mode;
-    args->unidir_mode = !!cli_msg.unidir_mode;
     args->ep_type = cli_msg.ep_type;
 
     if (args->ep_type == FI_EP_RDM) {
@@ -792,10 +506,7 @@ static int do_server_one(const struct args *oargs, int conn_fd)
     if (ret < 0)
         goto done;
 
-    if (args->unidir_mode)
-        ret = do_server_sink(&conn);
-    else
-        ret = do_server_pong(&conn);
+    ret = do_server_source(&conn);
 
  done:
     stuff_free(&conn);
@@ -893,9 +604,7 @@ static int do_client(const struct args *args)
     cli_msg.ring_entries = htobe64(args->ring_entries);
     cli_msg.tx_avail = htobe64(args->tx_avail);
     cli_msg.aligned_mode = args->aligned_mode;
-    cli_msg.copy_mode = args->copy_mode;
     cli_msg.once_mode = args->once_mode;
-    cli_msg.unidir_mode = args->unidir_mode;
     cli_msg.ep_type = args->ep_type;
 
     ret = sock_send_blob(conn.sock_fd, &cli_msg, sizeof(cli_msg));
@@ -967,10 +676,7 @@ static int do_client(const struct args *args)
     }
 
     /* Send ops */
-    if (args->unidir_mode)
-        ret = do_client_unidir(&conn);
-    else
-        ret = do_client_pong(&conn);
+    ret = do_client_get(&conn);
 
  done:
     stuff_free(&conn);
@@ -993,14 +699,12 @@ static void usage(bool help)
         "Server requires just port; client requires all 5 arguments.\n"
         "Client only options:\n"
         " -a : cache line align entries\n"
-        " -c : copy mode\n"
         " -d <domain> : domain/device to bind to (eg. mlx5_0)\n"
         " -o : run once and then server will exit\n"
         " -p <provider> : provider to use\n"
         " -r : use RDM endpoints\n"
         " -s : treat the final argument as seconds\n"
-        " -t <txqlen> : length of tx request queue\n"
-        " -u : uni-directional client-to-server traffic (no copy)\n",
+        " -t <txqlen> : length of tx request queue\n",
         appname);
 
     if (help) {
@@ -1023,7 +727,7 @@ int main(int argc, char **argv)
     if (argc == 1)
         usage(true);
 
-    while ((opt = getopt(argc, argv, "acd:op:rst:u")) != -1) {
+    while ((opt = getopt(argc, argv, "ad:op:rst:")) != -1) {
 
         /* All opts are client only, now. */
         client_opt = true;
@@ -1034,12 +738,6 @@ int main(int argc, char **argv)
             if (args.aligned_mode)
                 usage(false);
             args.aligned_mode = true;
-            break;
-
-        case 'c':
-            if (args.copy_mode)
-                usage(false);
-            args.copy_mode = true;
             break;
 
         case 'd':
@@ -1080,20 +778,11 @@ int main(int argc, char **argv)
                 usage(false);
             break;
 
-        case 'u':
-            if (args.unidir_mode)
-                usage(false);
-            args.unidir_mode = true;
-            break;
-
         default:
             usage(false);
 
         }
     }
-
-    if (args.copy_mode && args.unidir_mode)
-        usage(false);
 
     opt = argc - optind;
 

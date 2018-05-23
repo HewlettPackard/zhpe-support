@@ -1004,7 +1004,7 @@ int _fab_av_wait_recv(const char *callf, uint line, struct fab_conn *conn,
     /* Must be single-threaded to prevent races. */
     for (;;) {
         /* Peek for message from other side. */
-        ret = fi_trecvmsg(conn->ep, &fi_tmsg, FI_PEEK | FI_CLAIM);
+        ret = fi_trecvmsg(conn->ep, &fi_tmsg, FI_PEEK | FI_DISCARD);
         if (ret < 0) {
             print_func_fi_err(callf, line, "fi_trecvmsg", "FI_PEEK", ret);
             goto done;
@@ -1017,10 +1017,7 @@ int _fab_av_wait_recv(const char *callf, uint line, struct fab_conn *conn,
                     print_err("%s,%u:invalid context seen\n", callf, line);
                     continue;
                 }
-                ret = fi_trecvmsg(conn->ep, &fi_tmsg, FI_CLAIM | FI_DISCARD);
-                if (ret < 0)
-                    print_func_fi_err(callf, line, "fi_trecvmsg",
-                                      "FI_DISCARD", ret);
+                ret = 0;
                 goto done;
             }
             if (ret == -FI_ENOMSG)

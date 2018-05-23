@@ -39,7 +39,7 @@
 #include <sys/queue.h>
 
 #define BACKLOG         10
-#define TIMEOUT         (10000)
+#define TIMEOUT         (1000000)
 #define WARMUP_MIN      (1024)
 #define RX_WINDOW       (64)
 #define TX_WINDOW       (64)
@@ -892,6 +892,7 @@ static int do_client(const struct args *args)
     cli_msg.ring_entry_len = htobe64(args->ring_entry_len);
     cli_msg.ring_entries = htobe64(args->ring_entries);
     cli_msg.tx_avail = htobe64(args->tx_avail);
+    cli_msg.aligned_mode = args->aligned_mode;
     cli_msg.copy_mode = args->copy_mode;
     cli_msg.once_mode = args->once_mode;
     cli_msg.unidir_mode = args->unidir_mode;

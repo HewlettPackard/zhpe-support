@@ -39,7 +39,7 @@
 #include <sys/queue.h>
 
 #define BACKLOG         10
-#define TIMEOUT         (1000000)
+#define TIMEOUT         (10000)
 #define WARMUP_MIN      (1024)
 #define RX_WINDOW       (64)
 #define TX_WINDOW       (64)

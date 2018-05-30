@@ -42,8 +42,12 @@
 /* Need internal.h for backend timing stuff. */
 #include <internal.h>
 
-#define BACKLOG         10
+#define BACKLOG         (10)
+#ifdef DEBUG
+#define TIMEOUT         (-1)
+#else
 #define TIMEOUT         (10000)
+#endif
 #define WARMUP_MIN      (1024)
 #define RX_WINDOW       (64)
 #define TX_WINDOW       (64)

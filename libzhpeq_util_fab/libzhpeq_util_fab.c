@@ -315,6 +315,7 @@ int _fab_getinfo(const char *callf, uint line,
 {
     int                 ret = -EEXIST;
     uint64_t            flags = 0;
+    struct fi_info      *info;
 
     ret = -ENOMEM;
     conn->node = _strdup_or_null(callf, line, node);
@@ -362,6 +363,27 @@ int _fab_getinfo(const char *callf, uint line,
     }
     fi_freeinfo(conn->hints);
     conn->hints = NULL;
+    if (!provider)
+        goto done;
+    /* Utility providers seem to be a tad agressive about matching;
+     * find an exact match. May not be necessary in top-of-tree, but
+     * it shouldn't hurt anything.
+     */
+    for (info = conn->info; info; info = info->next) {
+        if (!info->fabric_attr || !info->fabric_attr->prov_name ||
+            strcmp(info->fabric_attr->prov_name, provider))
+            continue;
+        info = fi_dupinfo(info);
+        if (!info) {
+            ret = -FI_ENOMEM;
+            print_func_fi_err(callf, line, "fi_dupinfo", "", ret);
+            goto done;
+        }
+        fi_freeinfo(conn->info);
+        conn->info = info;
+        goto done;
+    }
+    ret = -FI_ENODATA;
 
  done:
     return ret;

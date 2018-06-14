@@ -45,6 +45,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <syslog.h>
@@ -59,38 +60,6 @@
 #include <sys/socket.h>
 
 #define NOOPTIMIZE      asm volatile("")
-
-/* Compiler won't reorder; lazy (no CPU barriers); won't be torn. */
-
-static inline uint32_t atomic_load_lazy_uint32(uint32_t *p)
-{
-	return *(volatile uint32_t *)p;
-}
-
-static inline void atomic_store_lazy_uint32(uint32_t *p, uint32_t v)
-{
-	*(volatile uint32_t *)p = v;
-}
-
-static inline uint64_t atomic_load_lazy_uint64(uint64_t *p)
-{
-	return *(volatile uint64_t *)p;
-}
-
-static inline void atomic_store_lazy_uint64(uint32_t *p, uint64_t v)
-{
-	*(volatile uint64_t *)p = v;
-}
-
-static inline void *atomic_load_lazy_ptr(void **p)
-{
-	return *(void * volatile *)p;
-}
-
-static inline void atomic_store_lazy_ptr(void **p, void *v)
-{
-	*(void * volatile *)p = v;
-}
 
 #define ARRAY_SIZE(_x)  (sizeof(_x) / sizeof(_x[0]))
 
@@ -297,25 +266,21 @@ static inline uint64_t get_cycles(volatile uint32_t *cpup)
     return ((uint64_t)hi << 32 | lo);
 }
 
-static inline int _gettime(const char *callf, uint line,
-                           clockid_t clk_id, struct timespec *ts)
+static inline void abort_if_minus1(int ret, const char *callf, uint line)
 {
-    int ret = 0;
-
-    if (clock_gettime(clk_id, ts) == -1) {
-        ret = -errno;
-        print_func_err(callf, line, "clock_gettime", "", ret);
-        errno = -ret;
+    if (ret == -1) {
+        ret = errno;
+        print_err("%s,%u:returned error %d:%s\n",
+                  callf, line, ret, strerror(ret));
+        abort();
     }
-
-    return ret;
 }
 
-#define gettime_raw(...) \
-    _gettime(__FUNCTION__, __LINE__, CLOCK_MONOTONIC_RAW, __VA_ARGS__)
+#define clock_gettime(...) \
+    abort_if_minus1(clock_gettime(__VA_ARGS__), __FUNCTION__, __LINE__)
 
-#define gettime(...) \
-    _gettime(__FUNCTION__, __LINE__, CLOCK_REALTIME, __VA_ARGS__)
+#define clock_gettime_monotonic(...) \
+    clock_gettime(CLOCK_MONOTONIC, __VA_ARGS__)
 
 static inline uint64_t ts_delta(struct timespec *ts_beg,
                                 struct timespec *ts_end)

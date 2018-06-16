@@ -156,7 +156,7 @@ static void stuff_free(struct stuff *stuff)
 
     fab_conn_free(&stuff->fab_conn);
     fab_conn_free(&stuff->fab_listener);
-    fab_conn_free(&stuff->fab_dom.fab_conn);
+    fab_dom_free(&stuff->fab_dom);
 
     do_free(stuff->rx_rcv);
     do_free(stuff->ring_timestamps);
@@ -172,6 +172,7 @@ static int do_mem_setup(struct stuff *conn)
 {
     int                 ret = -EEXIST;
     struct fab_conn     *fab_conn = &conn->fab_conn;
+    struct fi_info      *info = fab_conn_info(fab_conn);
     const struct args   *args = conn->args;
     size_t              mask = L1_CACHELINE - 1;
     size_t              req;
@@ -180,7 +181,7 @@ static int do_mem_setup(struct stuff *conn)
     if (args->tx_avail)
         conn->tx_avail = args->tx_avail;
     else
-        conn->tx_avail = fab_conn->info->tx_attr->size;
+        conn->tx_avail = info->tx_attr->size;
     if (conn->tx_avail > args->ring_entries)
         conn->tx_avail = args->ring_entries;
 
@@ -723,8 +724,8 @@ static int do_server_one(const struct args *oargs, int conn_fd)
     char                *s;
 
     fab_dom_init(fab_dom);
-    fab_conn_init(NULL, fab_conn);
-    fab_conn_init(NULL, fab_listener);
+    fab_conn_init(fab_dom, fab_conn);
+    fab_conn_init(fab_dom, fab_listener);
 
     /* Get the client parameters over the socket. */
     ret = sock_recv_fixed_blob(conn.sock_fd, &cli_msg, sizeof(cli_msg));
@@ -748,11 +749,12 @@ static int do_server_one(const struct args *oargs, int conn_fd)
     args->unidir_mode = !!cli_msg.unidir_mode;
     args->ep_type = cli_msg.ep_type;
 
+    ret = fab_dom_setup(NULL, NULL, true, args->provider, args->domain,
+                        args->ep_type, fab_dom);
+    if (ret < 0)
+        goto done;
+
     if (args->ep_type == FI_EP_RDM) {
-        ret = fab_av_domain(args->provider, args->domain, fab_dom);
-        if (ret < 0)
-            goto done;
-        fab_conn_init(fab_dom, fab_conn);
         ret = fab_ep_setup(fab_conn, NULL, 0, 0);
         if (ret < 0)
             goto done;
@@ -760,9 +762,6 @@ static int do_server_one(const struct args *oargs, int conn_fd)
         if (ret < 0)
             goto done;
     } else {
-        if (fab_getinfo(NULL, NULL, args->provider,
-                        args->domain, args->ep_type, true, fab_listener) < 0)
-            goto done;
         ret = fab_listener_setup(BACKLOG, fab_listener);
         if (ret < 0)
             goto done;
@@ -884,8 +883,8 @@ static int do_client(const struct args *args)
     struct svr_wire_msg svr_msg;
 
     fab_dom_init(fab_dom);
-    fab_conn_init(NULL, fab_conn);
-    fab_conn_init(NULL, fab_listener);
+    fab_conn_init(fab_dom, fab_conn);
+    fab_conn_init(fab_dom, fab_listener);
 
     ret = connect_sock(args->node, args->service);
     if (ret < 0)
@@ -912,11 +911,12 @@ static int do_client(const struct args *args)
     if (ret < 0)
         goto done;
 
+    ret = fab_dom_setup(args->service, args->node, false,
+                        args->provider, args->domain, args->ep_type, fab_dom);
+    if (ret < 0)
+        goto done;
+
     if (args->ep_type == FI_EP_RDM) {
-        ret = fab_av_domain(args->provider, args->domain, fab_dom);
-        if (ret < 0)
-            goto done;
-        fab_conn_init(fab_dom, fab_conn);
         ret = fab_ep_setup(fab_conn, NULL, 0, 0);
         if (ret < 0)
             goto done;
@@ -929,12 +929,7 @@ static int do_client(const struct args *args)
         if (ret < 0)
             goto done;
 
-        ret = fab_getinfo(args->service, args->node, args->provider,
-                          args->domain, args->ep_type, false, fab_conn);
-        if (ret < 0)
-            goto done;
-
-        sockaddr = fab_conn->info->dest_addr;
+        sockaddr = fab_conn_info(fab_conn)->dest_addr;
         switch (sockaddr->addr4.sin_family) {
         case AF_INET:
             sockaddr->addr4.sin_port = svr_msg.port;

@@ -36,238 +36,30 @@
 
 #include <zhpeq_util_fab.h>
 
-static pthread_mutex_t  fab_mutex = PTHREAD_MUTEX_INITIALIZER;
+#include <assert.h>
 
-enum fab_list_type {
-    FAB_LIST_FABRIC,
-    FAB_LIST_DOMAIN,
-};
-
-struct fab_list {
-    struct fab_list     *next;
-    void                *ptr;
-    char                *name;
-    const void          *parent;
-    const void          *context;
-    uint32_t            use_count;
-    enum fab_list_type  type;
-};
-
-struct fab_list         *fab_list;
-
-/* Try to have a single fabric/domain instance for each; imperfect. */
-
-static struct fab_list *fab_list_find(const void *parent, const char *name,
-                                      const void *context,
-                                      enum fab_list_type type)
+void fab_dom_init(struct fab_dom *dom)
 {
-    struct fab_list     *cur;
-
-    for (cur = fab_list; cur; cur = cur->next) {
-        if (cur->type == type && cur->parent == parent &&
-            cur->context == context && !strcmp(cur->name, name)) {
-            cur->use_count++;
-            break;
-        }
-    }
-
-    return  cur;
+    memset(dom, 0, sizeof(*dom));
+    dom->av_mutex = (pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
+    atomic_fetch_add(&dom->use_count, 1);
 }
 
-static struct fab_list *fab_list_new(const char *callf, uint line,
-                                     const void *parent, const char *name,
-                                     const void *context,
-                                     enum fab_list_type type)
+struct fab_dom *_fab_dom_alloc(const char *callf, uint line)
 {
-    struct fab_list     *cur;
-    size_t              len;
+    struct fab_dom      *ret = _do_malloc(callf, line, sizeof(*ret));
 
-    len = strlen(name);
-    cur = _do_calloc(callf, line, 1, sizeof(*cur) + len + 1);
-    if (!cur)
-        goto done;
-    cur->name = (void *)(cur + 1);
-    strncpy(cur->name, name, len);
-    cur->parent = parent;
-    cur->context = context;
-    cur->use_count = 1;
-    cur->type = type;
-
- done:
-    return cur;
-}
-
-static int fab_list_fabric(const char *callf, uint line,
-                           struct fi_fabric_attr *attr,
-                           struct fid_fabric **fabric, void *context)
-{
-    int                 ret = 0;
-    struct fab_list     *cur;
-
-    mutex_lock(&fab_mutex);
-    cur = fab_list_find(NULL, attr->name, context, FAB_LIST_FABRIC);
-    mutex_unlock(&fab_mutex);
-    if (cur) {
-        *fabric = cur->ptr;
-        goto done;
-    }
-
-    /* Cannot hold the mutex because of recursion in libzhpeq. */
-    ret = fi_fabric(attr, fabric, context);
-    if (ret < 0) {
-        *fabric = NULL;
-        print_func_fi_err(callf, line, "fi_fabric", "", ret);
-        goto done;
-    }
-
-    mutex_lock(&fab_mutex);
-    cur = fab_list_find(NULL, attr->name, context, FAB_LIST_FABRIC);
-    if (cur) {
-        mutex_unlock(&fab_mutex);
-        fi_close(&(*fabric)->fid);
-        *fabric = cur->ptr;
-        goto done;
-    }
-
-    cur = fab_list_new(callf, line, NULL, attr->name, context,
-                       FAB_LIST_FABRIC);
-    if (cur) {
-        cur->ptr = *fabric;
-        cur->next = fab_list;
-        fab_list = cur;
-        mutex_unlock(&fab_mutex);
-    } else {
-        mutex_unlock(&fab_mutex);
-        fi_close(&(*fabric)->fid);
-        *fabric = NULL;
-        ret = -ENOMEM;
-    }
-
- done:
+    if (ret)
+        ret->allocated = true;
 
     return ret;
-}
-
-static int fab_list_domain(const char *callf, uint line,
-                           struct fid_fabric *fabric, struct fi_info *info,
-                           struct fid_domain **domain, void *context)
-{
-    int                 ret = 0;
-    struct fab_list     *cur;
-
-    /* Free any extra infos. */
-    if (info->next) {
-        fi_freeinfo(info->next);
-        info->next = NULL;
-    }
-
-    mutex_lock(&fab_mutex);
-    cur = fab_list_find(fabric, info->domain_attr->name, context,
-                        FAB_LIST_DOMAIN);
-    mutex_unlock(&fab_mutex);
-    if (cur) {
-        *domain = cur->ptr;
-        goto done;
-    }
-
-    /* Cannot hold the mutex because of recursion in libzhpeq. */
-    ret = fi_domain(fabric, info, domain, context);
-    if (ret < 0) {
-        print_func_fi_err(callf, line, "fi_domain", "", ret);
-        goto done;
-    }
-
-    mutex_lock(&fab_mutex);
-    cur = fab_list_find(fabric, info->domain_attr->name, context,
-                        FAB_LIST_DOMAIN);
-    if (cur) {
-        mutex_unlock(&fab_mutex);
-        fi_close(&(*domain)->fid);
-        *domain = cur->ptr;
-        goto done;
-    }
-
-    cur = fab_list_new(callf, line, fabric, info->domain_attr->name, context,
-                       FAB_LIST_DOMAIN);
-    if (cur) {
-        cur->ptr = *domain;
-        cur->next = fab_list;
-        fab_list = cur;
-        mutex_unlock(&fab_mutex);
-    } else {
-        mutex_unlock(&fab_mutex);
-        fi_close(&(*domain)->fid);
-        *domain = NULL;
-        ret = -ENOMEM;
-    }
-
- done:
-
-    return ret;
-}
-
-static int fab_list_close(void *ptr)
-{
-    int                 ret = 0;
-    struct fab_list     *cur = NULL;
-    struct fab_list     **prev;
-
-    if (!ptr)
-        goto done;
-
-    mutex_lock(&fab_mutex);
-    for (prev = &fab_list; (cur = *prev); prev = &cur->next) {
-        if (cur->ptr == ptr) {
-            if (--(cur->use_count)) {
-                mutex_unlock(&fab_mutex);
-                goto done;
-            }
-            *prev = cur->next;
-            free(cur);
-            break;
-        }
-    }
-    mutex_unlock(&fab_mutex);
-    /* Assuming fid is at the start, but we could fix that. */
-    ret = fi_close(ptr);
-
- done:
-
-    return ret;
-}
-
-static void *fab_list_get(void *ptr)
-{
-    struct fab_list     *cur;
-
-    if (!ptr)
-        goto done;
-
-    mutex_lock(&fab_mutex);
-    for (cur = fab_list; cur; cur = cur->next) {
-        if (cur->ptr == ptr) {
-            cur->use_count++;
-            break;
-        }
-    }
-    mutex_unlock(&fab_mutex);
-
- done:
-    return ptr;
 }
 
 void fab_conn_init(struct fab_dom *dom, struct fab_conn *conn)
 {
     memset(conn, 0, sizeof(*conn));
-    if (dom) {
-        conn->fabric = fab_list_get(dom->fab_conn.fabric);
-        conn->domain = fab_list_get(dom->fab_conn.domain);
-        conn->info = fi_dupinfo(dom->fab_conn.info);
-        if (!conn->info) {
-            print_func_err(__FUNCTION__, __LINE__, "fi_dupinfo", "", -ENOMEM);
-            abort();
-        }
-    }
+    conn->dom = dom;
+    atomic_fetch_add(&dom->use_count, 1);
 }
 
 struct fab_conn *_fab_conn_alloc(const char *callf, uint line,
@@ -276,102 +68,141 @@ struct fab_conn *_fab_conn_alloc(const char *callf, uint line,
     struct fab_conn     *ret = _do_malloc(callf, line, sizeof(*ret));
 
     if (ret) {
-        fab_conn_init(dom, ret);
         ret->allocated = true;
+        fab_conn_init(dom, ret);
     }
 
     return ret;
 }
 
-int fab_conn_free(struct fab_conn *conn)
+void fab_finfo_free(struct fab_info *finfo)
+{
+    FREE(finfo->info, fi_freeinfo);
+    FREE(finfo->hints, fi_freeinfo);
+    FREE(finfo->service, free);
+    FREE(finfo->node, free);
+}
+
+void fab_dom_free(struct fab_dom *dom)
+{
+    int32_t             use_count;
+    struct fab_av_use   *use;
+    struct fab_av_use   *next;
+
+    if (!dom)
+        return;
+
+    use_count = atomic_fetch_sub(&dom->use_count, 1);
+    assert(use_count > 0);
+    if (use_count > 1)
+        return;
+
+    FI_CLOSE(dom->av);
+    FI_CLOSE(dom->domain);
+    FI_CLOSE(dom->fabric);
+    fab_finfo_free(&dom->finfo);
+
+    for (use = dom->av_head; use; use = next) {
+        next = use->next;
+        free(use);
+    }
+    if (dom->allocated)
+        free(dom);
+}
+
+void fab_conn_free(struct fab_conn *conn)
 {
     if (!conn)
-        return 0;
+        return;
 
     fab_mrmem_free(&conn->mrmem);
     FI_CLOSE(conn->ep);
     FI_CLOSE(conn->pep);
     FI_CLOSE(conn->rx_cq);
     FI_CLOSE(conn->tx_cq);
-    FI_CLOSE(conn->av);
     FI_CLOSE(conn->eq);
-    FREE(conn->domain, fab_list_close);
-    FREE(conn->fabric, fab_list_close);
-    FREE(conn->info, fi_freeinfo);
-    FREE(conn->hints, fi_freeinfo);
-    FREE(conn->service, free);
-    FREE(conn->node, free);
+    fab_finfo_free(&conn->finfo);
+    fab_dom_free(conn->dom);
 
     if (conn->allocated)
         free(conn);
-
-    return 0;
 }
 
-int _fab_getinfo(const char *callf, uint line,
-                 const char *service, const char *node,
-                 const char *provider, const char *domain,
-                 enum fi_ep_type ep_type, bool passive, struct fab_conn *conn)
+static int finfo_init(const char *callf, uint line,
+                      const char *service, const char *node, bool passive,
+                      const char *provider, const char *domain,
+                      enum fi_ep_type ep_type, struct fi_info *hints,
+                      struct fab_info *finfo)
 {
-    int                 ret = -EEXIST;
-    uint64_t            flags = 0;
-    struct fi_info      *info;
+    int                 ret = -FI_ENOMEM;
 
-    ret = -ENOMEM;
-    conn->node = _strdup_or_null(callf, line, node);
-    if (node && !conn->node)
+    memset(finfo, 0, sizeof(*finfo));
+    finfo->node = _strdup_or_null(callf, line, node);
+    if (!finfo->node && node)
         goto done;
-
-    conn->hints = fi_allocinfo();
-    if (!conn->hints) {
-        print_func_err(callf, line, "fi_allocinfo", "", ret);
-        goto done;
-    }
-
-    conn->hints->fabric_attr->prov_name =
-        _strdup_or_null(callf, line, provider);
-    if (provider && !conn->hints->fabric_attr->prov_name)
-        goto done;
-
-    conn->hints->caps = (FI_RMA | FI_READ | FI_WRITE |
-                       FI_REMOTE_READ | FI_REMOTE_WRITE);
-    conn->hints->mode = (FI_LOCAL_MR | FI_RX_CQ_DATA |
-                         FI_CONTEXT | FI_CONTEXT2);
-    conn->hints->ep_attr->type = ep_type;
-    /* XXX: conn->hints->domain_attr->data_progress = FI_PROGRESS_MANUAL; */
-    conn->hints->domain_attr->mr_mode = FI_MR_BASIC;
-    if (domain) {
-        conn->hints->domain_attr->name = _strdup_or_null(callf, line, domain);
-        if (domain && !conn->hints->domain_attr->name)
-            goto done;
-    }
-    conn->hints->addr_format = FI_SOCKADDR;
     if (passive) {
         if (!service)
             service = "0";
-        flags = FI_SOURCE;
+        finfo->flags |= FI_SOURCE;
     }
-    conn->service = strdup_or_null(service);
-    if (service && !conn->service)
+    finfo->service = _strdup_or_null(callf, line, service);
+    if (!finfo->service && service)
         goto done;
+    /* fi_dupinfo() will allocate a new fi_info and all assocaiated
+     * leaves if hints == NULL; if hints != NULL, it will duplicate
+     * the existing fi_info, but does not allocate missing leaves.
+     * We're going to assume that any hints passed to this was
+     * fully populated, since _fab_dom_setup() will call this with
+     * hints == NULL and _fab_dom_getinfo() is the only other caller
+     * when the fabric and the domain will be filled in.
+     */
+    finfo->hints = fi_dupinfo(hints);
+    if (!finfo->hints) {
+            print_func_err(callf, line, "fi_dupinfo", "", ret);
+            goto done;
+    }
+    /* Provider, domain, and ep_type ignored if hints specified. */
+    if (!hints) {
+        finfo->hints->fabric_attr->prov_name =
+            _strdup_or_null(callf, line, provider);
+        if (!finfo->hints->fabric_attr->prov_name && provider)
+            goto done;
+        finfo->hints->domain_attr->name =
+            _strdup_or_null(callf, line, domain);
+        if (!finfo->hints->domain_attr->name && domain)
+            goto done;
+        finfo->hints->ep_attr->type = ep_type;
+    }
 
-    ret = fi_getinfo(FAB_FIVERSION, conn->node, conn->service, flags,
-                     conn->hints, &conn->info);
+    ret = 0;
+
+ done:
+    return ret;
+}
+
+static int finfo_getinfo(const char *callf, uint line, struct fab_info *finfo)
+{
+    int                 ret;
+    struct fi_info      *info;
+
+    ret = fi_getinfo(FAB_FIVERSION, finfo->node, finfo->service, finfo->flags,
+                     finfo->hints, &finfo->info);
     if (ret < 0) {
         print_func_fi_err(callf, line, "fi_getinfo", "", ret);
         goto done;
     }
-    fi_freeinfo(conn->hints);
-    conn->hints = NULL;
-    if (!provider)
-        goto done;
+
     /* Utility providers seem to be a tad agressive about matching;
      * find an exact match. May not be necessary in top-of-tree, but
      * it shouldn't hurt anything.
      */
-    for (info = conn->info; info; info = info->next) {
+    if (!finfo->hints->fabric_attr ||
+        !finfo->hints->fabric_attr->prov_name)
+        goto done;
+    for (info = finfo->info; info; info = info->next) {
         if (!info->fabric_attr || !info->fabric_attr->prov_name ||
-            strcmp(info->fabric_attr->prov_name, provider))
+            strcmp(info->fabric_attr->prov_name,
+                   finfo->hints->fabric_attr->prov_name))
             continue;
         info = fi_dupinfo(info);
         if (!info) {
@@ -379,11 +210,87 @@ int _fab_getinfo(const char *callf, uint line,
             print_func_fi_err(callf, line, "fi_dupinfo", "", ret);
             goto done;
         }
-        fi_freeinfo(conn->info);
-        conn->info = info;
+        fi_freeinfo(finfo->info);
+        finfo->info = info;
         goto done;
     }
     ret = -FI_ENODATA;
+
+ done:
+    fi_freeinfo(finfo->hints);
+    finfo->hints = NULL;
+
+    return ret;
+}
+
+int _fab_dom_setup(const char *callf, uint line,
+                   const char *service, const char *node, bool passive,
+                   const char *provider, const char *domain,
+                   enum fi_ep_type ep_type, struct fab_dom *dom)
+{
+    int                 ret;
+    struct fi_av_attr   av_attr = { .type = FI_AV_TABLE };
+
+    ret = finfo_init(callf, line, service, node, passive,
+                     provider, domain, ep_type, NULL, &dom->finfo);
+    if (ret < 0)
+        goto done;
+
+    dom->finfo.hints->caps = (FI_RMA | FI_READ | FI_WRITE |
+                              FI_REMOTE_READ | FI_REMOTE_WRITE);
+    dom->finfo.hints->mode = (FI_LOCAL_MR | FI_RX_CQ_DATA |
+                              FI_CONTEXT | FI_CONTEXT2);
+    /* dom->finfo->hints->domain_attr->data_progress = FI_PROGRESS_MANUAL; */
+    dom->finfo.hints->domain_attr->mr_mode = FI_MR_BASIC;
+    dom->finfo.hints->addr_format = FI_SOCKADDR;
+
+    ret = finfo_getinfo(callf, line, &dom->finfo);
+    if (ret < 0)
+        goto done;
+
+    ret = fi_fabric(dom->finfo.info->fabric_attr, &dom->fabric, NULL);
+    if (ret < 0) {
+        dom->fabric = NULL;
+	print_func_fi_err(callf, line, "fi_fabric", "", ret);
+	goto done;
+    }
+    dom->finfo.info->fabric_attr->fabric = dom->fabric;
+    ret = fi_domain(dom->fabric, dom->finfo.info, &dom->domain, NULL);
+    if (ret < 0) {
+        dom->domain = NULL;
+	print_func_fi_err(callf, line, "fi_domain", "", ret);
+	goto done;
+    }
+    dom->finfo.info->domain_attr->domain = dom->domain;
+    if (dom->finfo.info->ep_attr->type == FI_EP_RDM) {
+        ret = fi_av_open(dom->domain, &av_attr, &dom->av, NULL);
+        if (ret < 0) {
+            dom->av = NULL;
+            print_func_fi_err(callf, line, "fi_av_open", "", ret);
+            goto done;
+        }
+        dom->av_head = dom->av_tail = _do_calloc(callf, line, 1,
+                                                 sizeof(*dom->av_head));
+        if (!dom->av_head) {
+            ret = -FI_ENOMEM;
+            goto done;
+        }
+    }
+
+ done:
+    return ret;
+}
+int _fab_dom_getinfo(const char *callf, uint line,
+                     const char *service, const char *node, bool passive,
+                     struct fab_dom *dom, struct fab_info *finfo)
+{
+    int                 ret;
+
+    ret = finfo_init(callf, line, service, node, passive, NULL, NULL, 0,
+                     dom->finfo.info, finfo);
+    if (ret < 0)
+        goto done;
+    ret = finfo_getinfo(callf, line, finfo);
 
  done:
     return ret;
@@ -393,20 +300,18 @@ int _fab_listener_setup(const char *callf, uint line, int backlog,
                         struct fab_conn *listener)
 {
     int                 ret;
+    struct fi_info      *info = fab_conn_info(listener);
     struct fi_eq_attr   eq_attr = { .wait_obj = FI_WAIT_UNSPEC };
 
-    ret = fab_list_fabric(callf, line, listener->info->fabric_attr,
-                          &listener->fabric, NULL);
-    if (ret < 0)
-        goto done;
-    ret = fi_eq_open(listener->fabric, &eq_attr, &listener->eq, NULL);
+    ret = fi_eq_open(listener->dom->fabric, &eq_attr, &listener->eq, NULL);
     if (ret < 0) {
+        listener->eq = NULL;
 	print_func_fi_err(callf, line, "fi_eq_open", "", ret);
 	goto done;
     }
-    ret = fi_passive_ep(listener->fabric, listener->info,
-                        &listener->pep, NULL);
+    ret = fi_passive_ep(listener->dom->fabric, info, &listener->pep, NULL);
     if (ret < 0) {
+        listener->pep = NULL;
 	print_func_fi_err(callf, line, "fi_passive_ep", "", ret);
         goto done;
     }
@@ -445,16 +350,7 @@ int _fab_listener_wait_and_accept(const char *callf, uint line,
     ret = _fab_eq_cm_event(callf, line, listener, timeout, FI_CONNREQ, &entry);
     if (ret < 0)
         goto done;
-    conn->info = entry.info;
-    /* Provider name may not be filled in, but we might want it, later. */
-    if (!conn->info->fabric_attr->prov_name)
-        conn->info->fabric_attr->prov_name =
-            _strdup_or_null(callf, line,
-                            listener->info->fabric_attr->prov_name);
-    ret = fab_list_domain(callf, line, listener->fabric, conn->info,
-                          &conn->domain, NULL);
-    if (ret < 0)
-	goto done;
+    conn->finfo.info = entry.info;
     ret = _fab_ep_setup(callf, line, conn, listener->eq, tx_size, rx_size);
     if (ret < 0)
         goto done;
@@ -470,7 +366,7 @@ int _fab_listener_wait_and_accept(const char *callf, uint line,
         goto done;
     if (!_expected_saw(callf, line, "CONN fid", (uintptr_t)&conn->ep->fid,
                        (uintptr_t)entry.fid))  {
-        ret = -EINVAL;
+        ret = -FI_EINVAL;
         goto done;
     }
 
@@ -482,26 +378,19 @@ int _fab_connect(const char *callf, uint line, int timeout,
                  size_t tx_size, size_t rx_size, struct fab_conn *conn)
 {
     int                 ret;
+    struct fi_info      *info = fab_conn_info(conn);
     struct fi_eq_attr   eq_attr = { .wait_obj = FI_WAIT_UNSPEC };
     struct fi_eq_cm_entry entry;
 
-    ret = fab_list_fabric(callf, line, conn->info->fabric_attr,
-                          &conn->fabric, NULL);
-    if (ret < 0)
-        goto done;
-    ret = fi_eq_open(conn->fabric, &eq_attr, &conn->eq, NULL);
+    ret = fi_eq_open(conn->dom->fabric, &eq_attr, &conn->eq, NULL);
     if (ret < 0) {
 	print_func_fi_err(callf, line, "fi_eq_open", "", ret);
 	goto done;
     }
-    ret = fab_list_domain(callf, line, conn->fabric, conn->info,
-                          &conn->domain, NULL);
-    if (ret < 0)
-	goto done;
     ret = _fab_ep_setup(callf, line, conn, conn->eq, tx_size, rx_size);
     if (ret < 0)
         goto done;
-    ret = fi_connect(conn->ep, conn->info->dest_addr, NULL, 0);
+    ret = fi_connect(conn->ep, info->dest_addr, NULL, 0);
     if (ret) {
 	print_func_fi_err(__FUNCTION__, __LINE__, "fi_connect", "", ret);
 	goto done;
@@ -512,7 +401,7 @@ int _fab_connect(const char *callf, uint line, int timeout,
         goto done;
     if (!_expected_saw(callf, line, "CONN fid", (uintptr_t)&conn->ep->fid,
                        (uintptr_t)entry.fid))  {
-        ret = -EINVAL;
+        ret = -FI_EINVAL;
         goto done;
     }
 
@@ -524,7 +413,8 @@ int _fab_ep_setup(const char *callf, uint line,
                   struct fab_conn *conn, struct fid_eq *eq,
                   size_t tx_size, size_t rx_size)
 {
-    int                 ret = -EEXIST;
+    int                 ret;
+    struct fi_info      *info = fab_conn_info(conn);
     struct fi_cq_attr   tx_cq_attr =  {
         .format = FI_CQ_FORMAT_CONTEXT,
         .wait_obj = FI_WAIT_NONE,
@@ -533,16 +423,15 @@ int _fab_ep_setup(const char *callf, uint line,
         .format = FI_CQ_FORMAT_CONTEXT,
         .wait_obj = FI_WAIT_NONE,
     };
-    struct fi_av_attr   av_attr = { .type = FI_AV_TABLE };
 
-    tx_size = (tx_size ?:conn->info->tx_attr->size);
-    conn->info->tx_attr->size = tx_size;
+    tx_size = (tx_size ?: info->tx_attr->size);
+    info->tx_attr->size = tx_size;
     tx_cq_attr.size = tx_size;
-    rx_size = (rx_size ?: conn->info->rx_attr->size);
-    conn->info->rx_attr->size = rx_size;
+    rx_size = (rx_size ?: info->rx_attr->size);
+    info->rx_attr->size = rx_size;
     rx_cq_attr.size = rx_size;
 
-    ret = fi_endpoint(conn->domain, conn->info, &conn->ep, NULL);
+    ret = fi_endpoint(conn->dom->domain, info, &conn->ep, NULL);
     if (ret < 0) {
 	print_func_fi_err(callf, line, "fi_endpoint", "", ret);
 	goto done;
@@ -554,7 +443,7 @@ int _fab_ep_setup(const char *callf, uint line,
             goto done;
         }
     }
-    ret = fi_cq_open(conn->domain, &tx_cq_attr, &conn->tx_cq, NULL);
+    ret = fi_cq_open(conn->dom->domain, &tx_cq_attr, &conn->tx_cq, NULL);
     if (ret < 0) {
         print_func_fi_err(callf, line, "fi_cq_open", "tx", ret);
         goto done;
@@ -564,7 +453,7 @@ int _fab_ep_setup(const char *callf, uint line,
         print_func_fi_err(callf, line, "fi_ep_bind", "tx_cq", ret);
         goto done;
     }
-    ret = fi_cq_open(conn->domain, &rx_cq_attr, &conn->rx_cq, NULL);
+    ret = fi_cq_open(conn->dom->domain, &rx_cq_attr, &conn->rx_cq, NULL);
     if (ret < 0) {
         print_func_fi_err(callf, line, "fi_cq_open", "rx", ret);
         goto done;
@@ -574,13 +463,8 @@ int _fab_ep_setup(const char *callf, uint line,
         print_func_fi_err(callf, line, "fi_ep_bind", "rx_cq", ret);
         goto done;
     }
-    if (conn->info->ep_attr->type == FI_EP_RDM) {
-        ret = fi_av_open(conn->domain, &av_attr, &conn->av, NULL);
-        if (ret < 0) {
-            print_func_fi_err(callf, line, "fi_av_open", "", ret);
-            goto done;
-        }
-        ret = fi_ep_bind(conn->ep, &conn->av->fid, 0);
+    if (info->ep_attr->type == FI_EP_RDM) {
+        ret = fi_ep_bind(conn->ep, &conn->dom->av->fid, 0);
         if (ret < 0) {
             print_func_fi_err(callf, line, "fi_ep_bind", "av", ret);
             goto done;
@@ -651,7 +535,7 @@ int _fab_mrmem_alloc(const char *callf, uint line,
 
     if (!access)
         access = (FI_READ | FI_WRITE | FI_REMOTE_READ | FI_REMOTE_WRITE);
-    ret = fi_mr_reg(conn->domain, mrmem->mem, len, access, 0, 0, 0,
+    ret = fi_mr_reg(conn->dom->domain, mrmem->mem, len, access, 0, 0, 0,
                     &mrmem->mr, NULL);
     if (ret < 0) {
         print_func_fi_err(callf, line, "fi_mr_reg", "", ret);
@@ -709,6 +593,8 @@ ssize_t _fab_completions(const char *callf, uint line,
             }
             continue;
         }
+        if (rc == -FI_EAGAIN)
+            break;
         if (rc != -FI_EAVAIL || !cq_update) {
             ret = rc;
             break;
@@ -722,16 +608,19 @@ ssize_t _fab_completions(const char *callf, uint line,
 
 void fab_print_info(struct fab_conn *conn)
 {
-    struct fab_conn     fab_conn;
+    int                 rc;
+    struct fab_dom      dom;
+    struct fab_info     finfo = { NULL };
     struct fi_info      *info;
 
+    fab_dom_init(&dom);
     if (conn)
-        info = conn->info;
+        info = fab_conn_info(conn);
     else {
-        fab_conn_init(NULL, &fab_conn);
-        (void)fab_getinfo(NULL, NULL, NULL, NULL, FI_EP_UNSPEC, false,
-                          &fab_conn);
-        info = fab_conn.info;
+        rc = finfo_getinfo(__FUNCTION__, __LINE__, &finfo);
+        if (rc < 0)
+            goto done;
+        info = finfo.info;
     }
 
     if (!conn && info)
@@ -746,33 +635,9 @@ void fab_print_info(struct fab_conn *conn)
             break;
     }
 
-    if (!conn)
-        fab_conn_free(&fab_conn);
-}
-
-int _fab_av_domain(const char *callf, uint line, const char *provider,
-                   const char *domain, struct fab_dom *dom)
-{
-    int                 ret;
-    struct fab_conn     *conn = &dom->fab_conn;
-
-    ret = _fab_getinfo(callf, line, NULL, NULL, provider, domain, FI_EP_RDM,
-                       false, conn);
-    if (ret < 0)
-        goto done;
-    ret = fab_list_fabric(callf, line, conn->info->fabric_attr,
-                          &conn->fabric, NULL);
-    if (ret < 0) {
-	print_func_fi_err(callf, line, "fi_fabric", "", ret);
-	goto done;
-    }
-    ret = fab_list_domain(callf, line, conn->fabric, conn->info,
-                          &conn->domain, NULL);
-    if (ret < 0)
-	goto done;
-
  done:
-    return ret;
+    if (!conn)
+        fab_finfo_free(&finfo);
 }
 
 int _fab_av_ep(const char *callf, uint line, struct fab_conn *conn,
@@ -903,10 +768,10 @@ static int xchg_retry(void *vargs)
     struct timespec     ts_cur;
 
     if (!args->timeout_ns)
-        return -ETIMEDOUT;
-    gettime(&ts_cur);
+        return -FI_ETIMEDOUT;
+    clock_gettime_monotonic(&ts_cur);
     if (ts_delta(&args->ts_beg, &ts_cur) >= args->timeout_ns)
-        return -ETIMEDOUT;
+        return -FI_ETIMEDOUT;
 
     /* Retry. */
     return 0;
@@ -928,7 +793,7 @@ int _fab_av_xchg(const char *callf, uint line, struct fab_conn *conn,
         retry = NULL;
     else {
         retry_args.timeout_ns = (uint64_t)timeout * 1000000;
-        gettime(&retry_args.ts_beg);
+        clock_gettime_monotonic(&retry_args.ts_beg);
     }
     ret = _fab_av_xchg_addr(callf, line, conn, sock_fd, &ep_addr);
     if (ret < 0)
@@ -956,8 +821,11 @@ int _fab_av_insert(const char *callf, uint line, struct fab_conn *conn,
                    union sockaddr_in46 *saddr, fi_addr_t *fi_addr)
 {
     int                 ret;
+    struct fab_dom      *dom = conn->dom;
+    struct fab_av_use   *use;
 
-    ret = fi_av_insert(conn->av, saddr, 1,  fi_addr, 0, NULL);
+    mutex_lock(&dom->av_mutex);
+    ret = fi_av_insert(dom->av, saddr, 1,  fi_addr, 0, NULL);
     if (ret < 0) {
 	print_func_fi_err(callf, line, "fi_av_insert", "", ret);
         goto done;
@@ -965,8 +833,24 @@ int _fab_av_insert(const char *callf, uint line, struct fab_conn *conn,
         ret = -FI_EINVAL;
         goto done;
     }
+    /* We really never expect more than one. */
+    for (use = dom->av_tail;
+         *fi_addr  > use->base + sizeof(use->use_count);
+         use = use->next) {
+        if (use->next)
+            continue;
+        use->next = _do_calloc(callf, line, 1, sizeof(*use));
+        if (!use->next) {
+            ret = -FI_ENOMEM;
+            goto done;
+        }
+        dom->av_tail = use->next;
+        use->next->base = use->base + sizeof(use->use_count);
+    }
+    use->use_count[*fi_addr - use->base]++;
 
  done:
+    mutex_unlock(&dom->av_mutex);
     if (ret < 0)
         *fi_addr = FI_ADDR_UNSPEC;
 
@@ -974,14 +858,28 @@ int _fab_av_insert(const char *callf, uint line, struct fab_conn *conn,
 }
 
 int _fab_av_remove(const char *callf, uint line, struct fab_conn *conn,
-                   fi_addr_t idx)
+                   fi_addr_t fi_addr)
 {
-    int                 ret;
+    int                 ret = -FI_EINVAL;
+    struct fab_dom      *dom = conn->dom;
+    struct fab_av_use   *use;
 
-    ret = fi_av_remove(conn->av, &idx, 1, 0);
+    mutex_lock(&dom->av_mutex);
+    for (use = dom->av_head;
+         use && fi_addr > use->base + sizeof(use->use_count);
+         use = use->next);
+    if (!use || use->use_count[fi_addr - use->base] <= 0)
+        goto done;
+    if (--(use->use_count[fi_addr - use->base]) > 0) {
+        ret = 0;
+        goto done;
+    }
+    ret = fi_av_remove(conn->dom->av, &fi_addr, 1, 0);
     if (ret < 0)
 	print_func_fi_err(callf, line, "fi_av_remove", "", ret);
 
+ done:
+    mutex_unlock(&dom->av_mutex);
     return ret;
 }
 
@@ -1005,6 +903,7 @@ int _fab_av_wait_send(const char *callf, uint line, struct fab_conn *conn,
 	print_func_fi_err(callf, line, "fi_tinject", "", ret);
         goto done;
     }
+    ret = 0;
 
  done:
 

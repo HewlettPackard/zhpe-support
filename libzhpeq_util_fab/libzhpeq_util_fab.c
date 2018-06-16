@@ -593,6 +593,8 @@ ssize_t _fab_completions(const char *callf, uint line,
             }
             continue;
         }
+        if (rc == -FI_EAGAIN)
+            break;
         if (rc != -FI_EAVAIL || !cq_update) {
             ret = rc;
             break;

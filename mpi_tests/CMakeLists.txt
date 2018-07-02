@@ -13,7 +13,7 @@ if (CMAKE_COMPILER_IS_GNUCC)
   add_compile_options(-g -Wall -Werror)
 endif (CMAKE_COMPILER_IS_GNUCC)
 
-include_directories(../include)
+include_directories(../include ../asic/include)
 
 if (MPID)
   set(MPI_C_COMPILER ${MPID}/bin/mpicc)

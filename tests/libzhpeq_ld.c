@@ -34,7 +34,7 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <zhpe.h>
+#include <zhpeq.h>
 #include <zhpeq_util.h>
 
 int main(int argc, char **argv)

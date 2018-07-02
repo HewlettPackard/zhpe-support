@@ -46,8 +46,10 @@
 
 #endif
 
+#include <zhpe_uapi.h>
+
 /* Do extern "C" without goofing up emacs. */
-#ifndef _EXTERN_C_BEG
+#ifndef _EXTERN_C_SET
 #define _EXTERN_C_SET
 #ifdef  __cplusplus
 #define _EXTERN_C_BEG extern "C" {
@@ -75,17 +77,17 @@ struct zhpeq_timing_counter {
 };
 
 struct zhpeq_timing_stamp {
-    uint64_t            time;
-    uint32_t		cpu;
-} __attribute__ ((packed));
+    struct zhpe_timing_stamp z;
+};
 
 #ifndef __KERNEL__
 
 extern struct zhpeq_timing_stamp zhpeq_timing_tx_start_stamp;
 extern struct zhpeq_timing_stamp zhpeq_timing_tx_ibv_post_send_stamp;
 
-static inline void zhpeq_timing_update_stamp(struct zhpeq_timing_stamp *stamp)
+static inline void zhpeq_timing_update_stamp(struct zhpeq_timing_stamp *qstamp)
 {
+    struct zhpe_timing_stamp *stamp = &qstamp->z;
     uint32_t		lo;
     uint32_t		hi;
     uint32_t		cpu;
@@ -107,9 +109,11 @@ zhpeq_timing_update_count(struct zhpeq_timing_counter *counter)
 
 static inline void
 zhpeq_timing_update(struct zhpeq_timing_timer *timer,
-                    struct zhpeq_timing_stamp *new,
-                    struct zhpeq_timing_stamp *old, uint flags)
+                    struct zhpeq_timing_stamp *qnew,
+                    struct zhpeq_timing_stamp *qold, uint flags)
 {
+    struct zhpe_timing_stamp *new = &qnew->z;
+    struct zhpe_timing_stamp *old = &qold->z;
     int64_t             delta;
     uint64_t            oldv;
     uint64_t            newv;
@@ -119,7 +123,7 @@ zhpeq_timing_update(struct zhpeq_timing_timer *timer,
         return;
     if (!new) {
         zhpeq_timing_update_stamp(&now);
-        new = &now;
+        new = &now.z;
     }
     delta = new->time - old->time;
     if (delta < 0)
@@ -254,111 +258,105 @@ ZHPEQ_TIMING_COUNTERS(ZHPEQ_TIMING_COUNTER_EXTERN)
 
 #define ZHPEQ_API_VERSION       (1)
 
-#define ZHPEQ_IMM_MAX           (32)
-#define ZHPEQ_ENQA_MAX          (52)
+#define ZHPEQ_MR_GET            ZHPE_MR_GET
+#define ZHPEQ_MR_PUT            ZHPE_MR_PUT
+#define ZHPEQ_MR_SEND           ZHPE_MR_PUT
+#define ZHPEQ_MR_RECV           ZHPE_MR_GET
+#define ZHPEQ_MR_GET_REMOTE     ZHPE_MR_GET_REMOTE
+#define ZHPEQ_MR_PUT_REMOTE     ZHPE_MR_PUT_REMOTE
+#define ZHPEQ_MR_KEY_ONESHOT    ZHPE_MR_KEY_ONESHOT
+#define ZHPEQ_MR_KEY_VALID      ZHPE_MR_KEY_VALID
 
-#define ZHPEQ_MR_GET            ((uint32_t)1 << 0)
-#define ZHPEQ_MR_PUT            ((uint32_t)1 << 1)
-#define ZHPEQ_MR_SEND           ZHPEQ_MR_PUT
-#define ZHPEQ_MR_RECV           ZHPEQ_MR_GET
-#define ZHPEQ_MR_GET_REMOTE     ((uint32_t)1 << 2)
-#define ZHPEQ_MR_PUT_REMOTE     ((uint32_t)1 << 3)
-#define ZHPEQ_MR_KEY_ONESHOT    ((uint32_t)1 << 7)
-#define ZHPEQ_MR_KEY_VALID      ((uint32_t)1 << 31)
-
-enum zhpeq_atomic_type {
-    ZHPEQ_ATOMIC_SIZE32         = 0x80,
-    ZHPEQ_ATOMIC_SIZE64
+enum zhpeq_atomic_size {
+    ZHPEQ_ATOMIC_SIZE32         = ZHPE_HW_ATOMIC_SIZE_32,
+    ZHPEQ_ATOMIC_SIZE64         = ZHPE_HW_ATOMIC_SIZE_64,
 };
 
 enum zhpeq_atomic_op {
-    ZHPEQ_ATOMIC_SWAP           = 0x01,
-    ZHPEQ_ATOMIC_ADD,
-    ZHPEQ_ATOMIC_AND,
-    ZHPEQ_ATOMIC_OR,
-    ZHPEQ_ATOMIC_XOR,
-    ZHPEQ_ATOMIC_SMIN,
-    ZHPEQ_ATOMIC_SMAX,
-    ZHPEQ_ATOMIC_UMIN,
-    ZHPEQ_ATOMIC_UMAX,
-    ZHPEQ_ATOMIC_CAS,
+    ZHPEQ_ATOMIC_SWAP           = ZHPE_HW_OPCODE_ATM_SWAP,
+    ZHPEQ_ATOMIC_ADD            = ZHPE_HW_OPCODE_ATM_ADD,
+    ZHPEQ_ATOMIC_AND            = ZHPE_HW_OPCODE_ATM_AND,
+    ZHPEQ_ATOMIC_OR             = ZHPE_HW_OPCODE_ATM_OR,
+    ZHPEQ_ATOMIC_XOR            = ZHPE_HW_OPCODE_ATM_XOR,
+    ZHPEQ_ATOMIC_SMIN           = ZHPE_HW_OPCODE_ATM_SMIN,
+    ZHPEQ_ATOMIC_SMAX           = ZHPE_HW_OPCODE_ATM_SMAX,
+    ZHPEQ_ATOMIC_UMIN           = ZHPE_HW_OPCODE_ATM_UMIN,
+    ZHPEQ_ATOMIC_UMAX           = ZHPE_HW_OPCODE_ATM_UMAX,
+    ZHPEQ_ATOMIC_CAS            = ZHPE_HW_OPCODE_ATM_CAS,
 };
 
 union zhpeq_atomic {
-    int32_t             s32;
-    int64_t             s64;
-    uint32_t            u32;
-    uint64_t            u64;
+    union zhpe_atomic   z;
 };
 
-enum {
-    ZHPEQ_CQ_STATUS_SUCCESS              = 0x00,
-    ZHPEQ_CQ_STATUS_CMD_TRUNCATED        = 0x01,
-    ZHPEQ_CQ_STATUS_BAD_CMD              = 0x02,
-    ZHPEQ_CQ_STATUS_LOCAL_UNRECOVERABLE  = 0x11,
-    ZHPEQ_CQ_STATUS_FABRIC_UNRECOVERABLE = 0x21,
-    ZHPEQ_CQ_STATUS_FABRIC_NO_RESOURCES  = 0x22,
-    ZHPEQ_CQ_STATUS_FABRIC_ACCESS        = 0x23,
-};
+#define ZHPEQ_CQ_STATUS_SUCCESS ZHPE_HW_CQ_STATUS_SUCCESS
+#define ZHPEQ_CQ_STATUS_CMD_TRUNCATED \
+    ZHPE_HW_CQ_STATUS_TRUNCATED
+#define ZHPEQ_CQ_STATUS_BAD_CMD ZHPE_HW_CQ_STATUS_BAD_CMD
+#define ZHPEQ_CQ_STATUS_LOCAL_UNRECOVERABLE \
+    ZHPE_HW_CQ_STATUS_LOCAL_UNRECOVERABLE
+#define ZHPEQ_CQ_STATUS_FABRIC_UNRECOVERABLE \
+    ZHPE_HW_CQ_STATUS_FABRIC_UNRECOVERABLE
+#define ZHPEQ_CQ_STATUS_FABRIC_NO_RESOURCES \
+    ZHPE_HW_CQ_STATUS_FABRIC_NO_RESOURCES
+#define ZHPEQ_CQ_STATUS_FABRIC_ACCESS \
+    ZHPE_HW_CQ_STATUS_FABRIC_ACCESS
 
-struct zhpeq_result {
-    char                data[ZHPEQ_IMM_MAX];
-};
-
-struct zhpeq_cq_entry {
-    uint8_t             valid;
-    uint8_t             status;
-    uint16_t            index;
-    uint8_t             filler1[4];
-    void                *context;
-    struct zhpeq_timing_stamp timestamp;
-    uint8_t             filler2[4];
-    struct zhpeq_result result;
-};
-
-enum zhpeq_backend {
-    ZHPEQ_BACKEND_ZHPE = 1,
-    ZHPEQ_BACKEND_LIBFABRIC,
-    ZHPEQ_BACKEND_MAX,
-};
+#define ZHPEQ_BACKEND_ZHPE      ZHPE_BACKEND_ZHPE
+#define ZHPEQ_BACKEND_LIBFABRIC ZHPE_BACKEND_LIBFABRIC
+#define ZHPEQ_BACKEND_MAX       ZHPE_BACKEND_MAX
 
 struct zhpeq_backend_libfabric_params {
-    enum zhpeq_backend  backend;
+    int                 backend;
     const char          *provider_name;
     const char          *domain_name;
 };
 
 union zhpeq_backend_params {
-    enum zhpeq_backend  backend;
+    int                 backend;
     struct zhpeq_backend_libfabric_params libfabric;
 };
 
 struct zhpeq_attr {
-    enum zhpeq_backend  backend;
-    uint32_t            max_tx_queues;
-    uint32_t            max_rx_queues;
-    uint32_t            max_hw_qlen;
-    uint32_t            max_sw_qlen;
-    uint64_t            max_dma_len;
+    struct zhpe_attr    z;
 };
 
 struct zhpeq_key_data {
-    uint64_t            vaddr;
-    uint64_t            zaddr;
-    uint64_t            len;
-    uint64_t            key;
-    uint8_t             access;
+    struct zhpe_key_data z;
+};
+
+struct zhpeq_cq_entry {
+    struct zhpe_cq_entry z;
+};
+
+#define ZHPEQ_MR_V1             (1U)
+#define ZHPEQ_MR_REMOTE         ((uint32_t)1 << 31)
+
+struct zhpeq_mr_desc_common_hdr {
+    uint32_t            magic;
+    uint32_t            version;
+};
+
+struct zhpeq_mr_desc_v1 {
+    struct zhpeq_mr_desc_common_hdr hdr;
+    struct zhpeq_key_data qkdata;
+};
+
+union zhpeq_mr_desc {
+    struct zhpeq_mr_desc_common_hdr hdr;
+    struct zhpeq_mr_desc_v1 v1;
 };
 
 /* Forward references to shut the compiler up. */
 struct zhpeq;
 struct zhpeq_dom;
 
-static inline int zhpeq_rem_key_access(struct zhpeq_key_data *kdata,
+static inline int zhpeq_rem_key_access(struct zhpeq_key_data *qkdata,
                                        uint64_t start, uint64_t len,
                                        uint64_t access, uint64_t *zaddr)
 {
     int                 ret = 0;
+    struct zhpe_key_data *kdata = &qkdata->z;
 
     if (kdata &&
         start >= kdata->vaddr && start + len <= kdata->vaddr + kdata->len &&
@@ -370,14 +368,14 @@ static inline int zhpeq_rem_key_access(struct zhpeq_key_data *kdata,
     return ret;
 }
 
-static inline int zhpeq_lcl_key_access(struct zhpeq_key_data *kdata,
+static inline int zhpeq_lcl_key_access(struct zhpeq_key_data *qkdata,
                                        void *buf, uint64_t len,
                                        uint64_t access, uint64_t *zaddr)
 {
-    return zhpeq_rem_key_access(kdata, (uintptr_t)buf, len, access, zaddr);
+    return zhpeq_rem_key_access(qkdata, (uintptr_t)buf, len, access, zaddr);
 }
 
-int zhpeq_register_backend(enum zhpeq_backend backend, void *ops);
+int zhpeq_register_backend(int backend, void *ops);
 
 int zhpeq_init(int api_version);
 
@@ -400,19 +398,19 @@ ssize_t zhpeq_cq_read(struct zhpeq *zq, struct zhpeq_cq_entry *entries,
                       size_t n_entries);
 
 int zhpeq_mr_reg(struct zhpeq_dom *zdom, const void *buf, size_t len,
-                     uint32_t access, uint64_t requested_key,
-                     struct zhpeq_key_data **kdata_out);
+                 uint32_t access, uint64_t requested_key,
+                 struct zhpeq_key_data **qkdata_out);
 
-int zhpeq_mr_free(struct zhpeq_dom *zdom, struct zhpeq_key_data *kdata);
+int zhpeq_mr_free(struct zhpeq_dom *zdom, struct zhpeq_key_data *qkdata);
 
-int zhpeq_zmmu_export(struct zhpeq *zq, const struct zhpeq_key_data *kdata,
+int zhpeq_zmmu_export(struct zhpeq *zq, const struct zhpeq_key_data *qkdata,
                       void **blob_out, size_t *blob_len);
 
 int zhpeq_zmmu_import(struct zhpeq *zq, int open_idx,
                       const void *blob, size_t blob_len,
                       struct zhpeq_key_data **kdata_out);
 
-int zhpeq_zmmu_free(struct zhpeq *zq, struct zhpeq_key_data *kdata);
+int zhpeq_zmmu_free(struct zhpeq *zq, struct zhpeq_key_data *qkdata);
 
 int64_t zhpeq_reserve(struct zhpeq *zq, uint32_t n_entries);
 
@@ -441,7 +439,7 @@ int zhpeq_nop(struct zhpeq *zq, uint32_t qindex, bool fence,
               void *context);
 
 int zhpeq_atomic(struct zhpeq *zq, uint32_t qindex, bool fence, bool retval,
-                 enum zhpeq_atomic_type datatype, enum zhpeq_atomic_op op,
+                 enum zhpeq_atomic_size datasize, enum zhpeq_atomic_op op,
                  uint64_t remote_addr, const union zhpeq_atomic *operands,
                  void *context);
 
@@ -453,7 +451,7 @@ _EXTERN_C_END
 
 #ifdef _EXTERN_C_SET
 #undef _EXTERN_C_SET
-#undef _EXTERN_C_BEGIN
+#undef _EXTERN_C_BEG
 #undef _EXTERN_C_END
 #endif
 

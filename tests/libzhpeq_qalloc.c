@@ -53,7 +53,7 @@ static void usage(bool help)
         "         specified, qlen will be selected randomly and [-s]"
         " allows\n"
         "         specifying a seed for random().\n",
-        appname, attr.max_tx_queues, attr.max_hw_qlen);
+        appname, attr.z.max_tx_queues, attr.z.max_hw_qlen);
 
     exit(255);
 }
@@ -126,7 +126,7 @@ int main(int argc, char **argv)
 
     if (parse_kb_uint64_t(__FUNCTION__, __LINE__, "queues",
                           argv[optind++], &u64, 0,
-                          1, attr.max_tx_queues, 0) < 0)
+                          1, attr.z.max_tx_queues, 0) < 0)
         usage(false);
 
     queues = u64;
@@ -134,7 +134,7 @@ int main(int argc, char **argv)
     if (argc > 1) {
         if (parse_kb_uint64_t(__FUNCTION__, __LINE__, "qlen",
                               argv[optind++], &u64, 0,
-                              2, attr.max_hw_qlen, 0) < 0)
+                              2, attr.z.max_hw_qlen, 0) < 0)
             usage(false);
         qlen = u64;
     }
@@ -168,7 +168,7 @@ int main(int argc, char **argv)
         i = shuffle[h];
         if (zq[i])
             print_err("%s,%u:random_array() broken\n", __FUNCTION__, __LINE__);
-        req = (qlen ?: random_range(2, attr.max_hw_qlen));
+        req = (qlen ?: random_range(2, attr.z.max_hw_qlen));
         rc = zhpeq_alloc(zdom, req, &zq[i]);
         if (rc < 0) {
             print_func_errn(__FUNCTION__, __LINE__, "zhpeq_alloc", qlen, false,
@@ -186,12 +186,12 @@ int main(int argc, char **argv)
             goto done;
         }
         check_off = page_size - sizeof(ulong);
-        if (attr.backend != ZHPEQ_BACKEND_ZHPE
-            && check_off >= sizeof(*zq[i]->reg)) {
-            check_val = *(ulong *)((void *)zq[i]->reg + check_off);
-            if (!expected_saw("regs", 0, check_val))
+        if (attr.z.backend != ZHPEQ_BACKEND_ZHPE
+            && check_off >= sizeof(*zq[i]->qcm)) {
+            check_val = *(ulong *)((void *)zq[i]->qcm + check_off);
+            if (!expected_saw("qcm", 0, check_val))
                 goto done;
-            *(ulong *)((void *)zq[i]->reg + check_off) =
+            *(ulong *)((void *)zq[i]->qcm + check_off) =
                 zq[i]->info.reg_off + check_off;
         }
         for (check_off = page_size - sizeof(ulong);
@@ -211,10 +211,10 @@ int main(int argc, char **argv)
     }
     for (i = 0; i < queues; i++) {
         check_off = page_size - sizeof(ulong);
-        if (attr.backend != ZHPEQ_BACKEND_ZHPE
-            && check_off >= sizeof(*zq[i]->reg)) {
-            check_val = *(ulong *)((void *)zq[i]->reg + check_off);
-            if (!expected_saw("regs", zq[i]->info.reg_off + check_off,
+        if (attr.z.backend != ZHPEQ_BACKEND_ZHPE
+            && check_off >= sizeof(*zq[i]->qcm)) {
+            check_val = *(ulong *)((void *)zq[i]->qcm + check_off);
+            if (!expected_saw("qcm", zq[i]->info.reg_off + check_off,
                               check_val))
                 goto done;
         }
@@ -241,9 +241,9 @@ int main(int argc, char **argv)
         if (!zq[i])
             continue;
         check_off = page_size - sizeof(ulong);
-        if (attr.backend != ZHPEQ_BACKEND_ZHPE
-            && check_off >= sizeof(*zq[i]->reg)) {
-            check_val = *(ulong *)((void *)zq[i]->reg + check_off);
+        if (attr.z.backend != ZHPEQ_BACKEND_ZHPE
+            && check_off >= sizeof(*zq[i]->qcm)) {
+            check_val = *(ulong *)((void *)zq[i]->qcm + check_off);
             if (!expected_saw("regs", zq[i]->info.reg_off + check_off,
                               check_val))
                 goto done;

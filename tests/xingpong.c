@@ -295,7 +295,7 @@ static inline int zq_completions(struct zhpeq *zq)
         goto done;
     }
     for (i = 0; i < ret; i++) {
-        if (zq_comp[i].status != ZHPEQ_CQ_STATUS_SUCCESS) {
+        if (zq_comp[i].z.status != ZHPEQ_CQ_STATUS_SUCCESS) {
             print_err("%s,%u:I/O error\n", __FUNCTION__, __LINE__);
             ret = -EIO;
             break;
@@ -762,7 +762,7 @@ int do_zq_setup(struct stuff *conn)
     ret = -EINVAL;
     conn->tx_avail = args->tx_avail;
     if (conn->tx_avail) {
-        if (conn->tx_avail > zq_attr.max_hw_qlen)
+        if (conn->tx_avail > zq_attr.z.max_hw_qlen)
             goto done;
     } else
         conn->tx_avail = ZQ_LEN;

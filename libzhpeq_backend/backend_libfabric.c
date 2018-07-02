@@ -74,10 +74,12 @@ struct key_data_packed {
     uint8_t             access;
 } __attribute__((packed));
 
-static inline void pack_kdata(const struct zhpeq_key_data *kdata,
+static inline void pack_kdata(const struct zhpeq_key_data *qkdata,
                               struct key_data_packed *pdata,
                               uint64_t backend_key)
 {
+    const struct zhpe_key_data *kdata = &qkdata->z;
+
     pdata->key = be64toh(kdata->key);
     pdata->vaddr = be64toh(kdata->vaddr);
     pdata->zaddr = be64toh(backend_key);
@@ -86,8 +88,10 @@ static inline void pack_kdata(const struct zhpeq_key_data *kdata,
 }
 
 static inline void unpack_kdata(const struct key_data_packed *pdata,
-                                struct zhpeq_key_data *kdata)
+                                struct zhpeq_key_data *qkdata)
 {
+    struct zhpe_key_data *kdata = &qkdata->z;
+
     kdata->key = htobe64(pdata->key);
     kdata->vaddr = htobe64(pdata->vaddr);
     kdata->zaddr = htobe64(pdata->zaddr);
@@ -107,7 +111,7 @@ struct rkey {
 
 struct context {
     struct fi_context2  opaque;
-    struct zhpeq_result *result;
+    struct zhpe_result  *result;
     ZHPEQ_TIMING_CODE(struct zhpeq_timing_stamp timestamp);
     uint16_t            cmp_index;
     uint8_t             result_len;
@@ -178,7 +182,7 @@ struct stuff {
     struct rkey         *rkey;
     struct context      *context;
     struct context      *context_free;
-    struct zhpeq_result *results;
+    struct zhpe_result  *results;
     struct fid_mr       *results_mr;
     void                *results_desc;
     uint64_t            tx_queued;
@@ -651,7 +655,6 @@ static int lfab_close(struct zhpeq *zq, int open_idx)
 
 static inline void cq_write(struct zhpeq *zq, void *vcontext, int status)
 {
-    struct zhpe_hw_reg *reg = zq->reg;
     struct stuff        *conn = zq->backend_data;
     struct context      *context = vcontext;
     uint32_t            qmask = zq->info.qlen - 1;
@@ -669,7 +672,8 @@ static inline void cq_write(struct zhpeq *zq, void *vcontext, int status)
     /* The following two events can be seen out of order: don't care. */
     cqe->entry.valid = cq_valid(conn->cq_tail, qmask);
     conn->cq_tail++;
-    reg->cq_tail  = (conn->cq_tail & qmask);
+    iowrite64(conn->cq_tail & qmask,
+              zq->qcm + ZHPE_XDM_QCM_CMPL_QUEUE_TAIL_TOGGLE_OFFSET);
     /* Place context on free list. */
     context->opaque.internal[0] = conn->context_free;
     conn->context_free = context;
@@ -692,7 +696,6 @@ static void cq_update(void *arg, void *vcqe, bool err)
 static void lfab_zq(struct stuff *conn)
 {
     struct zhpeq        *zq = conn->zq;
-    struct zhpe_hw_reg  *reg = zq->reg;
     struct fab_conn     *fab_conn = &conn->fab_conn;
     struct zdom_data    *bdom = zq->zdom->backend_data;
     struct fid_mr       **lcl_mr = bdom->lcl_mr;
@@ -709,10 +712,10 @@ static void lfab_zq(struct stuff *conn)
     char                *sendbuf;
     ZHPEQ_TIMING_CODE(struct zhpeq_timing_stamp lfabt_new);
 
-    wq_head = reg->wq_head;
+    wq_head = ioread64(zq->qcm + ZHPE_XDM_QCM_CMD_QUEUE_HEAD_OFFSET) & qmask;
     smp_rmb();
-    for (wq_tail = reg->wq_tail;
-         (context = conn->context_free) && wq_head != wq_tail;
+    wq_tail = ioread64(zq->qcm + ZHPE_XDM_QCM_CMD_QUEUE_TAIL_OFFSET) & qmask;
+    for (; (context = conn->context_free) && wq_head != wq_tail;
          wq_head = (wq_head + 1) & qmask) {
 
         /* We never expect to timestamp a fence. */
@@ -933,7 +936,7 @@ static void lfab_zq(struct stuff *conn)
         if (rc == -FI_EAGAIN)
             break;
     }
-    reg->wq_head = wq_head;
+    iowrite64(wq_head, zq->qcm + ZHPE_XDM_QCM_CMD_QUEUE_HEAD_OFFSET);
     /* Get completions. */
     rc = fab_completions(fab_conn->tx_cq, 0, cq_update, zq);
     if (rc < 0)
@@ -1075,12 +1078,12 @@ static void free_lcl_mr(struct zdom_data *bdom, uint32_t index)
 
 static int lfab_mr_reg(struct zhpeq_dom *zdom,
                        const void *buf, size_t len,
-                       uint32_t access, struct zhpeq_key_data **kdata_out)
+                       uint32_t access, struct zhpeq_key_data **qkdata_out)
 {
     int                 ret = -ENOMEM;
     struct zdom_data    *bdom = zdom->backend_data;
     struct fab_dom      *fab_dom = &bdom->fab_dom;
-    struct zhpe_mr_desc_v1 *desc = NULL;
+    struct zhpeq_mr_desc_v1 *desc = NULL;
     uint64_t            fi_access = 0;
     struct fid_mr       *mr = NULL;
     union free_index    old;
@@ -1118,14 +1121,14 @@ static int lfab_mr_reg(struct zhpeq_dom *zdom,
     }
     bdom->lcl_mr[index] = mr;
     desc->hdr.magic = ZHPE_MAGIC;
-    desc->hdr.version = ZHPE_MR_V1;
-    desc->kdata.vaddr = (uintptr_t)buf;
-    desc->kdata.len = len;
-    desc->kdata.zaddr = (((uint64_t)index << KEY_SHIFT) +
-                         TO_ADDR(desc->kdata.vaddr));
-    desc->kdata.access = access;
-    desc->kdata.key = fi_mr_key(mr);
-    *kdata_out = &desc->kdata;
+    desc->hdr.version = ZHPEQ_MR_V1;
+    desc->qkdata.z.vaddr = (uintptr_t)buf;
+    desc->qkdata.z.len = len;
+    desc->qkdata.z.zaddr = (((uint64_t)index << KEY_SHIFT) +
+                            TO_ADDR(desc->qkdata.z.vaddr));
+    desc->qkdata.z.access = access;
+    desc->qkdata.z.key = fi_mr_key(mr);
+    *qkdata_out = &desc->qkdata;
 
     ret = 0;
 
@@ -1139,15 +1142,16 @@ static int lfab_mr_reg(struct zhpeq_dom *zdom,
     return ret;
 }
 
-static int lfab_mr_free(struct zhpeq_dom *zdom, struct zhpeq_key_data *kdata)
+static int lfab_mr_free(struct zhpeq_dom *zdom, struct zhpeq_key_data *qkdata)
 {
     int                 ret = -EINVAL;
     struct zdom_data    *bdom = zdom->backend_data;
-    struct zhpe_mr_desc_v1 *desc = container_of(kdata, struct zhpe_mr_desc_v1,
-                                                kdata);
-    uint32_t            index = TO_KEYIDX(kdata->zaddr);
+    struct zhpeq_mr_desc_v1 *desc = container_of(qkdata,
+                                                 struct zhpeq_mr_desc_v1,
+                                                 qkdata);
+    uint32_t            index = TO_KEYIDX(qkdata->z.zaddr);
 
-    if (desc->hdr.magic != ZHPE_MAGIC || desc->hdr.version != ZHPE_MR_V1)
+    if (desc->hdr.magic != ZHPE_MAGIC || desc->hdr.version != ZHPEQ_MR_V1)
         goto done;
 
     ret = fi_close(&bdom->lcl_mr[index]->fid);
@@ -1178,12 +1182,12 @@ static void free_conn_rkey(struct stuff *conn, uint32_t index)
 
 static int lfab_zmmu_import(struct zhpeq *zq, int open_idx,
                             const void *blob, size_t blob_len,
-                            struct zhpeq_key_data **kdata_out)
+                            struct zhpeq_key_data **qkdata_out)
 {
     int                 ret = -EINVAL;
     struct stuff        *conn = zq->backend_data;
     const struct key_data_packed *pdata = blob;
-    struct zhpe_mr_desc_v1 *desc = NULL;
+    struct zhpeq_mr_desc_v1 *desc = NULL;
     union free_index    old;
     union free_index    new;
 
@@ -1195,8 +1199,8 @@ static int lfab_zmmu_import(struct zhpeq *zq, int open_idx,
     if (!desc)
         goto done;
     desc->hdr.magic = ZHPE_MAGIC;
-    desc->hdr.version = ZHPE_MR_V1 | ZHPE_MR_REMOTE;
-    unpack_kdata(pdata, &desc->kdata);
+    desc->hdr.version = ZHPEQ_MR_V1 | ZHPEQ_MR_REMOTE;
+    unpack_kdata(pdata, &desc->qkdata);
 
     ret = -ENOSPC;
     for (old.blob = conn->rkey_free.blob;;) {
@@ -1210,11 +1214,11 @@ static int lfab_zmmu_import(struct zhpeq *zq, int open_idx,
             break;
         old.blob = new.blob;
     }
-    conn->rkey[old.index].rkey = desc->kdata.zaddr;
+    conn->rkey[old.index].rkey = desc->qkdata.z.zaddr;
     conn->rkey[old.index].av_idx = open_idx;
-    desc->kdata.zaddr = (((uint64_t)old.index << KEY_SHIFT) +
-                         TO_ADDR(desc->kdata.vaddr));
-    *kdata_out = &desc->kdata;
+    desc->qkdata.z.zaddr = (((uint64_t)old.index << KEY_SHIFT) +
+                            TO_ADDR(desc->qkdata.z.vaddr));
+    *qkdata_out = &desc->qkdata;
 
     ret = 0;
 
@@ -1225,16 +1229,17 @@ static int lfab_zmmu_import(struct zhpeq *zq, int open_idx,
     return ret;
 }
 
-static int lfab_zmmu_free(struct zhpeq *zq, struct zhpeq_key_data *kdata)
+static int lfab_zmmu_free(struct zhpeq *zq, struct zhpeq_key_data *qkdata)
 {
     int                 ret = -EINVAL;
     struct stuff        *conn = zq->backend_data;
-    struct zhpe_mr_desc_v1 *desc = container_of(kdata, struct zhpe_mr_desc_v1,
-                                                kdata);
-    uint32_t            index = TO_KEYIDX(kdata->zaddr);
+    struct zhpeq_mr_desc_v1 *desc = container_of(qkdata,
+                                                 struct zhpeq_mr_desc_v1,
+                                                 qkdata);
+    uint32_t            index = TO_KEYIDX(qkdata->z.zaddr);
 
     if (desc->hdr.magic != ZHPE_MAGIC ||
-        desc->hdr.version != (ZHPE_MR_V1 | ZHPE_MR_REMOTE))
+        desc->hdr.version != (ZHPEQ_MR_V1 | ZHPEQ_MR_REMOTE))
         goto done;
 
     free_conn_rkey(conn, index);
@@ -1246,16 +1251,17 @@ static int lfab_zmmu_free(struct zhpeq *zq, struct zhpeq_key_data *kdata)
 }
 
 static int lfab_zmmu_export(struct zhpeq *zq,
-                            const struct zhpeq_key_data *kdata,
+                            const struct zhpeq_key_data *qkdata,
                             void **blob_out, size_t *blob_len)
 {
     int                 ret = -EINVAL;
     struct zdom_data    *bdom = zq->zdom->backend_data;
-    struct zhpe_mr_desc_v1 *desc = container_of(kdata, struct zhpe_mr_desc_v1,
-                                                kdata);
+    struct zhpeq_mr_desc_v1 *desc = container_of(qkdata,
+                                                 struct zhpeq_mr_desc_v1,
+                                                 qkdata);
     struct key_data_packed *blob = NULL;
 
-    if (desc->hdr.magic != ZHPE_MAGIC || desc->hdr.version != ZHPE_MR_V1)
+    if (desc->hdr.magic != ZHPE_MAGIC || desc->hdr.version != ZHPEQ_MR_V1)
         goto done;
 
     ret = -ENOMEM;
@@ -1264,8 +1270,8 @@ static int lfab_zmmu_export(struct zhpeq *zq,
     if (!blob)
         goto done;
 
-    pack_kdata(&desc->kdata, blob,
-               fi_mr_key(bdom->lcl_mr[TO_KEYIDX(kdata->zaddr)]));
+    pack_kdata(&desc->qkdata, blob,
+               fi_mr_key(bdom->lcl_mr[TO_KEYIDX(qkdata->z.zaddr)]));
     *blob_out = blob;
 
     ret = 0;

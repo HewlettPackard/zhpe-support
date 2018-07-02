@@ -39,15 +39,31 @@
 
 #define _GNU_SOURCE
 
+#include <zhpeq.h>
 #include <zhpeq_util.h>
 #include <zhpe.h>
 
 #include <assert.h>
+#include <endian.h>
 #include <pthread.h>
 
 #include <arpa/inet.h>
 
 #include <sys/mman.h>
+
+/* Do extern "C" without goofing up emacs. */
+#ifndef _EXTERN_C_SET
+#define _EXTERN_C_SET
+#ifdef  __cplusplus
+#define _EXTERN_C_BEG extern "C" {
+#define _EXTERN_C_END }
+#else
+#define _EXTERN_C_BEG
+#define _EXTERN_C_END
+#endif
+#endif
+
+_EXTERN_C_BEG
 
 typedef size_t __attribute__ ((aligned(64))) cache_size_t;
 
@@ -96,7 +112,7 @@ struct zhpeq {
     struct zhpeq_dom    *zdom;
     uint                debug_flags;
     struct zhpe_info    info;
-    struct zhpe_hw_reg  *reg;
+    volatile void       *qcm;
     union zhpe_hw_wq_entry *wq;
     union zhpe_hw_cq_entry *cq;
     void                **context;
@@ -117,5 +133,39 @@ extern struct backend_ops libfabric_ops;
 
 #define likely(x)		__builtin_expect((x), 1)
 #define unlikely(x)		__builtin_expect((x), 0)
+
+static inline uint64_t ioread64(volatile void *addr)
+{
+    return le64toh(*(volatile uint64_t *)addr);
+}
+
+static inline void iowrite64(uint64_t value, volatile void *addr)
+{
+    *(volatile uint64_t *)addr = htole64(value);
+}
+
+/* FIXME: probably works for now, but ditch bit fields. */
+union xdm_cmp_tail {
+    struct zhpe_xdm_cmpl_queue_tail_toggle bits;
+    uint64_t            u64;
+};
+
+union xdm_active {
+    struct zhpe_xdm_active_status_error bits;
+    uint64_t            u64;
+};
+
+union rdm_rcv_tail {
+    struct zhpe_rdm_rcv_queue_tail_toggle bits;
+    uint64_t            u64;
+};
+
+_EXTERN_C_END
+
+#ifdef _EXTERN_C_SET
+#undef _EXTERN_C_SET
+#undef _EXTERN_C_BEG
+#undef _EXTERN_C_END
+#endif
 
 #endif /* _LIBZHPEQ_INTERNAL_H */

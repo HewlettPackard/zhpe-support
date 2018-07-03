@@ -168,8 +168,14 @@ NOTE: Builds in the zhpe-support tree currently install automatically into ${TES
 ## Test libfabric RDMA APIs:  ringpong
 ringpong is very similar to xingpong, except that it uses the libfabric APIs
 instead of the libzhpeq APIs to do the data transfers. Replace the command
-in above example with "ringpong" and use "-p zhpe" to exercise the libfabric
+in above example with "ringpong", use "-r" to specify RDM endpoints, and use "-p zhpe" to exercise the libfabric
 zhpe provider.
+
+#### 1. Start the server on the hostname1 (running the server in the backgroun)
+	$ ${TEST_DIR}/libexec/ringpong 2222  &
+    
+#### 2. Start a client and point it at the server (hostname1 in the example below):
+	$ ${TEST_DIR}/libexec/ringpong -o -r -p sockets 2222 hostname1 1 1 1
 
 ## Running OpenMPI over zhpe-libfabric (Using the right options.)
 OpenMPI will try multiple providers automatically and getting it to

@@ -132,7 +132,7 @@ int main(int argc, char **argv)
 
     ret = 1;
 
-    rc = zhpeq_domain_alloc(NULL, &zdom);
+    rc = zhpeq_domain_alloc(&zdom);
     if (rc < 0) {
         print_func_err(__FUNCTION__, __LINE__, "zhpeq_domain_alloc", "", rc);
         goto done;

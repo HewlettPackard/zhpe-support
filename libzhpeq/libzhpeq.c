@@ -45,8 +45,11 @@
 static int              dev_fd = -1;
 static const char       *dev_name = "/dev/" DRIVER_NAME;
 
-static struct backend_ops *b_reg[ZHPEQ_BACKEND_MAX];
 static struct backend_ops *b_ops;
+static enum zhpeq_backend b_type;
+
+uuid_t                  zhpeq_uuid;
+
 
 static struct zhpe_shared_data *shared_data;
 
@@ -269,7 +272,7 @@ static inline void zhpeq_timing_commit(struct zhpeq *zq, uint32_t qindex,
 
 /* For the moment, we will do all driver I/O synchronously.*/
 
-int zhpe_driver_cmd(union zhpe_op *op, size_t req_len, size_t rsp_len)
+int zhpeq_driver_cmd(union zhpe_op *op, size_t req_len, size_t rsp_len)
 {
     int                 ret = 0;
     int                 opcode = op->hdr.opcode;
@@ -361,23 +364,29 @@ static void __attribute__((constructor)) lib_init(void)
     }
 }
 
-int zhpeq_register_backend(int backend, void *ops)
+void zhpeq_register_backend(enum zhpe_backend backend, struct backend_ops *ops)
 {
-    int                 ret = 0;
-
+    /* The libfabric backend wins, because it will only register
+     * if an environment variable is set.
+     */
     switch (backend) {
 
     case ZHPEQ_BACKEND_ZHPE:
+        if (!b_ops) {
+            b_ops = ops;
+            b_type = backend;
+        }
+        break;
+
     case ZHPEQ_BACKEND_LIBFABRIC:
-        b_reg[backend] = ops;
+        b_ops = ops;
+        b_type = backend;
         break;
 
     default:
-        ret = -EINVAL;
+        print_err("Unexpected backed %d\n", backend);
         break;
     }
-
-    return ret;
 }
 
 int zhpeq_init(int api_version)
@@ -413,7 +422,7 @@ int zhpeq_init(int api_version)
         goto done;
 
     req->hdr.opcode = ZHPE_OP_INIT;
-    ret = zhpe_driver_cmd(&op, sizeof(req->init), sizeof(rsp->init));
+    ret = zhpeq_driver_cmd(&op, sizeof(req->init), sizeof(rsp->init));
     if (ret < 0)
         goto done;
 
@@ -427,6 +436,7 @@ int zhpeq_init(int api_version)
     if (!expected_saw("shared_version", ZHPE_SHARED_VERSION,
                       shared_data->version))
         goto done;
+    memcpy(zhpeq_uuid, rsp->init.uuid, sizeof(zhpeq_uuid));
 
     check_off = rsp->init.shared_size - sizeof(ulong);
     if (check_off >= sizeof(*shared_data)) {
@@ -435,26 +445,12 @@ int zhpeq_init(int api_version)
         if (!expected_saw("shared_check_last", check_off, check_val))
             goto done;
     }
+    ret = 0;
+    if (b_ops->lib_init)
+        ret = b_ops->lib_init();
 
-    switch (shared_data->default_attr.backend) {
-
-    case ZHPEQ_BACKEND_LIBFABRIC:
-        b_ops = b_reg[shared_data->default_attr.backend];
-        if (b_ops)
-            break;
-        /* FALLTHROUGH */
-
-    default:
-        print_err("%s,%u:Unsupported backend %d\n",
-                  __FUNCTION__, __LINE__, shared_data->default_attr.backend);
-        goto done;
-    }
-
-    ret = b_ops->lib_init();
-    if (ret < 0)
-        goto done;
  done:
-    init_status = (ret <= 0 ? ret : 0);
+    init_status = (ret < 0 ? ret : 0);
 
     return ret;
 }
@@ -467,6 +463,7 @@ int zhpeq_query_attr(struct zhpeq_attr *attr)
     if (!attr)
         goto done;
 
+    attr->backend = b_type;
     attr->z = shared_data->default_attr;
     ret = 0;
 
@@ -477,20 +474,21 @@ int zhpeq_query_attr(struct zhpeq_attr *attr)
 
 int zhpeq_domain_free(struct zhpeq_dom *zdom)
 {
-    int                 ret = 0;
+    int                 ret = -EINVAL;
 
     if (!zdom)
         goto done;
 
-    ret = b_ops->domain_free(zdom);
+    ret = 0;
+    if (b_ops->domain_free)
+        ret = b_ops->domain_free(zdom);
     free(zdom);
 
  done:
     return ret;
 }
 
-int zhpeq_domain_alloc(const union zhpeq_backend_params *params,
-                       struct zhpeq_dom **zdom_out)
+int zhpeq_domain_alloc(struct zhpeq_dom **zdom_out)
 {
     int                 ret = -EINVAL;
     struct zhpeq_dom    *zdom = NULL;
@@ -498,17 +496,16 @@ int zhpeq_domain_alloc(const union zhpeq_backend_params *params,
     if (!zdom_out)
         goto done;
     *zdom_out = NULL;
-    if (params &&
-        !expected_saw("params->backend", shared_data->default_attr.backend,
-                      params->backend))
-        goto done;
 
     ret = -ENOMEM;
     zdom = do_calloc(1, sizeof(*zdom));
     if (!zdom)
         goto done;
 
-    ret = b_ops->domain(params, zdom);
+    ret = 0;
+    if (b_ops->domain)
+        ret = b_ops->domain(zdom);
+
  done:
     if (ret >= 0)
         *zdom_out = zdom;
@@ -520,11 +517,8 @@ int zhpeq_domain_alloc(const union zhpeq_backend_params *params,
 
 int zhpeq_free(struct zhpeq *zq)
 {
-    int                 ret = 0;
+    int                 ret = -EINVAL;
     int                 rc;
-    union zhpe_op       op;
-    union zhpe_req      *req = &op.req;
-    union zhpe_rsp      *rsp = &op.rsp;
     union xdm_active    active;
 
     if (!zq)
@@ -538,33 +532,27 @@ int zhpeq_free(struct zhpeq *zq)
             break;
         sched_yield();
     }
-    /* Stop threads and cleanup the backend. */
+    if (b_ops->qfree_pre)
+        rc = b_ops->qfree_pre(zq);
+
+    ret = 0;
+    /* Unmap qcm, wq, and cq. */
+    rc = zhpe_munmap((void *)zq->qcm, zq->xqinfo.qcm.size);
+    if (ret >= 0 && rc < 0)
+        ret = rc;
+    rc = zhpe_munmap(zq->wq, zq->xqinfo.cmdq.size);
+    if (ret >= 0 && rc < 0)
+        ret = rc;
+    rc = zhpe_munmap(zq->cq, zq->xqinfo.cmplq.size);
+    if (ret >= 0 && rc < 0)
+        ret = rc;
+    /* Call the driver to free the queue. */
     rc = b_ops->qfree(zq);
     if (ret >= 0 && rc < 0)
         ret = rc;
-
-    /* Unmap registers, wq, and cq. */
-    rc = zhpe_munmap((void *)zq->qcm, zq->info.rsize);
-    if (ret >= 0 && rc < 0)
-        ret = rc;
-    rc = zhpe_munmap(zq->wq, zq->info.qsize);
-    if (ret >= 0 && rc < 0)
-        ret = rc;
-    rc = zhpe_munmap(zq->cq, zq->info.qsize);
-    if (ret >= 0 && rc < 0)
-        ret = rc;
-
-    /* Call the kernel to free the resources. */
-    if (zq->info.qlen) {
-        req->hdr.opcode = ZHPE_OP_QFREE;
-        req->qfree.info = zq->info;
-        rc = zhpe_driver_cmd(&op, sizeof(req->qfree), sizeof(rsp->qfree));
-        if (ret >= 0 && rc < 0)
-            ret = rc;
-    }
     if (zq->tail_lock_init)
         spin_destroy(&zq->tail_lock);
-
+    /* Free queue memory. */
     do_free(zq->context);
     do_free(zq);
 
@@ -572,13 +560,12 @@ int zhpeq_free(struct zhpeq *zq)
     return ret;
 }
 
-int zhpeq_alloc(struct zhpeq_dom *zdom, int qlen, struct zhpeq **zq_out)
+int zhpeq_alloc(struct zhpeq_dom *zdom, int cmd_qlen, int cmp_qlen,
+                int traffic_class, int priority, int slice_mask,
+                struct zhpeq **zq_out)
 {
     int                 ret = -EINVAL;
     struct zhpeq        *zq = NULL;
-    union zhpe_op       op;
-    union zhpe_req      *req = &op.req;
-    union zhpe_rsp      *rsp = &op.rsp;
     union xdm_cmp_tail  tail = {
         .bits.toggle_valid = 1,
     };
@@ -586,7 +573,14 @@ int zhpeq_alloc(struct zhpeq_dom *zdom, int qlen, struct zhpeq **zq_out)
     if (!zq_out)
         goto done;
     *zq_out = NULL;
-    if (!zdom || qlen < 1 || qlen > shared_data->default_attr.max_hw_qlen)
+    if (!zdom ||
+        cmd_qlen < 2 ||
+        cmd_qlen > shared_data->default_attr.max_hw_qlen ||
+        cmp_qlen < 2 ||
+        cmp_qlen > shared_data->default_attr.max_hw_qlen ||
+        traffic_class < 0 || traffic_class > ZHPEQ_TC_MAX ||
+        priority < 0 || priority > ZHPEQ_PRI_MAX ||
+        (slice_mask & ~(ALL_SLICES | SLICE_DEMAND)))
         goto done;
 
     ret = -ENOMEM;
@@ -598,34 +592,33 @@ int zhpeq_alloc(struct zhpeq_dom *zdom, int qlen, struct zhpeq **zq_out)
     spin_init(&zq->tail_lock, PTHREAD_PROCESS_PRIVATE);
     zq->tail_lock_init = true;
 
-    req->hdr.opcode = ZHPE_OP_QALLOC;
-    req->qalloc.qlen = qlen;
-    ret = zhpe_driver_cmd(&op, sizeof(req->qalloc), sizeof(rsp->qalloc));
+    ret = b_ops->qalloc(zq, cmd_qlen, cmp_qlen, traffic_class,
+                        priority, slice_mask);
     if (ret < 0)
         goto done;
-    zq->info = rsp->qalloc.info;
 
-    zq->context = calloc(zq->info.qlen, sizeof(*zq->context));
+    zq->context = calloc(zq->xqinfo.cmdq.ent, sizeof(*zq->context));
     if (!zq->context)
         goto done;
 
     /* Map registers, wq, and cq. */
-    zq->qcm = zhpe_mmap(zq->info.rsize, PROT_READ | PROT_WRITE,
-                        zq->info.reg_off, &ret);
+    zq->qcm = zhpe_mmap(zq->xqinfo.qcm.size, PROT_READ | PROT_WRITE,
+                        zq->xqinfo.qcm.off, &ret);
     if (!zq->qcm)
         goto done;
-    zq->wq = zhpe_mmap(zq->info.qsize, PROT_READ | PROT_WRITE,
-                       zq->info.wq_off, &ret);
+    zq->wq = zhpe_mmap(zq->xqinfo.cmdq.size, PROT_READ | PROT_WRITE,
+                       zq->xqinfo.cmdq.off, &ret);
     if (!zq->wq)
         goto done;
-    zq->cq = zhpe_mmap(zq->info.qsize, PROT_READ | PROT_WRITE,
-                       zq->info.cq_off, &ret);
+    zq->cq = zhpe_mmap(zq->xqinfo.cmplq.size, PROT_READ | PROT_WRITE,
+                       zq->xqinfo.cmplq.off, &ret);
     if (!zq->cq)
         goto done;
-
-    ret = b_ops->qalloc(zdom, zq);
-    if (ret < 0)
-        goto done;
+    if (b_ops->qalloc_post) {
+        ret = b_ops->qalloc_post(zq);
+        if (ret < 0)
+            goto done;
+    }
 
     /* Initialize completion tail to zero and set toggle bit. */
     iowrite64(tail.u64, zq->qcm + ZHPE_XDM_QCM_CMPL_QUEUE_TAIL_TOGGLE_OFFSET);
@@ -634,7 +627,7 @@ int zhpeq_alloc(struct zhpeq_dom *zdom, int qlen, struct zhpeq **zq_out)
     iowrite64(0, zq->qcm + ZHPE_XDM_QCM_CMD_QUEUE_TAIL_OFFSET);
     /* Start the queue. */
     iowrite64(0, zq->qcm + ZHPE_XDM_QCM_STOP_OFFSET);
-
+    ret = 0;
  done:
     if (ret >= 0)
         *zq_out = zq;
@@ -648,8 +641,13 @@ int zhpeq_backend_open(struct zhpeq *zq, int sock_fd)
 {
     int                 ret = -EINVAL;
 
-    if (zq)
+    if (!zq)
+        goto done;
+
+    ret = 0;
+    if (b_ops->open)
         ret = b_ops->open(zq, sock_fd);
+ done:
 
     return ret;
 }
@@ -658,8 +656,13 @@ int zhpeq_backend_close(struct zhpeq *zq, int open_idx)
 {
     int                 ret = -EINVAL;
 
-    if (zq)
+    if (!zq)
+        goto done;
+
+    ret = 0;
+    if (b_ops->close)
         ret = b_ops->close(zq, open_idx);
+ done:
 
     return ret;
 }
@@ -667,9 +670,12 @@ int zhpeq_backend_close(struct zhpeq *zq, int open_idx)
 int64_t zhpeq_reserve(struct zhpeq *zq, uint32_t n_entries)
 {
     int64_t             ret = -EINVAL;
-    uint32_t            qmask = zq->info.qlen - 1;
+    uint32_t            qmask;
     uint32_t            avail;
 
+    if (!zq)
+        goto done;
+    qmask = zq->xqinfo.cmdq.ent - 1;
     if (!zq || n_entries < 1 || n_entries > qmask)
         goto done;
 
@@ -678,7 +684,7 @@ int64_t zhpeq_reserve(struct zhpeq *zq, uint32_t n_entries)
      */
     ret = 0;
     spin_lock(&zq->tail_lock);
-    avail = zq->info.qlen - ((zq->tail_reserved - zq->q_head) & qmask) -  1;
+    avail = qmask - ((zq->tail_reserved - zq->q_head) & qmask);
     if (avail >= n_entries) {
         ret = zq->tail_reserved;
         zq->tail_reserved += n_entries;
@@ -694,12 +700,13 @@ int64_t zhpeq_reserve(struct zhpeq *zq, uint32_t n_entries)
 int zhpeq_commit(struct zhpeq *zq, uint32_t qindex, uint32_t n_entries)
 {
     int                 ret = -EINVAL;
-    uint32_t            qmask = zq->info.qlen - 1;
     bool                set = false;
+    uint32_t            qmask;
 
     if (!zq)
         goto done;
 
+    qmask = zq->xqinfo.cmdq.ent - 1;
     /* We need a lock to guarantee writes to tail register are ordered. */
     ret = -EAGAIN;
     for (;;) {
@@ -721,6 +728,9 @@ int zhpeq_commit(struct zhpeq *zq, uint32_t qindex, uint32_t n_entries)
         /* FIXME: Yes? No? */
         sched_yield();
     }
+    ZHPEQ_TIMING_UPDATE(&zhpeq_timing_tx_commit, NULL,
+                        &zhpeq_timing_stamps[ZHPEQ_TIMING_START],
+                        ZHPEQ_TIMING_UPDATE_OLD_CPU);
 
  done:
     return ret;
@@ -737,7 +747,7 @@ int zhpeq_nop(struct zhpeq *zq, uint32_t qindex, bool fence,
     if (!context)
         goto done;
 
-    qindex = qindex & (zq->info.qlen - 1);
+    qindex = qindex & (zq->xqinfo.cmdq.ent - 1);
     zq->context[qindex] = context;
     wqe = zq->wq + qindex;
     zhpeq_timing_nop(wqe);
@@ -765,7 +775,7 @@ static inline int zhpeq_rw(struct zhpeq *zq, uint32_t qindex, bool fence,
     if (len > shared_data->default_attr.max_dma_len)
         goto done;
 
-    qindex = qindex & (zq->info.qlen - 1);
+    qindex = qindex & (zq->xqinfo.cmdq.ent - 1);
     zq->context[qindex] = context;
     wqe = zq->wq + qindex;
     zhpeq_timing_dma(wqe);
@@ -804,7 +814,7 @@ int zhpeq_puti(struct zhpeq *zq, uint32_t qindex, bool fence,
     if (!buf || !len || len > sizeof(wqe->imm.data))
         goto done;
 
-    qindex = qindex & (zq->info.qlen - 1);
+    qindex = qindex & (zq->xqinfo.cmdq.ent - 1);
     zq->context[qindex] = context;
     wqe = zq->wq + qindex;
     zhpeq_timing_imm(wqe);
@@ -843,7 +853,7 @@ int zhpeq_geti(struct zhpeq *zq, uint32_t qindex, bool fence,
     if (!len || len > sizeof(wqe->imm.data))
         goto done;
 
-    qindex = qindex & (zq->info.qlen - 1);
+    qindex = qindex & (zq->xqinfo.cmdq.ent - 1);
     zq->context[qindex] = context;
     wqe = zq->wq + qindex;
     zhpeq_timing_imm(wqe);
@@ -875,7 +885,7 @@ int zhpeq_atomic(struct zhpeq *zq, uint32_t qindex, bool fence, bool retval,
     if (!operands)
         goto done;
 
-    qindex = qindex & (zq->info.qlen - 1);
+    qindex = qindex & (zq->xqinfo.cmdq.ent - 1);
     zq->context[qindex] = context;
     wqe = zq->wq + qindex;
     zhpeq_timing_atm(wqe);
@@ -891,6 +901,11 @@ int zhpeq_atomic(struct zhpeq *zq, uint32_t qindex, bool fence, bool retval,
     case ZHPEQ_ATOMIC_CAS:
         wqe->hdr.opcode |= ZHPE_HW_OPCODE_ATM_CAS;
         n_operands = 2;
+        break;
+
+    case ZHPEQ_ATOMIC_SWAP:
+        wqe->hdr.opcode |= ZHPE_HW_OPCODE_ATM_SWAP;
+        n_operands = 1;
         break;
 
     default:
@@ -959,24 +974,27 @@ int zhpeq_mr_free(struct zhpeq_dom *zdom, struct zhpeq_key_data *qkdata)
     return ret;
 }
 
-int zhpeq_zmmu_import(struct zhpeq *zq, int open_idx, const void *blob,
-                      size_t blob_len, struct zhpeq_key_data **qkdata_out)
+int zhpeq_zmmu_import(struct zhpeq_dom *zdom, int open_idx, const void *blob,
+                      size_t blob_len, bool cpu_visible,
+                      struct zhpeq_key_data **qkdata_out)
 {
     int                 ret = -EINVAL;
 
     if (!qkdata_out)
         goto done;
     *qkdata_out = NULL;
-    if (!zq || !blob)
+    if (!zdom || !blob)
         goto done;
 
-    ret = b_ops->zmmu_import(zq, open_idx, blob, blob_len, qkdata_out);
+    ret = b_ops->zmmu_import(zdom, open_idx, blob, blob_len, cpu_visible,
+                             qkdata_out);
 
  done:
     return ret;
 }
 
-int zhpeq_zmmu_export(struct zhpeq *zq, const struct zhpeq_key_data *qkdata,
+int zhpeq_zmmu_export(struct zhpeq_dom *zdom,
+                      const struct zhpeq_key_data *qkdata,
                       void **blob_out, size_t *blob_len)
 {
     int                 ret = -EINVAL;
@@ -984,26 +1002,26 @@ int zhpeq_zmmu_export(struct zhpeq *zq, const struct zhpeq_key_data *qkdata,
     if (!blob_out)
         goto done;
     *blob_out = NULL;
-    if (!zq || !qkdata || !blob_len)
+    if (!zdom || !qkdata || !blob_len)
         goto done;
 
-    ret = b_ops->zmmu_export(zq, qkdata, blob_out, blob_len);
+    ret = b_ops->zmmu_export(zdom, qkdata, blob_out, blob_len);
 
  done:
     return ret;
 }
 
-int zhpeq_zmmu_free(struct zhpeq *zq, struct zhpeq_key_data *qkdata)
+int zhpeq_zmmu_free(struct zhpeq_dom *zdom, struct zhpeq_key_data *qkdata)
 {
     int                 ret = 0;
 
     if (!qkdata)
         goto done;
     ret = -EINVAL;
-    if (!zq)
+    if (!zdom)
         goto done;
 
-    ret = b_ops->zmmu_free(zq, qkdata);
+    ret = b_ops->zmmu_free(zdom, qkdata);
 
  done:
     return ret;
@@ -1026,7 +1044,7 @@ ssize_t zhpeq_cq_read(struct zhpeq *zq, struct zhpeq_cq_entry *entries,
     /* This is currently not thread safe for multiple readers on a single zq;
      * I don't see a use for it, at the moment.
      */
-    qmask = zq->info.qlen - 1;
+    qmask = zq->xqinfo.cmplq.ent - 1;
 
     /* Lets try to optimize our read-barriers. */
     for (i = 0; i < n_entries;) {

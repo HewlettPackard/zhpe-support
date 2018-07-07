@@ -38,5 +38,6 @@
 
 static void __attribute__((constructor)) lib_init(void)
 {
-    zhpeq_register_backend(ZHPEQ_BACKEND_LIBFABRIC, &libfabric_ops);
+    zhpeq_backend_libfabric_init();
+    zhpeq_backend_zhpe_init();
 }

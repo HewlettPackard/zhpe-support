@@ -220,13 +220,13 @@ int _fab_av_xchg(const char *callf, uint line, struct fab_conn *conn,
 #define fab_av_xchg(...) \
     _fab_av_xchg(__FUNCTION__, __LINE__, __VA_ARGS__)
 
-int _fab_av_insert(const char *callf, uint line, struct fab_conn *conn,
+int _fab_av_insert(const char *callf, uint line, struct fab_dom *dom,
                    union sockaddr_in46 *saddr, fi_addr_t *fi_addr);
 
 #define fab_av_insert(...) \
     _fab_av_insert(__FUNCTION__, __LINE__, __VA_ARGS__)
 
-int _fab_av_remove(const char *callf, uint line, struct fab_conn *conn,
+int _fab_av_remove(const char *callf, uint line, struct fab_dom *dom,
                    fi_addr_t fi_addr);
 
 #define fab_av_remove(...) \

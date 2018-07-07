@@ -90,7 +90,6 @@ enum {
 STAILQ_HEAD(rx_queue_head, rx_queue);
 
 struct args {
-    union zhpeq_backend_params zq_params;
     const char          *node;
     const char          *service;
     uint64_t            ring_entry_len;
@@ -143,7 +142,7 @@ static void stuff_free(struct stuff *stuff)
         return;
 
     if (stuff->zq) {
-        zhpeq_zmmu_free(stuff->zq, stuff->zq_remote_kdata);
+        zhpeq_zmmu_free(stuff->zdom, stuff->zq_remote_kdata);
         zhpeq_mr_free(stuff->zdom, stuff->zq_local_kdata);
     }
     zhpeq_free(stuff->zq);
@@ -188,8 +187,7 @@ static int do_mem_setup(struct stuff *conn)
 
     ret = zhpeq_mr_reg(conn->zdom, conn->tx_addr, req,
                        (ZHPEQ_MR_GET | ZHPEQ_MR_PUT |
-                        ZHPEQ_MR_GET_REMOTE | ZHPEQ_MR_PUT_REMOTE |
-                        ZHPEQ_MR_KEY_VALID),
+                        ZHPEQ_MR_GET_REMOTE | ZHPEQ_MR_PUT_REMOTE),
                        0, &conn->zq_local_kdata);
     if (ret < 0) {
         print_func_err(__FUNCTION__, __LINE__, "zhpeq_mr_regattr", "", ret);
@@ -237,7 +235,7 @@ static int do_mem_xchg(struct stuff *conn)
     struct mem_wire_msg mem_msg;
     size_t              zq_blob_len;
 
-    ret = zhpeq_zmmu_export(conn->zq, conn->zq_local_kdata, &zq_blob,
+    ret = zhpeq_zmmu_export(conn->zdom, conn->zq_local_kdata, &zq_blob,
                             &zq_blob_len);
     if (ret < 0) {
         print_func_err(__FUNCTION__, __LINE__, "zhpeq_zmmu_export", "", ret);
@@ -261,8 +259,8 @@ static int do_mem_xchg(struct stuff *conn)
 
     mem_msg.zq_remote_rx_addr = be64toh(mem_msg.zq_remote_rx_addr);
 
-    ret = zhpeq_zmmu_import(conn->zq, conn->open_idx, zq_blob, zq_blob_len,
-                            &conn->zq_remote_kdata);
+    ret = zhpeq_zmmu_import(conn->zdom, conn->open_idx, zq_blob, zq_blob_len,
+                            false, &conn->zq_remote_kdata);
     if (ret < 0) {
         print_func_err(__FUNCTION__, __LINE__, "zhpeq_zmmu_import", "", ret);
         goto done;
@@ -768,13 +766,14 @@ int do_zq_setup(struct stuff *conn)
         conn->tx_avail = ZQ_LEN;
 
     /* Allocate domain. */
-    ret = zhpeq_domain_alloc(&args->zq_params, &conn->zdom);
+    ret = zhpeq_domain_alloc(&conn->zdom);
     if (ret < 0) {
         print_func_err(__FUNCTION__, __LINE__, "zhpeq_domain_alloc", "", ret);
         goto done;
     }
     /* Allocate zqueue. */
-    ret = zhpeq_alloc(conn->zdom, conn->tx_avail + 1, &conn->zq);
+    ret = zhpeq_alloc(conn->zdom, conn->tx_avail + 1, conn->tx_avail + 1,
+                      0, 0, 0,  &conn->zq);
     if (ret < 0) {
         print_func_err(__FUNCTION__, __LINE__, "zhpeq_qalloc", "", ret);
         goto done;
@@ -808,21 +807,11 @@ static int do_server_one(const struct args *oargs, int conn_fd)
     };
     struct cli_wire_msg cli_msg;
     struct svr_wire_msg svr_msg;
-    char                *s;
 
     /* Let's take a moment to get the client parameters over the socket. */
     ret = sock_recv_fixed_blob(conn.sock_fd, &cli_msg, sizeof(cli_msg));
     if (ret < 0)
         goto done;
-    ret = sock_recv_string(conn.sock_fd, &s);
-    if (ret < 0)
-        goto done;
-    args->zq_params.libfabric.provider_name = s;
-    ret = sock_recv_string(conn.sock_fd, &s);
-    if (ret < 0)
-        goto done;
-    args->zq_params.libfabric.domain_name = s;
-
 
     args->ring_entry_len = be64toh(cli_msg.ring_entry_len);
     args->ring_entries = be64toh(cli_msg.ring_entries);
@@ -848,8 +837,6 @@ static int do_server_one(const struct args *oargs, int conn_fd)
 
  done:
     stuff_free(&conn);
-    free((void *)args->zq_params.libfabric.provider_name);
-    free((void *)args->zq_params.libfabric.domain_name);
 
     if (ret >= 0)
         ret = (cli_msg.once_mode ? 1 : 0);
@@ -940,14 +927,6 @@ static int do_client(const struct args *args)
     ret = sock_send_blob(conn.sock_fd, &cli_msg, sizeof(cli_msg));
     if (ret < 0)
         goto done;
-    ret = sock_send_string(conn.sock_fd,
-                           args->zq_params.libfabric.provider_name);
-    if (ret < 0)
-        goto done;
-    ret = sock_send_string(conn.sock_fd,
-                           args->zq_params.libfabric.domain_name);
-    if (ret < 0)
-        goto done;
 
     /* Dummy message for ordering. */
     ret = sock_recv_fixed_blob(conn.sock_fd, &svr_msg, sizeof(svr_msg));
@@ -999,12 +978,13 @@ static void usage(bool help)
         "Client only options:\n"
         " -a : cache line align entries\n"
         " -c : copy mode\n"
-        " -d <domain> : domain/device to bind to (eg. mlx5_0)\n"
         " -o : run once and then server will exit\n"
-        " -p <provider> : provider to use\n"
         " -s : treat the final argument as seconds\n"
         " -t <txqlen> : length of tx request queue\n"
-        " -u : uni-directional client-to-server traffic (no copy)\n",
+        " -u : uni-directional client-to-server traffic (no copy)\n"
+        "Uses ASIC backend unless environment variable\n"
+        "ZHPE_BACKEND_LIBFABRIC_PROV is set.\n"
+        "ZHPE_BACKEND_LIBFABRIC_DOM can be used to set a specific domain\n",
         appname);
 
     if (help)
@@ -1016,9 +996,7 @@ static void usage(bool help)
 int main(int argc, char **argv)
 {
     int                 ret = 1;
-    struct args         args = {
-        .zq_params.backend = ZHPEQ_BACKEND_LIBFABRIC,
-    };
+    struct args         args = { NULL };
     bool                client_opt = false;
     int                 opt;
     int                 rc;
@@ -1034,7 +1012,7 @@ int main(int argc, char **argv)
     if (argc == 1)
         usage(true);
 
-    while ((opt = getopt(argc, argv, "acd:op:st:u")) != -1) {
+    while ((opt = getopt(argc, argv, "acost:u")) != -1) {
 
         /* All opts are client only, now. */
         client_opt = true;
@@ -1053,22 +1031,10 @@ int main(int argc, char **argv)
             args.copy_mode = true;
             break;
 
-        case 'd':
-            if (args.zq_params.libfabric.domain_name)
-                usage(false);
-            args.zq_params.libfabric.domain_name = optarg;
-            break;
-
         case 'o':
             if (args.once_mode)
                 usage(false);
             args.once_mode = true;
-            break;
-
-        case 'p':
-            if (args.zq_params.libfabric.provider_name)
-                usage(false);
-            args.zq_params.libfabric.provider_name = optarg;
             break;
 
         case 's':

@@ -999,7 +999,10 @@ static void usage(bool help)
         " -r : use RDM endpoints\n"
         " -s : treat the final argument as seconds\n"
         " -t <txqlen> : length of tx request queue\n"
-        " -u : uni-directional client-to-server traffic (no copy)\n",
+        " -u : uni-directional client-to-server traffic (no copy)\n"
+        "If provider is zhpe, uses ASIC backend unless environment variable\n"
+        "ZHPE_BACKEND_LIBFABRIC_PROV is set.\n"
+        "ZHPE_BACKEND_LIBFABRIC_DOM can be used to set a specific domain\n",
         appname);
 
     if (help) {

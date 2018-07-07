@@ -663,6 +663,21 @@ void *_do_malloc(const char *callf, uint line, size_t size)
     return ret;
 }
 
+void *_do_realloc(const char *callf, uint line, void *ptr, size_t size)
+{
+    void                *ret = realloc(ptr, size);
+    int                 save_err;
+
+    if (!ret) {
+        save_err = errno;
+        print_err("%s,%u:Failed to allocate %Lu bytes\n",
+                  callf, line, (ullong)size);
+        errno = save_err;
+    }
+
+    return ret;
+}
+
 void *_do_calloc(const char *callf, uint line, size_t nmemb, size_t size)
 {
     void                *ret = calloc(nmemb, size);

@@ -54,10 +54,20 @@
 #define TO_KEYIDX(_addr) ((_addr) >> KEY_SHIFT)
 #define TO_ADDR(_addr)  ((_addr) & KEY_MASK_ADDR)
 
+static const char       *backend_prov = NULL;
+static const char       *backend_dom = NULL;
+
+struct rkey {
+    uint64_t            rkey;
+    uint64_t            av_idx;
+};
+
 struct zdom_data {
     struct fab_dom      fab_dom;
     struct fid_mr       **lcl_mr;
     union free_index    lcl_mr_free;
+    struct rkey         *rkey;
+    union free_index    rkey_free;
 };
 
 enum engine_state {
@@ -66,48 +76,10 @@ enum engine_state {
     ENGINE_HALTING,
 };
 
-struct key_data_packed {
-    uint64_t            key;
-    uint64_t            vaddr;
-    uint64_t            zaddr;
-    uint64_t            len;
-    uint8_t             access;
-} __attribute__((packed));
-
-static inline void pack_kdata(const struct zhpeq_key_data *qkdata,
-                              struct key_data_packed *pdata,
-                              uint64_t backend_key)
-{
-    const struct zhpe_key_data *kdata = &qkdata->z;
-
-    pdata->key = be64toh(kdata->key);
-    pdata->vaddr = be64toh(kdata->vaddr);
-    pdata->zaddr = be64toh(backend_key);
-    pdata->len = be64toh(kdata->len);
-    pdata->access = kdata->access;
-}
-
-static inline void unpack_kdata(const struct key_data_packed *pdata,
-                                struct zhpeq_key_data *qkdata)
-{
-    struct zhpe_key_data *kdata = &qkdata->z;
-
-    kdata->key = htobe64(pdata->key);
-    kdata->vaddr = htobe64(pdata->vaddr);
-    kdata->zaddr = htobe64(pdata->zaddr);
-    kdata->len = htobe64(pdata->len);
-    kdata->access = pdata->access;
-}
-
 /*
  * The sockets provider gets annoyed if you delete the listener before
  * deleting all the sockets derived from it. Seems stupid.
  */
-
-struct rkey {
-    uint64_t            rkey;
-    uint64_t            av_idx;
-};
 
 struct context {
     struct fi_context2  opaque;
@@ -178,8 +150,6 @@ struct stuff {
     struct stailq_head  work_list;
     struct circleq_entry lentry;
     struct fab_conn     fab_conn;
-    union free_index    rkey_free;
-    struct rkey         *rkey;
     struct context      *context;
     struct context      *context_free;
     struct zhpe_result  *results;
@@ -297,6 +267,7 @@ static int conn_eng_add(struct lfab_work *work)
     return 0;
 }
 
+#if 0
 static int retry_none(void *args)
 {
     /* No retry, will be returned to av_wait caller. */
@@ -360,6 +331,7 @@ static int conn_av_insert(struct lfab_work *work)
 
     return 1;
 }
+#endif
 
 static inline void eng_signal(struct engine *eng, bool locked)
 {
@@ -410,7 +382,7 @@ static int stuff_free(struct stuff *stuff)
     fab_conn_free(&stuff->fab_conn);
 
     if (stuff->allocated)
-        free(stuff);
+        do_free(stuff);
 
  done:
     return ret;
@@ -424,28 +396,21 @@ static int lfab_domain_free(struct zhpeq_dom *zdom)
     if (!bdom)
         goto done;
 
-    free(bdom->lcl_mr);
+    do_free(bdom->lcl_mr);
+    do_free(bdom->rkey);
     fab_dom_free(&bdom->fab_dom);
-    free(bdom);
+    do_free(bdom);
     zdom->backend_data = NULL;
 
  done:
     return ret;
 }
 
-static int lfab_domain(const union zhpeq_backend_params *params,
-                       struct zhpeq_dom *zdom)
+static int lfab_domain(struct zhpeq_dom *zdom)
 {
     int                 ret = -ENOMEM;
-    const char          *provider = NULL;
-    const char          *domain = NULL;
     struct zdom_data    *bdom;
     size_t              i;
-
-    if (params) {
-        provider = params->libfabric.provider_name;
-        domain = params->libfabric.domain_name;
-    }
 
     bdom = zdom->backend_data = do_calloc(1, sizeof(*bdom));
     if (!bdom)
@@ -458,8 +423,15 @@ static int lfab_domain(const union zhpeq_backend_params *params,
     for (i = 0; i < KEYTAB_SIZE - 1; i++)
         bdom->lcl_mr[i] = TO_PTR(((i + 1) << 1) | 1);
     bdom->lcl_mr[i] = TO_PTR(-1);
+    bdom->rkey = do_calloc(KEYTAB_SIZE, sizeof(*bdom->rkey));
+    if (!bdom->rkey)
+        goto done;
+    bdom->rkey_free.index = 0;
+    for (i = 0; i < KEYTAB_SIZE - 1; i++)
+        bdom->rkey[i].rkey = i + 1;
+    bdom->rkey[i].rkey = FI_KEY_NOTAVAIL;
 
-    ret = fab_dom_setup(NULL, NULL, false, provider, domain, FI_EP_RDM,
+    ret = fab_dom_setup(NULL, NULL, false, backend_prov, backend_dom, FI_EP_RDM,
                         &bdom->fab_dom);
 
  done:
@@ -471,19 +443,11 @@ static struct stuff *stuff_alloc(struct fab_dom *dom)
 {
     struct stuff        *ret = NULL;
     int                 err = 0;
-    size_t              req;
-    size_t              i;
 
-    req = sizeof(*ret) + sizeof(*ret->rkey) * KEYTAB_SIZE;
-    ret = do_calloc(1, req);
+    ret = do_calloc(1, sizeof(*ret));
     if (!ret)
         goto done;
     ret->allocated = true;
-    ret->rkey = (void *)ret + sizeof(*ret);
-    ret->rkey_free.index = 0;
-    for (i = 0; i < KEYTAB_SIZE - 1; i++)
-        ret->rkey[i].rkey = i + 1;
-    ret->rkey[i].rkey = FI_KEY_NOTAVAIL;
     fab_conn_init(dom, &ret->fab_conn);
 
     ret->msg.msg_iov = &ret->msg_iov;
@@ -511,9 +475,40 @@ static struct stuff *stuff_alloc(struct fab_dom *dom)
     return ret;
 }
 
-static int lfab_qalloc(struct zhpeq_dom *zdom, struct zhpeq *zq)
+static int lfab_qalloc(struct zhpeq *zq, int cmd_qlen, int cmp_qlen,
+                       int traffic_class, int priority, int slice_mask)
+{
+    int                 ret;
+    union zhpe_op       op;
+    union zhpe_req      *req = &op.req;
+    union zhpe_rsp      *rsp = &op.rsp;
+
+    if (cmd_qlen < cmp_qlen)
+        cmd_qlen = cmp_qlen;
+    req->hdr.opcode = ZHPE_OP_QALLOC;
+    req->qalloc.qlen = cmd_qlen;
+    ret = zhpeq_driver_cmd(&op, sizeof(req->qalloc), sizeof(rsp->qalloc));
+    if (ret < 0)
+        goto done;
+    /* Use xqinfo for compatiblity with asic code. */
+    zq->xqinfo.qcm.size = rsp->qalloc.info.rsize;
+    zq->xqinfo.qcm.off = rsp->qalloc.info.reg_off;
+    zq->xqinfo.cmdq.ent = rsp->qalloc.info.qlen;
+    zq->xqinfo.cmdq.size = rsp->qalloc.info.qsize;
+    zq->xqinfo.cmdq.off = rsp->qalloc.info.wq_off;
+    zq->xqinfo.cmplq.ent = rsp->qalloc.info.qlen;
+    zq->xqinfo.cmplq.size = rsp->qalloc.info.qsize;
+    zq->xqinfo.cmplq.off = rsp->qalloc.info.cq_off;
+
+ done:
+
+    return ret;
+}
+
+static int lfab_qalloc_post(struct zhpeq *zq)
 {
     int                 ret = -ENOMEM;
+    struct zhpeq_dom    *zdom = zq->zdom;
     struct zdom_data    *bdom = zdom->backend_data;
     struct stuff        *conn;
     struct fab_conn     *fab_conn;
@@ -534,10 +529,10 @@ static int lfab_qalloc(struct zhpeq_dom *zdom, struct zhpeq *zq)
 
     ret = -ENOMEM;
     /* Build free list of context structures big enough for all I/Os. */
-#if 0
-    req = fab_conn->info->tx_attr->size;
-    if (req > zq->info.qlen)
-        req = zq->info.qlen;
+#if 1
+    req = fab_conn->dom->finfo.info->tx_attr->size;
+    if (req > zq->xqinfo.cmdq.ent)
+        req = zq->xqinfo.cmdq.ent;
 #else
     /* FIXME: Looks like per-AV limit of 7. Need to handle this. */
     req = 7;
@@ -550,7 +545,7 @@ static int lfab_qalloc(struct zhpeq_dom *zdom, struct zhpeq *zq)
         conn->context[req].opaque.internal[0] = conn->context_free;
         conn->context_free = &conn->context[req];
     }
-    req = zq->info.qlen * sizeof(*conn->results);
+    req = zq->xqinfo.cmplq.ent * sizeof(*conn->results);
     conn->results = do_malloc(req);
     if (!conn->results)
         goto done;
@@ -595,6 +590,7 @@ static int lfab_qalloc(struct zhpeq_dom *zdom, struct zhpeq *zq)
     return ret;
 }
 
+#if 0
 static inline int do_av_op(struct lfab_work_eng_data *data,
                            lfab_worker worker)
 {
@@ -610,33 +606,30 @@ static inline int do_av_op(struct lfab_work_eng_data *data,
 
     return data->status;
 }
+#endif
 
 static int lfab_open(struct zhpeq *zq, int sock_fd)
 {
     int                 ret;
     struct stuff        *conn = zq->backend_data;
     struct fab_conn     *fab_conn = &conn->fab_conn;
-    struct lfab_work_eng_data av_op = {
-        .eng            = &eng,
-        .conn           = conn,
-        .fi_addr        = FI_ADDR_UNSPEC,
-    };
+    union sockaddr_in46 ep_addr;
+    fi_addr_t           fi_addr;
 
-    ret = fab_av_xchg_addr(fab_conn, sock_fd, &av_op.ep_addr);
+    ret = fab_av_xchg_addr(fab_conn, sock_fd, &ep_addr);
     if (ret < 0)
         goto done;
-    ret = do_av_op(&av_op, conn_av_insert);
+    ret = fab_av_insert(fab_conn->dom, &ep_addr, &fi_addr);
     if (ret >= 0) {
-        ret = av_op.fi_addr;
-        if (av_op.fi_addr > AV_MAX) {
+        ret = fi_addr;
+        if (fi_addr > AV_MAX) {
             print_err("%s,%u:av %lu exceeds AV_MAX %u\n",
-                      __FUNCTION__, __LINE__, av_op.fi_addr, AV_MAX);
-            ret = -FI_EINVAL;
+                      __FUNCTION__, __LINE__, fi_addr, AV_MAX);
+            (void)fab_av_remove(fab_conn->dom, fi_addr);
+            ret = -ENOSPC;
         }
     }
  done:
-    if (ret < 0 && av_op.fi_addr != FI_ADDR_UNSPEC)
-        (void)do_av_op(&av_op, conn_av_remove);
 
     return ret;
 }
@@ -644,22 +637,21 @@ static int lfab_open(struct zhpeq *zq, int sock_fd)
 static int lfab_close(struct zhpeq *zq, int open_idx)
 {
     struct stuff        *conn = zq->backend_data;
-    struct lfab_work_eng_data av_op = {
-        .eng            = &eng,
-        .conn           = conn,
-        .fi_addr        = FI_ADDR_UNSPEC,
-    };
+    struct fab_conn     *fab_conn = &conn->fab_conn;
 
-    return do_av_op(&av_op, conn_av_remove);
+    (void)fab_av_remove(fab_conn->dom, open_idx);
+
+    return 0;
 }
 
 static inline void cq_write(struct zhpeq *zq, void *vcontext, int status)
 {
     struct stuff        *conn = zq->backend_data;
     struct context      *context = vcontext;
-    uint32_t            qmask = zq->info.qlen - 1;
+    uint32_t            qmask = zq->xqinfo.cmplq.ent - 1;
     union zhpe_hw_cq_entry *cqe = zq->cq + (conn->cq_tail & qmask);
 
+    conn->tx_completed++;
     lfabt_cmddone(context, cqe);
 
     cqe->entry.index = context->cmp_index;
@@ -693,13 +685,26 @@ static void cq_update(void *arg, void *vcqe, bool err)
     }
 }
 
-static void lfab_zq(struct stuff *conn)
+static inline void cleanup_eagain(struct stuff *conn, struct context *context,
+                                  uint64_t *tx_queued)
+{
+    /* Nothing got queued, but we don't want the engine to sleep. */
+    conn->tx_queued--;
+    if (conn->tx_queued == *tx_queued)
+        (*tx_queued)--;
+    /* Return context to free list. */
+    context->opaque.internal[0] = conn->context_free;
+    conn->context_free = context;
+}
+
+static bool lfab_zq(struct stuff *conn)
 {
     struct zhpeq        *zq = conn->zq;
     struct fab_conn     *fab_conn = &conn->fab_conn;
     struct zdom_data    *bdom = zq->zdom->backend_data;
     struct fid_mr       **lcl_mr = bdom->lcl_mr;
-    uint16_t            qmask = zq->info.qlen - 1;
+    uint64_t            tx_queued = conn->tx_queued;
+    uint16_t            qmask = zq->xqinfo.cmdq.ent - 1;
     uint16_t            wq_head;
     uint16_t            wq_tail;
     union zhpe_hw_wq_entry *wqe;
@@ -737,14 +742,10 @@ static void lfab_zq(struct stuff *conn)
         if (wqe->hdr.opcode & ZHPE_HW_OPCODE_FENCE) {
             flags = FI_FENCE;
             /* Wait for all outstanding operations to complete. */
-            for (;;) {
-                rc = fab_completions(fab_conn->tx_cq, 0, cq_update, zq);
-                if (rc < 0)
+            if (conn->tx_queued != conn->tx_completed) {
+                (void)fab_completions(fab_conn->tx_cq, 0, cq_update, zq);
+                if (conn->tx_queued != conn->tx_completed)
                     goto done;
-                conn->tx_completed += rc;
-                if (conn->tx_queued == conn->tx_completed)
-                    break;
-                goto done;
             }
         }
 
@@ -752,12 +753,13 @@ static void lfab_zq(struct stuff *conn)
         context->result = NULL;
         context->cmp_index = wqe->hdr.cmp_index;
 
-        rc = 0;
+        conn->tx_queued++;
 
         switch (wqe->hdr.opcode & ~ZHPE_HW_OPCODE_FENCE) {
 
         case ZHPE_HW_OPCODE_NOP:
             lfabt_cmdpost(nop, wqe, context);
+            conn->tx_completed++;
             cq_write(zq, context, 0);
             break;
 
@@ -776,19 +778,20 @@ static void lfab_zq(struct stuff *conn)
             conn->rma_iov.len = wqe->dma.len;
             raddr = wqe->dma.rem_addr;
             conn->rma_iov.addr = TO_ADDR(raddr);
-            conn->rma_iov.key = conn->rkey[TO_KEYIDX(raddr)].rkey;
-            conn->msg.addr = conn->rkey[TO_KEYIDX(raddr)].av_idx;
+            conn->rma_iov.key = bdom->rkey[TO_KEYIDX(raddr)].rkey;
+            conn->msg.addr = bdom->rkey[TO_KEYIDX(raddr)].av_idx;
             lfabt_cmdpost(dma, wqe, context);
             rc = fi_writemsg(fab_conn->ep, &conn->msg, flags);
             if (rc < 0) {
-                if (rc == -FI_EAGAIN)
-                    break;
+                if (rc == -FI_EAGAIN) {
+                    cleanup_eagain(conn, context, &tx_queued);
+                    goto eagain;
+                }
                 print_func_fi_err(__FUNCTION__, __LINE__,
                                   "fi_writemsg", "", rc);
                 cq_write(zq, context, rc);
                 break;
             }
-            conn->tx_queued++;
             break;
 
         case ZHPE_HW_OPCODE_GET:
@@ -806,19 +809,20 @@ static void lfab_zq(struct stuff *conn)
             conn->rma_iov.len = wqe->dma.len;
             raddr = wqe->dma.rem_addr;
             conn->rma_iov.addr = TO_ADDR(raddr);
-            conn->rma_iov.key = conn->rkey[TO_KEYIDX(raddr)].rkey;
-            conn->msg.addr = conn->rkey[TO_KEYIDX(raddr)].av_idx;
+            conn->rma_iov.key = bdom->rkey[TO_KEYIDX(raddr)].rkey;
+            conn->msg.addr = bdom->rkey[TO_KEYIDX(raddr)].av_idx;
             lfabt_cmdpost(dma, wqe, context);
             rc = fi_readmsg(fab_conn->ep, &conn->msg, flags);
             if (rc < 0) {
-                if (rc == -FI_EAGAIN)
-                    break;
+                if (rc == -FI_EAGAIN) {
+                    cleanup_eagain(conn, context, &tx_queued);
+                    goto eagain;
+                }
                 print_func_fi_err(__FUNCTION__, __LINE__,
                                   "fi_readmsg", "", rc);
                 cq_write(zq, context, rc);
                 break;
             }
-            conn->tx_queued++;
             break;
 
         case ZHPE_HW_OPCODE_PUTIMM:
@@ -833,19 +837,20 @@ static void lfab_zq(struct stuff *conn)
             conn->rma_iov.len = wqe->imm.len;
             raddr = wqe->imm.rem_addr;
             conn->rma_iov.addr = TO_ADDR(raddr);
-            conn->rma_iov.key = conn->rkey[TO_KEYIDX(raddr)].rkey;
-            conn->msg.addr = conn->rkey[TO_KEYIDX(raddr)].av_idx;
+            conn->rma_iov.key = bdom->rkey[TO_KEYIDX(raddr)].rkey;
+            conn->msg.addr = bdom->rkey[TO_KEYIDX(raddr)].av_idx;
             lfabt_cmdpost(imm, wqe, context);
             rc = fi_writemsg(fab_conn->ep, &conn->msg, flags);
             if (rc < 0) {
-                if (rc == -FI_EAGAIN)
-                    break;
+                if (rc == -FI_EAGAIN) {
+                    cleanup_eagain(conn, context, &tx_queued);
+                    goto eagain;
+                }
                 print_func_fi_err(__FUNCTION__, __LINE__,
                                   "fi_writemsg", "", rc);
                 cq_write(zq, context, rc);
                 break;
             }
-            conn->tx_queued++;
             break;
 
         case ZHPE_HW_OPCODE_GETIMM:
@@ -860,19 +865,20 @@ static void lfab_zq(struct stuff *conn)
             conn->rma_iov.len = wqe->imm.len;
             raddr = wqe->imm.rem_addr;
             conn->rma_iov.addr = TO_ADDR(raddr);
-            conn->rma_iov.key = conn->rkey[TO_KEYIDX(raddr)].rkey;
-            conn->msg.addr = conn->rkey[TO_KEYIDX(raddr)].av_idx;
+            conn->rma_iov.key = bdom->rkey[TO_KEYIDX(raddr)].rkey;
+            conn->msg.addr = bdom->rkey[TO_KEYIDX(raddr)].av_idx;
             lfabt_cmdpost(imm, wqe, context);
             rc = fi_readmsg(fab_conn->ep, &conn->msg, flags);
             if (rc < 0) {
-                if (rc == -FI_EAGAIN)
-                    break;
+                if (rc == -FI_EAGAIN) {
+                    cleanup_eagain(conn, context, &tx_queued);
+                    goto eagain;
+                }
                 print_func_fi_err(__FUNCTION__, __LINE__,
                                   "fi_readmsg", "", rc);
                 cq_write(zq, context, rc);
                 break;
             }
-            conn->tx_queued++;
             break;
 
         case ZHPE_HW_OPCODE_ATM_ADD:
@@ -900,8 +906,8 @@ static void lfab_zq(struct stuff *conn)
                 conn->atm_op_ioc.addr + sizeof(wqe->atm.operands[0]);
             raddr = wqe->atm.rem_addr;
             conn->atm_rma_ioc.addr = TO_ADDR(raddr);
-            conn->atm_rma_ioc.key = conn->rkey[TO_KEYIDX(raddr)].rkey;
-            conn->atm_msg.addr = conn->rkey[TO_KEYIDX(raddr)].av_idx;
+            conn->atm_rma_ioc.key = bdom->rkey[TO_KEYIDX(raddr)].rkey;
+            conn->atm_msg.addr = bdom->rkey[TO_KEYIDX(raddr)].av_idx;
             lfabt_cmdpost(atm, wqe, context);
             if ((wqe->hdr.opcode & ~ZHPE_HW_OPCODE_FENCE) !=
                 ZHPE_HW_OPCODE_ATM_ADD) {
@@ -917,39 +923,36 @@ static void lfab_zq(struct stuff *conn)
                                         &conn->results_desc, 1, flags);
             }
             if (rc < 0) {
-                if (rc == -FI_EAGAIN)
-                    break;
+                if (rc == -FI_EAGAIN) {
+                    cleanup_eagain(conn, context, &tx_queued);
+                    goto eagain;
+                }
                 print_func_fi_errn(__FUNCTION__, __LINE__,
                                    "fi_atomicmsg", conn->atm_msg.op, true, rc);
                 cq_write(zq, context, rc);
                 break;
             }
-            conn->tx_queued++;
             break;
 
         default:
+            conn->tx_completed++;
             print_err("%s,%u:Unexpected opcode 0x%02x\n",
                       __FUNCTION__, __LINE__, wqe->hdr.opcode);
             goto done;
         }
-        /* Get completions before retrying. */
-        if (rc == -FI_EAGAIN)
-            break;
     }
-    iowrite64(wq_head, zq->qcm + ZHPE_XDM_QCM_CMD_QUEUE_HEAD_OFFSET);
+ eagain:
     /* Get completions. */
-    rc = fab_completions(fab_conn->tx_cq, 0, cq_update, zq);
-    if (rc < 0)
-        goto done;
-    conn->tx_completed += rc;
+    (void)fab_completions(fab_conn->tx_cq, 0, cq_update, zq);
 
-done:
+ done:
+    iowrite64(wq_head, zq->qcm + ZHPE_XDM_QCM_CMD_QUEUE_HEAD_OFFSET);
     /* FIXME: Problematic: orderly shutdown handshake needed in libfabric.
      * Key revocation needs to be skipped. Must deal with outstanding
      * av processing.
      */
 
-    return;
+    return (conn->tx_queued != tx_queued);
 }
 
 static void *lfab_eng_thread(void *veng)
@@ -961,7 +964,6 @@ static void *lfab_eng_thread(void *veng)
     struct circleq_entry *circleq_entry;
     struct lfab_work    *work;
     struct stuff        *conn;
-    uint64_t            tx_queued;
     bool                queued;
     bool                outstanding;
 
@@ -992,9 +994,7 @@ static void *lfab_eng_thread(void *veng)
         /* Process all queues. */
         CIRCLEQ_FOREACH(circleq_entry, &eng->zq_head, ptrs) {
             conn = container_of(circleq_entry, struct stuff, lentry);
-            tx_queued = conn->tx_queued;
-            lfab_zq(conn);
-            queued |= (conn->tx_queued != tx_queued);
+            queued |= lfab_zq(conn);
             outstanding |= (conn->tx_queued != conn->tx_completed);
         }
         /* Dont' sleep if there are outstanding I/Os. */
@@ -1003,8 +1003,10 @@ static void *lfab_eng_thread(void *veng)
         /* Time to sleep? */
         clock_gettime_monotonic(&ts_end);
         /* Reset the sleep clock if operations were started. */
-        if (queued)
+        if (queued) {
             ts_beg = ts_end;
+            continue;
+        }
         if (ts_delta(&ts_beg, &ts_end) < SLEEP_THRESHOLD_NS)
             continue;
 
@@ -1035,14 +1037,37 @@ static int lfab_lib_init(void)
     return 0;
 }
 
+static int lfab_qfree_pre(struct zhpeq *zq)
+{
+    struct stuff        *conn = zq->backend_data;
+
+    zq->backend_data = NULL;
+    if (conn) {
+        while (conn->tx_queued != conn->tx_completed)
+            sched_yield();
+        stuff_free(conn);
+    }
+
+    return 0;
+}
+
 static int lfab_qfree(struct zhpeq *zq)
 {
-    int                 ret = 0;
+    union zhpe_op       op;
+    union zhpe_req      *req = &op.req;
+    union zhpe_rsp      *rsp = &op.rsp;
 
-    if (zq)
-        ret = stuff_free(zq->backend_data);
+    req->hdr.opcode = ZHPE_OP_QFREE;
+    req->qfree.info.rsize = zq->xqinfo.qcm.size;
+    req->qfree.info.reg_off = zq->xqinfo.qcm.off;
+    req->qfree.info.qlen = zq->xqinfo.cmdq.ent;
+    req->qfree.info.qsize = zq->xqinfo.cmdq.size;
+    req->qfree.info.wq_off = zq->xqinfo.cmdq.off;
+    req->qfree.info.qlen = zq->xqinfo.cmplq.ent;
+    req->qfree.info.qsize = zq->xqinfo.cmplq.size;
+    req->qfree.info.cq_off = zq->xqinfo.cmplq.off;
 
-    return ret;
+    return zhpeq_driver_cmd(&op, sizeof(req->qfree), sizeof(rsp->qfree));
 }
 
 static int lfab_wq_signal(struct zhpeq *zq)
@@ -1136,7 +1161,7 @@ static int lfab_mr_reg(struct zhpeq_dom *zdom,
     if (ret < 0) {
         if (mr)
             fi_close(&mr->fid);
-        free(desc);
+        do_free(desc);
     }
 
     return ret;
@@ -1157,22 +1182,21 @@ static int lfab_mr_free(struct zhpeq_dom *zdom, struct zhpeq_key_data *qkdata)
     ret = fi_close(&bdom->lcl_mr[index]->fid);
     free_lcl_mr(bdom, index);
     do_free(desc);
-    ret = 0;
 
  done:
     return ret;
 }
 
-static void free_conn_rkey(struct stuff *conn, uint32_t index)
+static void free_rkey(struct zdom_data *bdom, uint32_t index)
 {
     union free_index    old;
     union free_index    new;
 
-    for (old.blob = conn->rkey_free.blob;;) {
-        conn->rkey[index].rkey = old.index;
+    for (old.blob = bdom->rkey_free.blob;;) {
+        bdom->rkey[index].rkey = old.index;
         new.index = index;
         new.seq = old.seq + 1;
-        new.blob = __sync_val_compare_and_swap(&conn->rkey_free.blob, old.blob,
+        new.blob = __sync_val_compare_and_swap(&bdom->rkey_free.blob, old.blob,
                                                new.blob);
         if (old.blob == new.blob)
             break;
@@ -1180,18 +1204,19 @@ static void free_conn_rkey(struct stuff *conn, uint32_t index)
     }
 }
 
-static int lfab_zmmu_import(struct zhpeq *zq, int open_idx,
+static int lfab_zmmu_import(struct zhpeq_dom *zdom, int open_idx,
                             const void *blob, size_t blob_len,
+                            bool cpu_visible,
                             struct zhpeq_key_data **qkdata_out)
 {
     int                 ret = -EINVAL;
-    struct stuff        *conn = zq->backend_data;
+    struct zdom_data    *bdom = zdom->backend_data;
     const struct key_data_packed *pdata = blob;
     struct zhpeq_mr_desc_v1 *desc = NULL;
     union free_index    old;
     union free_index    new;
 
-    if (blob_len != sizeof(*pdata))
+    if (blob_len != sizeof(*pdata) || cpu_visible)
         goto done;
 
     ret = -ENOMEM;
@@ -1203,19 +1228,19 @@ static int lfab_zmmu_import(struct zhpeq *zq, int open_idx,
     unpack_kdata(pdata, &desc->qkdata);
 
     ret = -ENOSPC;
-    for (old.blob = conn->rkey_free.blob;;) {
+    for (old.blob = bdom->rkey_free.blob;;) {
         if (old.index == FREE_END)
             goto done;
-        new.index = conn->rkey[old.index].rkey;
+        new.index = bdom->rkey[old.index].rkey;
         new.seq = old.seq + 1;
-        new.blob = __sync_val_compare_and_swap(&conn->rkey_free.blob, old.blob,
+        new.blob = __sync_val_compare_and_swap(&bdom->rkey_free.blob, old.blob,
                                                new.blob);
         if (old.blob == new.blob)
             break;
         old.blob = new.blob;
     }
-    conn->rkey[old.index].rkey = desc->qkdata.z.zaddr;
-    conn->rkey[old.index].av_idx = open_idx;
+    bdom->rkey[old.index].rkey = desc->qkdata.z.zaddr;
+    bdom->rkey[old.index].av_idx = open_idx;
     desc->qkdata.z.zaddr = (((uint64_t)old.index << KEY_SHIFT) +
                             TO_ADDR(desc->qkdata.z.vaddr));
     *qkdata_out = &desc->qkdata;
@@ -1224,15 +1249,15 @@ static int lfab_zmmu_import(struct zhpeq *zq, int open_idx,
 
  done:
     if (ret < 0)
-        free(desc);
+        do_free(desc);
 
     return ret;
 }
 
-static int lfab_zmmu_free(struct zhpeq *zq, struct zhpeq_key_data *qkdata)
+static int lfab_zmmu_free(struct zhpeq_dom *zdom, struct zhpeq_key_data *qkdata)
 {
     int                 ret = -EINVAL;
-    struct stuff        *conn = zq->backend_data;
+    struct zdom_data    *bdom = zdom->backend_data;
     struct zhpeq_mr_desc_v1 *desc = container_of(qkdata,
                                                  struct zhpeq_mr_desc_v1,
                                                  qkdata);
@@ -1242,7 +1267,7 @@ static int lfab_zmmu_free(struct zhpeq *zq, struct zhpeq_key_data *qkdata)
         desc->hdr.version != (ZHPEQ_MR_V1 | ZHPEQ_MR_REMOTE))
         goto done;
 
-    free_conn_rkey(conn, index);
+    free_rkey(bdom, index);
     do_free(desc);
     ret = 0;
 
@@ -1250,12 +1275,12 @@ static int lfab_zmmu_free(struct zhpeq *zq, struct zhpeq_key_data *qkdata)
     return ret;
 }
 
-static int lfab_zmmu_export(struct zhpeq *zq,
+static int lfab_zmmu_export(struct zhpeq_dom *zdom,
                             const struct zhpeq_key_data *qkdata,
                             void **blob_out, size_t *blob_len)
 {
     int                 ret = -EINVAL;
-    struct zdom_data    *bdom = zq->zdom->backend_data;
+    struct zdom_data    *bdom = zdom->backend_data;
     struct zhpeq_mr_desc_v1 *desc = container_of(qkdata,
                                                  struct zhpeq_mr_desc_v1,
                                                  qkdata);
@@ -1270,7 +1295,7 @@ static int lfab_zmmu_export(struct zhpeq *zq,
     if (!blob)
         goto done;
 
-    pack_kdata(&desc->qkdata, blob,
+    pack_kdata(qkdata, blob,
                fi_mr_key(bdom->lcl_mr[TO_KEYIDX(qkdata->z.zaddr)]));
     *blob_out = blob;
 
@@ -1292,11 +1317,13 @@ static void lfab_print_info(struct zhpeq *zq)
     fab_print_info(fab_conn);
 }
 
-struct backend_ops libfabric_ops = {
+static struct backend_ops ops = {
     .lib_init           = lfab_lib_init,
     .domain             = lfab_domain,
     .domain_free        = lfab_domain_free,
     .qalloc             = lfab_qalloc,
+    .qalloc_post        = lfab_qalloc_post,
+    .qfree_pre          = lfab_qfree_pre,
     .qfree              = lfab_qfree,
     .open               = lfab_open,
     .close              = lfab_close,
@@ -1309,3 +1336,15 @@ struct backend_ops libfabric_ops = {
     .zmmu_export        = lfab_zmmu_export,
     .print_info         = lfab_print_info,
 };
+
+void zhpeq_backend_libfabric_init(void)
+{
+    backend_prov = getenv("ZHPE_BACKEND_LIBFABRIC_PROV");
+    backend_dom = getenv("ZHPE_FAB_BACKEND_DOM");
+
+    if (!backend_prov)
+        return;
+
+    zhpeq_register_backend(ZHPE_BACKEND_LIBFABRIC, &ops);
+}
+

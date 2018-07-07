@@ -73,6 +73,11 @@
 
 _EXTERN_C_BEG
 
+#ifndef container_of
+#define container_of(_ptr, _type, _field)                       \
+    ((_type *)((char *)(_ptr) - offsetof(_type, _field)))
+#endif
+
 #define NOOPTIMIZE      asm volatile("")
 
 #define ARRAY_SIZE(_x)  (sizeof(_x) / sizeof(_x[0]))
@@ -342,6 +347,11 @@ void *_do_malloc(const char *callf, uint line, size_t size);
 
 #define do_malloc(...) \
     _do_malloc(__FUNCTION__, __LINE__, __VA_ARGS__)
+
+void *_do_realloc(const char *callf, uint line, void *ptr, size_t size);
+
+#define do_realloc(...) \
+    _do_realloc(__FUNCTION__, __LINE__, __VA_ARGS__)
 
 void *_do_calloc(const char *callf, uint line, size_t nmemb, size_t size);
 

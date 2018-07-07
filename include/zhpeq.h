@@ -302,22 +302,19 @@ union zhpeq_atomic {
 #define ZHPEQ_CQ_STATUS_FABRIC_ACCESS \
     ZHPE_HW_CQ_STATUS_FABRIC_ACCESS
 
-#define ZHPEQ_BACKEND_ZHPE      ZHPE_BACKEND_ZHPE
-#define ZHPEQ_BACKEND_LIBFABRIC ZHPE_BACKEND_LIBFABRIC
-#define ZHPEQ_BACKEND_MAX       ZHPE_BACKEND_MAX
-
-struct zhpeq_backend_libfabric_params {
-    int                 backend;
-    const char          *provider_name;
-    const char          *domain_name;
+enum zhpeq_backend {
+    ZHPEQ_BACKEND_ZHPE          = ZHPE_BACKEND_ZHPE,
+    ZHPEQ_BACKEND_LIBFABRIC     = ZHPE_BACKEND_LIBFABRIC,
+    ZHPEQ_BACKEND_MAX           = ZHPE_BACKEND_MAX,
 };
 
-union zhpeq_backend_params {
-    int                 backend;
-    struct zhpeq_backend_libfabric_params libfabric;
+enum {
+    ZHPEQ_PRI_MAX               = 1,
+    ZHPEQ_TC_MAX                = 15,
 };
 
 struct zhpeq_attr {
+    enum zhpeq_backend  backend;
     struct zhpe_attr    z;
 };
 
@@ -327,24 +324,6 @@ struct zhpeq_key_data {
 
 struct zhpeq_cq_entry {
     struct zhpe_cq_entry z;
-};
-
-#define ZHPEQ_MR_V1             (1U)
-#define ZHPEQ_MR_REMOTE         ((uint32_t)1 << 31)
-
-struct zhpeq_mr_desc_common_hdr {
-    uint32_t            magic;
-    uint32_t            version;
-};
-
-struct zhpeq_mr_desc_v1 {
-    struct zhpeq_mr_desc_common_hdr hdr;
-    struct zhpeq_key_data qkdata;
-};
-
-union zhpeq_mr_desc {
-    struct zhpeq_mr_desc_common_hdr hdr;
-    struct zhpeq_mr_desc_v1 v1;
 };
 
 /* Forward references to shut the compiler up. */
@@ -375,18 +354,17 @@ static inline int zhpeq_lcl_key_access(struct zhpeq_key_data *qkdata,
     return zhpeq_rem_key_access(qkdata, (uintptr_t)buf, len, access, zaddr);
 }
 
-int zhpeq_register_backend(int backend, void *ops);
-
 int zhpeq_init(int api_version);
 
 int zhpeq_query_attr(struct zhpeq_attr *attr);
 
-int zhpeq_domain_alloc(const union zhpeq_backend_params *params,
-                       struct zhpeq_dom **zdom_out);
+int zhpeq_domain_alloc(struct zhpeq_dom **zdom_out);
 
 int zhpeq_domain_free(struct zhpeq_dom *zdom);
 
-int zhpeq_alloc(struct zhpeq_dom *zdom, int qlen, struct zhpeq **zq_out);
+int zhpeq_alloc(struct zhpeq_dom *zdom, int cmd_qlen, int cmp_qlen,
+                int traffic_class, int priority, int slice_mask,
+                struct zhpeq **zq_out);
 
 int zhpeq_free(struct zhpeq *zq);
 
@@ -403,14 +381,15 @@ int zhpeq_mr_reg(struct zhpeq_dom *zdom, const void *buf, size_t len,
 
 int zhpeq_mr_free(struct zhpeq_dom *zdom, struct zhpeq_key_data *qkdata);
 
-int zhpeq_zmmu_export(struct zhpeq *zq, const struct zhpeq_key_data *qkdata,
+int zhpeq_zmmu_export(struct zhpeq_dom *zdom,
+                      const struct zhpeq_key_data *qkdata,
                       void **blob_out, size_t *blob_len);
 
-int zhpeq_zmmu_import(struct zhpeq *zq, int open_idx,
-                      const void *blob, size_t blob_len,
+int zhpeq_zmmu_import(struct zhpeq_dom *zdom, int open_idx,
+                      const void *blob, size_t blob_len, bool cpu_visible,
                       struct zhpeq_key_data **kdata_out);
 
-int zhpeq_zmmu_free(struct zhpeq *zq, struct zhpeq_key_data *qkdata);
+int zhpeq_zmmu_free(struct zhpeq_dom *zdom, struct zhpeq_key_data *qkdata);
 
 int64_t zhpeq_reserve(struct zhpeq *zq, uint32_t n_entries);
 

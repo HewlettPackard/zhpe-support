@@ -1,5 +1,3 @@
-add_executable(driver_nops driver_nops.c)
-target_link_libraries(driver_nops zhpeq_util)
 add_executable(libzhpeq_ld libzhpeq_ld.c)
 target_link_libraries(libzhpeq_ld zhpeq)
 add_executable(libzhpeq_util_log libzhpeq_util_log.c)
@@ -14,7 +12,6 @@ add_executable(xingpong xingpong.c)
 target_link_libraries(xingpong zhpeq zhpeq_util zhpeq_util_fab)
 install(
   TARGETS
-  driver_nops
   libzhpeq_ld
   libzhpeq_qalloc
   libzhpeq_qattr

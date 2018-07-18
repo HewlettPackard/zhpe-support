@@ -258,7 +258,6 @@ static int conn_eng_add(struct lfab_work *work)
     return 0;
 }
 
-#if 0
 static int retry_none(void *args)
 {
     /* No retry, will be returned to av_wait caller. */
@@ -270,7 +269,7 @@ static int conn_av_remove(struct lfab_work *work)
     struct lfab_work_eng_data *data = work->data;
     struct stuff        *conn = data->conn;
 
-    data->status = fab_av_remove(&conn->fab_conn, data->fi_addr);
+    data->status = fab_av_remove(conn->fab_conn.dom, data->fi_addr);
 
     return 0;
 }
@@ -311,7 +310,7 @@ static int conn_av_insert(struct lfab_work *work)
     struct stuff        *conn = data->conn;
     int                 rc;
 
-    rc = fab_av_insert(&conn->fab_conn, &data->ep_addr, &data->fi_addr);
+    rc = fab_av_insert(conn->fab_conn.dom, &data->ep_addr, &data->fi_addr);
     if (rc >= 0 && rc != 1)
         rc = -FI_EIO;
     if (rc < 0) {
@@ -322,7 +321,6 @@ static int conn_av_insert(struct lfab_work *work)
 
     return 1;
 }
-#endif
 
 static inline void eng_signal(struct engine *eng, bool locked)
 {
@@ -581,7 +579,6 @@ static int lfab_qalloc_post(struct zhpeq *zq)
     return ret;
 }
 
-#if 0
 static inline int do_av_op(struct lfab_work_eng_data *data,
                            lfab_worker worker)
 {
@@ -597,30 +594,34 @@ static inline int do_av_op(struct lfab_work_eng_data *data,
 
     return data->status;
 }
-#endif
 
 static int lfab_open(struct zhpeq *zq, int sock_fd)
 {
     int                 ret;
     struct stuff        *conn = zq->backend_data;
     struct fab_conn     *fab_conn = &conn->fab_conn;
-    union sockaddr_in46 ep_addr;
-    fi_addr_t           fi_addr;
+    struct lfab_work_eng_data av_op = {
+        .eng            = &eng,
+        .conn           = conn,
+        .fi_addr        = FI_ADDR_UNSPEC,
+    };
 
-    ret = fab_av_xchg_addr(fab_conn, sock_fd, &ep_addr);
+    ret = fab_av_xchg_addr(fab_conn, sock_fd, &av_op.ep_addr);
     if (ret < 0)
         goto done;
-    ret = fab_av_insert(fab_conn->dom, &ep_addr, &fi_addr);
+    ret = do_av_op(&av_op, conn_av_insert);
     if (ret >= 0) {
-        ret = fi_addr;
-        if (fi_addr > AV_MAX) {
+        ret = av_op.fi_addr;
+        if (av_op.fi_addr > AV_MAX) {
             print_err("%s,%u:av %lu exceeds AV_MAX %u\n",
-                      __FUNCTION__, __LINE__, fi_addr, AV_MAX);
-            (void)fab_av_remove(fab_conn->dom, fi_addr);
+                      __FUNCTION__, __LINE__, av_op.fi_addr, AV_MAX);
             ret = -ENOSPC;
-        }
-    }
+         }
+     }
+
  done:
+    if (ret < 0 && av_op.fi_addr != FI_ADDR_UNSPEC)
+        (void)do_av_op(&av_op, conn_av_remove);
 
     return ret;
 }

@@ -264,8 +264,8 @@ static inline bool sockaddr_loopback(const union sockaddr_in46 *sa)
     switch (sa->sa_family) {
 
     case AF_INET:
-        ret = ((ntohl(sa->addr4.sin_addr.s_addr) & IN_CLASSA_HOST) !=
-               (INADDR_LOOPBACK & IN_CLASSA_HOST));
+        ret = ((ntohl(sa->addr4.sin_addr.s_addr) & IN_CLASSA_NET) ==
+               (INADDR_LOOPBACK & IN_CLASSA_NET));
         break;
 
     case AF_INET6:

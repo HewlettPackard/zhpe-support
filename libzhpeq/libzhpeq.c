@@ -660,7 +660,6 @@ int zhpeq_backend_close(struct zhpeq *zq, int open_idx)
     if (!zq)
         goto done;
 
-    printf("%s,%u\n", __FUNCTION__, __LINE__);
     ret = 0;
     if (b_ops->close)
         ret = b_ops->close(zq, open_idx);
@@ -956,8 +955,6 @@ int zhpeq_mr_reg(struct zhpeq_dom *zdom, const void *buf, size_t len,
     ret = b_ops->mr_reg(zdom, buf, len, access, qkdata_out);
     if (ret >= 0 && (access & ZHPEQ_MR_KEY_VALID))
         (*qkdata_out)->z.key = requested_key;
-    if (ret >= 0)
-        zhpeq_print_qkdata(__FUNCTION__, __LINE__, zdom, *qkdata_out);
  done:
     return ret;
 }
@@ -972,7 +969,6 @@ int zhpeq_mr_free(struct zhpeq_dom *zdom, struct zhpeq_key_data *qkdata)
     if (!zdom)
         goto done;
 
-    zhpeq_print_qkdata(__FUNCTION__, __LINE__, zdom, qkdata);
     ret = b_ops->mr_free(zdom, qkdata);
 
  done:
@@ -993,8 +989,6 @@ int zhpeq_zmmu_import(struct zhpeq_dom *zdom, int open_idx, const void *blob,
 
     ret = b_ops->zmmu_import(zdom, open_idx, blob, blob_len, cpu_visible,
                              qkdata_out);
-    if (ret >= 0)
-        zhpeq_print_qkdata(__FUNCTION__, __LINE__, zdom, *qkdata_out);
 
  done:
     return ret;
@@ -1012,7 +1006,6 @@ int zhpeq_zmmu_export(struct zhpeq_dom *zdom,
     if (!zdom || !qkdata || !blob_len)
         goto done;
 
-    zhpeq_print_qkdata(__FUNCTION__, __LINE__, zdom, qkdata);
     ret = b_ops->zmmu_export(zdom, qkdata, blob_out, blob_len);
 
  done:
@@ -1029,7 +1022,6 @@ int zhpeq_zmmu_free(struct zhpeq_dom *zdom, struct zhpeq_key_data *qkdata)
     if (!zdom)
         goto done;
 
-    zhpeq_print_qkdata(__FUNCTION__, __LINE__, zdom, qkdata);
     ret = b_ops->zmmu_free(zdom, qkdata);
 
  done:

@@ -763,8 +763,6 @@ int _fab_av_xchg_addr(const char *callf, uint line, struct fab_conn *conn,
                                 sizeof(*ep_addr));
     if (ret < 0)
         goto done;
-    fflush(stdout);
-    sleep(100);
  done:
 
     return ret;

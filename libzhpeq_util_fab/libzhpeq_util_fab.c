@@ -97,10 +97,10 @@ void fab_dom_free(struct fab_dom *dom)
     if (use_count > 1)
         return;
 
+    fab_finfo_free(&dom->finfo);
     FI_CLOSE(dom->av);
     FI_CLOSE(dom->domain);
     FI_CLOSE(dom->fabric);
-    fab_finfo_free(&dom->finfo);
 
     for (use = dom->av_head; use; use = next) {
         next = use->next;
@@ -736,6 +736,7 @@ int _fab_av_xchg_addr(const char *callf, uint line, struct fab_conn *conn,
 {
     int                 ret;
     size_t              addr_len = sizeof(*ep_addr);
+    in_port_t           save_port;
 
     ret = fi_getname(&conn->ep->fid, ep_addr, &addr_len);
     if (ret >= 0 && !sockaddr_valid(ep_addr, addr_len, true))
@@ -744,14 +745,26 @@ int _fab_av_xchg_addr(const char *callf, uint line, struct fab_conn *conn,
         print_func_fi_err(callf, line, "fi_getname", "", ret);
         goto done;
     }
+    sockaddr_6to4(ep_addr);
+    if (sockaddr_loopback(ep_addr)) {
+        save_port = ep_addr->sin_port;
+        ret = do_getsockname(sock_fd, ep_addr);
+        if (ret < 0)
+            goto done;
+        sockaddr_6to4(ep_addr);
+        ep_addr->sin_port = save_port;
+    }
     if (ret < 0 || sock_fd == -1)
         goto done;
-    ret = _sock_send_blob(callf, line, sock_fd, ep_addr, addr_len);
+    ret = _sock_send_blob(callf, line, sock_fd, ep_addr, sizeof(*ep_addr));
     if (ret < 0)
         goto done;
-    ret = _sock_recv_fixed_blob(callf, line, sock_fd, ep_addr, addr_len);
+    ret = _sock_recv_fixed_blob(callf, line, sock_fd, ep_addr,
+                                sizeof(*ep_addr));
     if (ret < 0)
         goto done;
+    fflush(stdout);
+    sleep(100);
  done:
 
     return ret;

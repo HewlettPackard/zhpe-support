@@ -98,6 +98,9 @@ struct backend_ops {
                                        const struct zhpeq_key_data *kdata,
                                        void **blob_out, size_t *blob_len);
     void                (*print_info)(struct zhpeq *zq);
+    int                 (*getaddr)(struct zhpeq *zq, union sockaddr_in46 *sa);
+    char                *(*qkdata_id_str)(struct zhpeq_dom *zdom,
+                                          const struct zhpeq_key_data *qkdata);
 };
 
 extern uuid_t           zhpeq_uuid;
@@ -146,9 +149,9 @@ static inline uint8_t cq_valid(uint32_t idx, uint32_t qmask)
 #define likely(x)		__builtin_expect((x), 1)
 #define unlikely(x)		__builtin_expect((x), 0)
 
-static inline uint64_t ioread64(volatile void *addr)
+static inline uint64_t ioread64(const volatile void *addr)
 {
-    return le64toh(*(volatile uint64_t *)addr);
+    return le64toh(*(const volatile uint64_t *)addr);
 }
 
 static inline void iowrite64(uint64_t value, volatile void *addr)
@@ -200,6 +203,7 @@ struct zhpeq_mr_desc_common_hdr {
 struct zhpeq_mr_desc_v1 {
     struct zhpeq_mr_desc_common_hdr hdr;
     struct zhpeq_key_data qkdata;
+    uint32_t            access_plus;
     int                 uuid_idx;
 };
 

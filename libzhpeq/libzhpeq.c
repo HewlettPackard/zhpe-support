@@ -528,7 +528,7 @@ int zhpeq_free(struct zhpeq *zq)
     for (;;) {
         active.u64 =
             ioread64(zq->qcm + ZHPE_XDM_QCM_ACTIVE_STATUS_ERROR_OFFSET);
-        if (!active.bits.active_cmd_cnt)
+        if (!active.bits.active)
             break;
         sched_yield();
     }
@@ -628,6 +628,7 @@ int zhpeq_alloc(struct zhpeq_dom *zdom, int cmd_qlen, int cmp_qlen,
     /* Start the queue. */
     iowrite64(0, zq->qcm + ZHPE_XDM_QCM_STOP_OFFSET);
     ret = 0;
+
  done:
     if (ret >= 0)
         *zq_out = zq;
@@ -659,6 +660,7 @@ int zhpeq_backend_close(struct zhpeq *zq, int open_idx)
     if (!zq)
         goto done;
 
+    printf("%s,%u\n", __FUNCTION__, __LINE__);
     ret = 0;
     if (b_ops->close)
         ret = b_ops->close(zq, open_idx);
@@ -708,7 +710,7 @@ int zhpeq_commit(struct zhpeq *zq, uint32_t qindex, uint32_t n_entries)
 
     qmask = zq->xqinfo.cmdq.ent - 1;
     /* We need a lock to guarantee writes to tail register are ordered. */
-    ret = -EAGAIN;
+    ret = 0;
     for (;;) {
         spin_lock(&zq->tail_lock);
         if (qindex == zq->tail_commit) {
@@ -954,6 +956,8 @@ int zhpeq_mr_reg(struct zhpeq_dom *zdom, const void *buf, size_t len,
     ret = b_ops->mr_reg(zdom, buf, len, access, qkdata_out);
     if (ret >= 0 && (access & ZHPEQ_MR_KEY_VALID))
         (*qkdata_out)->z.key = requested_key;
+    if (ret >= 0)
+        zhpeq_print_qkdata(__FUNCTION__, __LINE__, zdom, *qkdata_out);
  done:
     return ret;
 }
@@ -968,6 +972,7 @@ int zhpeq_mr_free(struct zhpeq_dom *zdom, struct zhpeq_key_data *qkdata)
     if (!zdom)
         goto done;
 
+    zhpeq_print_qkdata(__FUNCTION__, __LINE__, zdom, qkdata);
     ret = b_ops->mr_free(zdom, qkdata);
 
  done:
@@ -988,6 +993,8 @@ int zhpeq_zmmu_import(struct zhpeq_dom *zdom, int open_idx, const void *blob,
 
     ret = b_ops->zmmu_import(zdom, open_idx, blob, blob_len, cpu_visible,
                              qkdata_out);
+    if (ret >= 0)
+        zhpeq_print_qkdata(__FUNCTION__, __LINE__, zdom, *qkdata_out);
 
  done:
     return ret;
@@ -1005,6 +1012,7 @@ int zhpeq_zmmu_export(struct zhpeq_dom *zdom,
     if (!zdom || !qkdata || !blob_len)
         goto done;
 
+    zhpeq_print_qkdata(__FUNCTION__, __LINE__, zdom, qkdata);
     ret = b_ops->zmmu_export(zdom, qkdata, blob_out, blob_len);
 
  done:
@@ -1021,6 +1029,7 @@ int zhpeq_zmmu_free(struct zhpeq_dom *zdom, struct zhpeq_key_data *qkdata)
     if (!zdom)
         goto done;
 
+    zhpeq_print_qkdata(__FUNCTION__, __LINE__, zdom, qkdata);
     ret = b_ops->zmmu_free(zdom, qkdata);
 
  done:
@@ -1115,15 +1124,54 @@ void zhpeq_print_info(struct zhpeq *zq)
     }
 }
 
-int zhpeq_active(struct zhpeq *zq)
+struct zhpeq_dom *zhpeq_dom(struct zhpeq *zq)
+{
+    return zq->zdom;
+}
+
+int zhpeq_getaddr(struct zhpeq *zq, union sockaddr_in46 *sa)
 {
     ssize_t             ret = -EINVAL;
 
-    if (!zq)
+    if (!zq || !sa)
         goto done;
-    smp_rmb();
-    ret = (zq->q_head != zq->tail_reserved);
 
+    ret = b_ops->getaddr(zq, sa);
  done:
+
     return ret;
+}
+
+void zhpeq_print_qkdata(const char *func, uint line, struct zhpeq_dom *zdom,
+                        const struct zhpeq_key_data *qkdata)
+{
+    char                *id_str = NULL;
+
+    if (b_ops->qkdata_id_str)
+        id_str = b_ops->qkdata_id_str(zdom, qkdata);
+    printf("%s,%u:%p %s\n", func, line, qkdata, (id_str ?: ""));
+    printf("%s,%u:v/z/l 0x%Lx 0x%Lx 0x%Lx\n", func, line,
+           (ullong)qkdata->z.vaddr, (ullong)qkdata->z.zaddr,
+           (ullong)qkdata->z.len);
+    printf("%s,%u:k/a/l 0x%Lx 0x%Lx 0x%Lx\n", func, line,
+           (ullong)qkdata->z.key, (ullong)qkdata->z.access,
+           (ullong)qkdata->laddr);
+}
+
+static void print_qcm1(const char *func, uint line, const volatile void *qcm,
+                      uint offset)
+{
+        printf("%s,%u:qcm[0x%02x] = 0x%lx\n",
+               func, line, offset, ioread64(qcm + offset));
+}
+
+void zhpeq_print_qcm(const char *func, uint line, const struct zhpeq *zq)
+{
+        uint            i;
+
+        printf("%s,%u:%s %p\n", func, line, __FUNCTION__, zq->qcm);
+        for (i = 0x00; i < 0x30; i += 0x08)
+            print_qcm1(func, line, zq->qcm, i);
+        for (i = 0x40; i < 0x108; i += 0x40)
+            print_qcm1(func, line, zq->qcm, i);
 }

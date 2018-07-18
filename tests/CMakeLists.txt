@@ -1,5 +1,5 @@
 add_executable(libzhpeq_ld libzhpeq_ld.c)
-target_link_libraries(libzhpeq_ld zhpeq)
+target_link_libraries(libzhpeq_ld zhpeq zhpeq_util)
 add_executable(libzhpeq_util_log libzhpeq_util_log.c)
 target_link_libraries(libzhpeq_util_log zhpeq_util)
 add_executable(libzhpeq_qalloc libzhpeq_qalloc.c)

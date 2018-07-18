@@ -260,13 +260,15 @@ ZHPEQ_TIMING_COUNTERS(ZHPEQ_TIMING_COUNTER_EXTERN)
 
 #define ZHPEQ_MR_GET            ZHPE_MR_GET
 #define ZHPEQ_MR_PUT            ZHPE_MR_PUT
-#define ZHPEQ_MR_SEND           ZHPE_MR_PUT
-#define ZHPEQ_MR_RECV           ZHPE_MR_GET
+#define ZHPEQ_MR_SEND           ZHPE_MR_SEND
+#define ZHPEQ_MR_RECV           ZHPE_MR_RECV
 #define ZHPEQ_MR_GET_REMOTE     ZHPE_MR_GET_REMOTE
 #define ZHPEQ_MR_PUT_REMOTE     ZHPE_MR_PUT_REMOTE
+
 #define ZHPEQ_MR_KEY_ONESHOT    ZHPE_MR_KEY_ONESHOT
 #define ZHPEQ_MR_KEY_VALID      ZHPE_MR_KEY_VALID
-
+#define ZHPEQ_MR_MASK \
+    (ZHPE_MR_KMASK | ZHPEQ_MR_KEY_ONESHOT | ZHPEQ_MR_KEY_VALID)
 enum zhpeq_atomic_size {
     ZHPEQ_ATOMIC_SIZE32         = ZHPE_HW_ATOMIC_SIZE_32,
     ZHPEQ_ATOMIC_SIZE64         = ZHPE_HW_ATOMIC_SIZE_64,
@@ -311,6 +313,7 @@ enum zhpeq_backend {
 enum {
     ZHPEQ_PRI_MAX               = 1,
     ZHPEQ_TC_MAX                = 15,
+    ZHPEQ_IMM_MAX               = ZHPE_IMM_MAX,
 };
 
 struct zhpeq_attr {
@@ -320,6 +323,10 @@ struct zhpeq_attr {
 
 struct zhpeq_key_data {
     struct zhpe_key_data z;
+    union {
+        uint64_t        laddr;
+        uint64_t        rsp_zaddr;
+    };
 };
 
 struct zhpeq_cq_entry {
@@ -351,6 +358,18 @@ static inline int zhpeq_lcl_key_access(struct zhpeq_key_data *qkdata,
                                        void *buf, uint64_t len,
                                        uint64_t access, uint64_t *zaddr)
 {
+    int                 ret = 0;
+    uintptr_t           start = (uintptr_t)buf;
+    struct zhpe_key_data *kdata = &qkdata->z;
+
+    if (kdata &&
+        start >= kdata->vaddr && start + len <= kdata->vaddr + kdata->len &&
+        (access & kdata->access) == access)
+        *zaddr = (start - kdata->vaddr) + qkdata->laddr;
+    else
+        ret = -EINVAL;
+
+    return ret;
     return zhpeq_rem_key_access(qkdata, (uintptr_t)buf, len, access, zaddr);
 }
 
@@ -424,7 +443,12 @@ int zhpeq_atomic(struct zhpeq *zq, uint32_t qindex, bool fence, bool retval,
 
 void zhpeq_print_info(struct zhpeq *zq);
 
-int zhpeq_active(struct zhpeq *zq);
+struct zhpeq_dom *zhpeq_dom(struct zhpeq *zq);
+
+void zhpeq_print_qkdata(const char *func, uint line, struct zhpeq_dom *zdom,
+                        const struct zhpeq_key_data *qkdata);
+
+void zhpeq_print_qcm(const char *func, uint line, const struct zhpeq *zq);
 
 _EXTERN_C_END
 

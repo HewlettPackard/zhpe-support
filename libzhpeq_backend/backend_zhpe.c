@@ -210,7 +210,8 @@ static int zhpe_mr_reg(struct zhpeq_dom *zdom,
     req->hdr.opcode = ZHPE_OP_MR_REG;
     req->mr_reg.vaddr = (uintptr_t)buf;
     req->mr_reg.len = len;
-    req->mr_reg.access = access;
+    desc->access_plus = access | ZHPE_MR_INDIVIDUAL;
+    req->mr_reg.access = desc->access_plus;
     ret = zhpeq_driver_cmd(&op, sizeof(req->mr_reg), sizeof(rsp->mr_reg));
     if (ret < 0)
         goto done;
@@ -218,6 +219,7 @@ static int zhpe_mr_reg(struct zhpeq_dom *zdom,
     desc->hdr.magic = ZHPE_MAGIC;
     desc->hdr.version = ZHPEQ_MR_V1;
     desc->qkdata.z.vaddr = (uintptr_t)buf;
+    desc->qkdata.laddr = (uintptr_t)buf;
     desc->qkdata.z.len = len;
     desc->qkdata.z.zaddr = rsp->mr_reg.rsp_zaddr;
     desc->qkdata.z.access = access;
@@ -250,7 +252,7 @@ static int zhpe_mr_free(struct zhpeq_dom *zdom, struct zhpeq_key_data *qkdata)
     req->hdr.opcode = ZHPE_OP_MR_FREE;
     req->mr_free.vaddr = desc->qkdata.z.vaddr;
     req->mr_free.len = desc->qkdata.z.len;
-    req->mr_free.access = desc->qkdata.z.access;
+    req->mr_free.access = desc->access_plus;
     req->mr_free.rsp_zaddr = desc->qkdata.z.zaddr;
     ret = zhpeq_driver_cmd(&op, sizeof(req->mr_free), sizeof(rsp->mr_free));
     do_free(desc);
@@ -290,13 +292,14 @@ static int zhpe_zmmu_import(struct zhpeq_dom *zdom, int open_idx,
     req->hdr.opcode = ZHPE_OP_RMR_IMPORT;
     memcpy(req->rmr_import.uuid, *uuidp, sizeof(req->rmr_import.uuid));
     req->rmr_import.rsp_zaddr = desc->qkdata.z.zaddr;
+    desc->qkdata.rsp_zaddr = desc->qkdata.z.zaddr;
     req->rmr_import.len = desc->qkdata.z.len;
-    req->rmr_import.access = desc->qkdata.z.access;
+    desc->access_plus = desc->qkdata.z.access | ZHPE_MR_INDIVIDUAL;
+    req->rmr_import.access = desc->access_plus;
     ret = zhpeq_driver_cmd(&op, sizeof(req->rmr_import),
                            sizeof(rsp->rmr_import));
     if (ret < 0)
         goto done;
-    desc->qkdata.z.key = desc->qkdata.z.zaddr;
     desc->qkdata.z.zaddr = rsp->rmr_import.req_addr;
     desc->uuid_idx = open_idx;
     *qkdata_out = &desc->qkdata;
@@ -330,8 +333,8 @@ static int zhpe_zmmu_free(struct zhpeq_dom *zdom, struct zhpeq_key_data *qkdata)
            sizeof(req->rmr_free.uuid));
     req->rmr_free.req_addr = qkdata->z.zaddr;
     req->rmr_free.len = qkdata->z.len;
-    req->rmr_free.access = qkdata->z.access;
-    req->rmr_free.rsp_zaddr = qkdata->z.key;
+    req->rmr_free.access = desc->access_plus;
+    req->rmr_free.rsp_zaddr = qkdata->rsp_zaddr;
     ret = zhpeq_driver_cmd(&op, sizeof(req->rmr_free), sizeof(rsp->rmr_free));
     do_free(desc);
 
@@ -372,6 +375,37 @@ static void zhpe_print_info(struct zhpeq *zq)
     print_info("GenZ ASIC backend\n");
 }
 
+static int zhpe_getaddr(struct zhpeq *zq, union sockaddr_in46 *sa)
+{
+    sa->sa_family = AF_ZHPE;
+    memcpy(sa->zhpe.szhpe_uuid, &zhpeq_uuid, sizeof(sa->zhpe.szhpe_uuid));
+    sa->zhpe.szhpe_queue = ZHPE_QUEUEINVAL;
+
+    return 0;
+}
+
+char *zhpe_qkdata_id_str(struct zhpeq_dom *zdom,
+                         const struct zhpeq_key_data *qkdata)
+{
+    char                *ret = NULL;
+    struct zdom_data    *bdom = zdom->backend_data;
+    struct zhpeq_mr_desc_v1 *desc = container_of(qkdata,
+                                                 struct zhpeq_mr_desc_v1,
+                                                 qkdata);
+    char                uuid_str[37];
+
+    if (!(desc->hdr.version & ZHPEQ_MR_REMOTE))
+        goto done;
+
+    uuid_unparse_upper(bdom->nodes[desc->uuid_idx].uuid, uuid_str);
+    if (asprintf(&ret, "%d %s", desc->uuid_idx, uuid_str) == -1)
+        ret = NULL;
+ done:
+
+    return ret;
+}
+
+
 struct backend_ops ops = {
     .domain             = zhpe_domain,
     .domain_free        = zhpe_domain_free,
@@ -385,6 +419,8 @@ struct backend_ops ops = {
     .zmmu_free          = zhpe_zmmu_free,
     .zmmu_export        = zhpe_zmmu_export,
     .print_info         = zhpe_print_info,
+    .getaddr            = zhpe_getaddr,
+    .qkdata_id_str      = zhpe_qkdata_id_str,
 };
 
 void zhpeq_backend_zhpe_init(void)

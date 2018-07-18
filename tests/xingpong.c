@@ -81,7 +81,7 @@ struct rx_queue {
 };
 
 enum {
-    TX_NONE,
+    TX_NONE = 1,
     TX_WARMUP,
     TX_RUNNING,
     TX_LAST,
@@ -182,7 +182,7 @@ static int do_mem_setup(struct stuff *conn)
                         ret);
         goto done;
     }
-    memset(conn->tx_addr, 0, req);
+    memset(conn->tx_addr, TX_NONE, req);
     conn->rx_addr = conn->tx_addr + off;
 
     ret = zhpeq_mr_reg(conn->zdom, conn->tx_addr, req,
@@ -190,9 +190,11 @@ static int do_mem_setup(struct stuff *conn)
                         ZHPEQ_MR_GET_REMOTE | ZHPEQ_MR_PUT_REMOTE),
                        0, &conn->zq_local_kdata);
     if (ret < 0) {
-        print_func_err(__FUNCTION__, __LINE__, "zhpeq_mr_regattr", "", ret);
+        print_func_err(__FUNCTION__, __LINE__, "zhpeq_mr_reg", "", ret);
         goto done;
     }
+    zhpeq_print_qkdata(__FUNCTION__, __LINE__, conn->zdom,
+                       conn->zq_local_kdata);
     ret = zhpeq_lcl_key_access(conn->zq_local_kdata, conn->tx_addr,
                                req, 0, &conn->zq_local_tx_zaddr);
     if (ret < 0) {
@@ -200,6 +202,8 @@ static int do_mem_setup(struct stuff *conn)
                        "", ret);
         goto done;
     }
+    printf("%s,%u:tx_addr %p tx_zaddr 0x%lx\n",
+           __FUNCTION__, __LINE__, conn->tx_addr, conn->zq_local_tx_zaddr);
 
     req = sizeof(*conn->ring_timestamps) * args->ring_entries;
     ret = -posix_memalign((void **)&conn->ring_timestamps, page_size, req);
@@ -265,6 +269,8 @@ static int do_mem_xchg(struct stuff *conn)
         print_func_err(__FUNCTION__, __LINE__, "zhpeq_zmmu_import", "", ret);
         goto done;
     }
+    zhpeq_print_qkdata(__FUNCTION__, __LINE__, conn->zdom,
+                       conn->zq_remote_kdata);
 
     ret = zhpeq_rem_key_access(conn->zq_remote_kdata,
                                mem_msg.zq_remote_rx_addr, conn->ring_end_off,
@@ -274,6 +280,8 @@ static int do_mem_xchg(struct stuff *conn)
                        "", ret);
         goto done;
     }
+    printf("%s,%u:rx_zaddr 0x%lx\n",
+           __FUNCTION__, __LINE__, conn->zq_remote_rx_zaddr);
 
  done:
     do_free(zq_blob);

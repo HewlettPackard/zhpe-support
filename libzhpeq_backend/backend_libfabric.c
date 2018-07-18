@@ -234,7 +234,6 @@ struct lfab_work_eng_data {
 
 static int conn_eng_remove(struct lfab_work *work)
 {
-    ssize_t             ret;
     struct lfab_work_eng_data *data = work->data;
     struct engine       *eng = data->eng;
     struct stuff        *conn = data->conn;
@@ -242,14 +241,6 @@ static int conn_eng_remove(struct lfab_work *work)
     if (conn->eng) {
         CIRCLEQ_REMOVE(&eng->zq_head, &conn->lentry, ptrs);
         conn->eng = NULL;
-    }
-    for (; conn->tx_queued != conn->tx_completed;) {
-        ret = fab_completions(conn->fab_conn.tx_cq, 0, cq_update, conn->zq);
-        if (ret < 0) {
-            data->status = ret;
-            break;
-        }
-        conn->tx_completed += ret;
     }
 
     return 0;
@@ -1043,8 +1034,11 @@ static int lfab_qfree_pre(struct zhpeq *zq)
 
     zq->backend_data = NULL;
     if (conn) {
+        /* FIXME: How to do a clean shutdown? */
+#if 0
         while (conn->tx_queued != conn->tx_completed)
             sched_yield();
+#endif
         stuff_free(conn);
     }
 
@@ -1151,6 +1145,7 @@ static int lfab_mr_reg(struct zhpeq_dom *zdom,
     desc->qkdata.z.len = len;
     desc->qkdata.z.zaddr = (((uint64_t)index << KEY_SHIFT) +
                             TO_ADDR(desc->qkdata.z.vaddr));
+    desc->qkdata.laddr = desc->qkdata.z.zaddr;
     desc->qkdata.z.access = access;
     desc->qkdata.z.key = fi_mr_key(mr);
     *qkdata_out = &desc->qkdata;
@@ -1317,6 +1312,20 @@ static void lfab_print_info(struct zhpeq *zq)
     fab_print_info(fab_conn);
 }
 
+static int lfab_getaddr(struct zhpeq *zq, union sockaddr_in46 *sa)
+{
+    int                 ret;
+    struct stuff        *conn = zq->backend_data;
+    struct fab_conn     *fab_conn = &conn->fab_conn;
+    size_t              sa_len;
+
+    ret = fi_getname(&fab_conn->ep->fid, sa, &sa_len);
+    if (ret >= 0 && !sockaddr_valid(sa, sa_len, true))
+        ret = -EAFNOSUPPORT;
+
+    return ret;
+}
+
 static struct backend_ops ops = {
     .lib_init           = lfab_lib_init,
     .domain             = lfab_domain,
@@ -1335,6 +1344,7 @@ static struct backend_ops ops = {
     .zmmu_free          = lfab_zmmu_free,
     .zmmu_export        = lfab_zmmu_export,
     .print_info         = lfab_print_info,
+    .getaddr            = lfab_getaddr,
 };
 
 void zhpeq_backend_libfabric_init(void)

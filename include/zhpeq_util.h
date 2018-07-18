@@ -54,10 +54,11 @@
 
 #include <arpa/inet.h>
 
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 
-#include <sys/socket.h>
+#include <uuid/uuid.h>
 
 /* Do extern "C" without goofing up emacs. */
 #ifndef _EXTERN_C_SET
@@ -102,9 +103,21 @@ do {                                                            \
 
 typedef long long       llong;
 typedef unsigned long long ullong;
+typedef unsigned char   uchar;
 
 extern const char       *appname;
 extern size_t           page_size;
+
+/* Borrow AF_UNIX since it should never be seen. */
+#define AF_ZHPE         AF_UNIX
+#define ZHPE_ADDRSTRLEN (37)
+#define ZHPE_QUEUEINVAL (0xFFFFFFFFUL)
+
+struct sockaddr_zhpe {
+    sa_family_t         szhpe_family;
+    uuid_t              szhpe_uuid;
+    uint32_t            szhpe_queue;
+};
 
 union sockaddr_in46 {
     uint64_t            alignment;
@@ -115,6 +128,7 @@ union sockaddr_in46 {
     };
     struct sockaddr_in  addr4;
     struct sockaddr_in6 addr6;
+    struct sockaddr_zhpe zhpe;
 };
 
 static inline size_t sockaddr_len(const void *addr)
@@ -128,6 +142,9 @@ static inline size_t sockaddr_len(const void *addr)
 
     case AF_INET6:
         return sizeof(struct sockaddr_in6);
+
+    case AF_ZHPE:
+        return sizeof(struct sockaddr_zhpe);
 
     default:
         return 0;
@@ -163,15 +180,19 @@ static inline union sockaddr_in46 *sockaddr_dup(const void *addr)
     return ret;
 }
 
+int sockaddr_cmpx(const union sockaddr_in46 *sa1,
+                  const union sockaddr_in46 *sa2);
+
 static inline int sockaddr_cmp(const void *addr1, const void *addr2)
 {
     int                 ret;
     const union sockaddr_in46 *sa1 = addr1;
     const union sockaddr_in46 *sa2 = addr2;
 
-    ret = memcmp(&sa1->sa_family, &sa2->sa_family, sizeof(sa1->sa_family));
-    if (ret)
+    if (sa1->sa_family != sa2->sa_family) {
+        ret = sockaddr_cmpx(sa1, sa2);
         goto done;
+    }
 
     switch (sa1->sa_family) {
 
@@ -183,6 +204,11 @@ static inline int sockaddr_cmp(const void *addr1, const void *addr2)
     case AF_INET6:
         ret = memcmp(&sa1->addr6.sin6_addr, &sa2->addr6.sin6_addr,
                      sizeof(sa1->addr6.sin6_addr));
+        break;
+
+    case AF_ZHPE:
+        ret = memcmp(&sa1->zhpe.szhpe_uuid, &sa2->zhpe.szhpe_uuid,
+                     sizeof(sa1->zhpe.szhpe_uuid));
         break;
 
     default:
@@ -198,29 +224,114 @@ static inline int sockaddr_cmp(const void *addr1, const void *addr2)
     return ret;
 }
 
-static inline const char *sockaddr_ntop(const union sockaddr_in46 *sa,
-                                        char *buf, size_t len)
+const char *sockaddr_ntop(const union sockaddr_in46 *sa, char *buf, size_t len);
+
+static inline bool sockaddr_wildcard6(const struct sockaddr_in6 *sa)
 {
-    const char          *ret = NULL;
+    return !memcmp(&sa->sin6_addr, &in6addr_any, sizeof(sa->sin6_addr));
+}
+
+static inline bool sockaddr_loopback6(const struct sockaddr_in6 *sa)
+{
+    return !memcmp(&sa->sin6_addr, &in6addr_loopback, sizeof(sa->sin6_addr));
+}
+
+static inline bool sockaddr_wildcard(const union sockaddr_in46 *sa)
+{
+    bool			ret = false;
 
     switch (sa->sa_family) {
 
     case AF_INET:
-        ret = inet_ntop(AF_INET, &sa->addr4.sin_addr, buf, len);
+        ret = (sa->addr4.sin_addr.s_addr == htonl(INADDR_ANY));
         break;
 
     case AF_INET6:
-        ret = inet_ntop(AF_INET6, &sa->addr6.sin6_addr, buf, len);
+        ret = sockaddr_wildcard6(&sa->addr6);
         break;
 
     default:
-        if (*buf && len)
-            buf[0] = '\0';
-        errno = EAFNOSUPPORT;
         break;
     }
 
     return ret;
+}
+
+static inline bool sockaddr_loopback(const union sockaddr_in46 *sa)
+{
+    bool			ret = false;
+
+    switch (sa->sa_family) {
+
+    case AF_INET:
+        ret = ((ntohl(sa->addr4.sin_addr.s_addr) & IN_CLASSA_HOST) !=
+               (INADDR_LOOPBACK & IN_CLASSA_HOST));
+        break;
+
+    case AF_INET6:
+        ret = sockaddr_loopback6(&sa->addr6);
+        break;
+
+    default:
+        break;
+    }
+
+    return ret;
+}
+
+static inline void sockaddr_6to4(union sockaddr_in46 *sa)
+{
+    uint                i;
+    uchar               *cp;
+
+    if (sa->sa_family != AF_INET6)
+        goto done;
+    if (sockaddr_wildcard6(&sa->addr6))
+        sa->addr4.sin_addr.s_addr = htonl(INADDR_ANY);
+    else if (sockaddr_loopback6(&sa->addr6))
+        sa->addr4.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    else {
+        /* IPV4 mapped: ten bytes of zero followed by 2 bytes of 0xFF? */
+        for (i = 0, cp = sa->addr6.sin6_addr.s6_addr; i < 10; i++, cp++) {
+            if (*cp)
+                goto done;
+        }
+        for (i = 0; i < 2; i++, cp++) {
+            if (*cp != 0xFF)
+                goto done;
+        }
+        memmove(&sa->addr4.sin_addr, cp, sizeof(sa->addr4.sin_addr));
+    }
+    sa->sa_family = AF_INET;
+
+ done:
+
+    return;
+}
+
+static inline void sockaddr_printf(const char *func, uint line,
+                                   const union sockaddr_in46 *sa)
+{
+    const char          *family = "";
+    char                ntop[INET6_ADDRSTRLEN];
+
+    switch (sa->sa_family) {
+
+    case AF_INET:
+        family = "ipv4";
+        break;
+
+    case AF_INET6:
+        family = "ipv6";
+        break;
+
+    default:
+        break;
+    }
+
+    printf("%s,%u:%s:%s:%d\n",
+           func, line, family, sockaddr_ntop(sa, ntop, sizeof(ntop)),
+           sa->sin_port);
 }
 
 void zhpeq_util_init(char *argv0, int default_log_level, bool use_syslog);

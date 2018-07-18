@@ -884,3 +884,101 @@ int _sock_recv_var_blob(const char *callf, uint line,
 
     return ret;
 }
+
+const char *sockaddr_ntop(const union sockaddr_in46 *sa, char *buf, size_t len)
+{
+    const char          *ret = NULL;
+
+    if (!buf) {
+        errno = EFAULT;
+        goto done;
+    }
+    errno = 0;
+
+    switch (sa->sa_family) {
+
+    case AF_INET:
+        ret = inet_ntop(AF_INET, &sa->addr4.sin_addr, buf, len);
+        break;
+
+    case AF_INET6:
+        ret = inet_ntop(AF_INET6, &sa->addr6.sin6_addr, buf, len);
+        break;
+
+    case AF_ZHPE:
+        if (len  < ZHPE_ADDRSTRLEN) {
+            errno = ENOSPC;
+            break;
+        }
+        uuid_unparse_upper(sa->zhpe.szhpe_uuid, buf);
+        ret = buf;
+        break;
+
+    default:
+        errno = EAFNOSUPPORT;
+        break;
+    }
+    if (!ret && len > 0)
+        buf[0] = '\0';
+ done:
+
+    return ret;
+}
+
+int sockaddr_cmpx(const union sockaddr_in46 *sa1,
+                  const union sockaddr_in46 *sa2)
+
+{
+    int                 ret;
+    union sockaddr_in46 local1;
+    union sockaddr_in46 local2;
+
+    /* We should only be called if family1 != family2 */
+    switch (sa1->sa_family) {
+
+    case AF_INET:
+        memcpy(&local1, sa1, sizeof(struct sockaddr_in));
+        break;
+
+    case AF_INET6:
+        memcpy(&local1, sa1, sizeof(struct sockaddr_in6));
+        sockaddr_6to4(&local1);
+        if (local1.sa_family == AF_INET)
+            break;
+
+    default:
+        ret = memcmp(&sa1->sa_family, &sa2->sa_family, sizeof(sa1->sa_family));
+        goto done;
+
+    }
+
+    /* We should only be called if family2 != family2 */
+    switch (sa2->sa_family) {
+
+    case AF_INET:
+        memcpy(&local2, sa2, sizeof(struct sockaddr_in));
+        break;
+
+    case AF_INET6:
+        memcpy(&local2, sa2, sizeof(struct sockaddr_in6));
+        sockaddr_6to4(&local2);
+        if (local2.sa_family == AF_INET)
+            break;
+
+    default:
+        ret = memcmp(&sa1->sa_family, &sa2->sa_family, sizeof(sa1->sa_family));
+        goto done;
+
+    }
+
+    /* We'll only get here if both addresses can be "reduced" to IPv4. */
+    ret = memcmp(&local1.addr4.sin_addr, &local2.addr4.sin_addr,
+                 sizeof(local1.addr4.sin_addr));
+    if (ret)
+        goto done;
+
+    ret = memcmp(&local1.sin_port, &local2.sin_port, sizeof(local1.sin_port));
+ done:
+
+    return ret;
+}

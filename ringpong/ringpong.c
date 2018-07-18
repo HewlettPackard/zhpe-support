@@ -755,7 +755,7 @@ static int do_server_one(const struct args *oargs, int conn_fd)
         goto done;
 
     if (args->ep_type == FI_EP_RDM) {
-        ret = fab_ep_setup(fab_conn, NULL, 0, 0);
+        ret = fab_ep_setup(fab_conn, NULL, args->tx_avail, args->tx_avail);
         if (ret < 0)
             goto done;
         ret = fab_av_xchg(fab_conn, conn.sock_fd, timeout, &conn.dest_av);
@@ -917,7 +917,7 @@ static int do_client(const struct args *args)
         goto done;
 
     if (args->ep_type == FI_EP_RDM) {
-        ret = fab_ep_setup(fab_conn, NULL, 0, 0);
+        ret = fab_ep_setup(fab_conn, NULL, args->tx_avail, args->tx_avail);
         if (ret < 0)
             goto done;
         ret = fab_av_xchg(fab_conn, conn.sock_fd, timeout, &conn.dest_av);

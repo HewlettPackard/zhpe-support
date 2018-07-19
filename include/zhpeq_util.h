@@ -114,9 +114,9 @@ extern size_t           page_size;
 #define ZHPE_QUEUEINVAL (0xFFFFFFFFUL)
 
 struct sockaddr_zhpe {
-    sa_family_t         szhpe_family;
-    uuid_t              szhpe_uuid;
-    uint32_t            szhpe_queue;
+    sa_family_t         sz_family;
+    uuid_t              sz_uuid;
+    uint32_t            sz_queue;
 };
 
 union sockaddr_in46 {
@@ -181,34 +181,46 @@ static inline union sockaddr_in46 *sockaddr_dup(const void *addr)
 }
 
 int sockaddr_cmpx(const union sockaddr_in46 *sa1,
-                  const union sockaddr_in46 *sa2);
+                  const union sockaddr_in46 *sa2, bool noport);
 
-static inline int sockaddr_cmp(const void *addr1, const void *addr2)
+static inline int sockaddr_cmp(const void *addr1, const void *addr2,
+                               bool noport)
 {
     int                 ret;
     const union sockaddr_in46 *sa1 = addr1;
     const union sockaddr_in46 *sa2 = addr2;
 
     if (sa1->sa_family != sa2->sa_family) {
-        ret = sockaddr_cmpx(sa1, sa2);
+        ret = sockaddr_cmpx(sa1, sa2, noport);
         goto done;
     }
 
+    /* Use memcmp everywhere for -1, 0, 1 behavior. */
     switch (sa1->sa_family) {
 
     case AF_INET:
         ret = memcmp(&sa1->addr4.sin_addr, &sa2->addr4.sin_addr,
                      sizeof(sa1->addr4.sin_addr));
+        if (ret || noport)
+            goto done;
+        ret = memcmp(&sa1->sin_port, &sa2->sin_port, sizeof(sa1->sin_port));
         break;
 
     case AF_INET6:
         ret = memcmp(&sa1->addr6.sin6_addr, &sa2->addr6.sin6_addr,
                      sizeof(sa1->addr6.sin6_addr));
+        if (ret || noport)
+            goto done;
+        ret = memcmp(&sa1->sin_port, &sa2->sin_port, sizeof(sa1->sin_port));
         break;
 
     case AF_ZHPE:
-        ret = memcmp(&sa1->zhpe.szhpe_uuid, &sa2->zhpe.szhpe_uuid,
-                     sizeof(sa1->zhpe.szhpe_uuid));
+        ret = memcmp(&sa1->zhpe.sz_uuid, &sa2->zhpe.sz_uuid,
+                     sizeof(sa1->zhpe.sz_uuid));
+        if (ret || noport)
+            goto done;
+        ret = memcmp(&sa1->zhpe.sz_queue, &sa2->zhpe.sz_queue,
+                     sizeof(sa1->zhpe.sz_queue));
         break;
 
     default:
@@ -216,10 +228,6 @@ static inline int sockaddr_cmp(const void *addr1, const void *addr2)
         break;
     }
 
-    if (ret)
-        goto done;
-
-    ret = memcmp(&sa1->sin_port, &sa2->sin_port, sizeof(sa1->sin_port));
  done:
     return ret;
 }
@@ -309,8 +317,17 @@ static inline void sockaddr_6to4(union sockaddr_in46 *sa)
     return;
 }
 
-static inline void sockaddr_printf(const char *func, uint line,
-                                   const union sockaddr_in46 *sa)
+void print_dbg(const char *fmt, ...)
+    __attribute__ ((format (printf, 1, 2)));
+
+void print_info(const char *fmt, ...)
+    __attribute__ ((format (printf, 1, 2)));
+
+void print_err(const char *fmt, ...)
+    __attribute__ ((format (printf, 1, 2)));
+
+static inline void sockaddr_print(const char *func, uint line,
+                                  const union sockaddr_in46 *sa)
 {
     const char          *family = "";
     char                ntop[INET6_ADDRSTRLEN];
@@ -329,21 +346,12 @@ static inline void sockaddr_printf(const char *func, uint line,
         break;
     }
 
-    printf("%s,%u:%s:%s:%d\n",
-           func, line, family, sockaddr_ntop(sa, ntop, sizeof(ntop)),
-           sa->sin_port);
+    print_info("%s,%u:%s:%s:%d\n",
+               func, line, family, sockaddr_ntop(sa, ntop, sizeof(ntop)),
+               sa->sin_port);
 }
 
 void zhpeq_util_init(char *argv0, int default_log_level, bool use_syslog);
-
-void print_dbg(const char *fmt, ...)
-    __attribute__ ((format (printf, 1, 2)));
-
-void print_info(const char *fmt, ...)
-    __attribute__ ((format (printf, 1, 2)));
-
-void print_err(const char *fmt, ...)
-    __attribute__ ((format (printf, 1, 2)));
 
 char *errf_str(const char *fmt, ...)
     __attribute__ ((format (printf, 1, 2)));

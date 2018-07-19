@@ -910,7 +910,7 @@ const char *sockaddr_ntop(const union sockaddr_in46 *sa, char *buf, size_t len)
             errno = ENOSPC;
             break;
         }
-        uuid_unparse_upper(sa->zhpe.szhpe_uuid, buf);
+        uuid_unparse_upper(sa->zhpe.sz_uuid, buf);
         ret = buf;
         break;
 
@@ -926,8 +926,7 @@ const char *sockaddr_ntop(const union sockaddr_in46 *sa, char *buf, size_t len)
 }
 
 int sockaddr_cmpx(const union sockaddr_in46 *sa1,
-                  const union sockaddr_in46 *sa2)
-
+                  const union sockaddr_in46 *sa2, bool noport)
 {
     int                 ret;
     union sockaddr_in46 local1;
@@ -974,10 +973,10 @@ int sockaddr_cmpx(const union sockaddr_in46 *sa1,
     /* We'll only get here if both addresses can be "reduced" to IPv4. */
     ret = memcmp(&local1.addr4.sin_addr, &local2.addr4.sin_addr,
                  sizeof(local1.addr4.sin_addr));
-    if (ret)
+    if (ret || noport)
         goto done;
-
     ret = memcmp(&local1.sin_port, &local2.sin_port, sizeof(local1.sin_port));
+
  done:
 
     return ret;

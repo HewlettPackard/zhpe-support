@@ -50,6 +50,20 @@
 #include <rdma/fi_tagged.h>
 #include <rdma/fi_trigger.h>
 
+/* Do extern "C" without goofing up emacs. */
+#ifndef _EXTERN_C_SET
+#define _EXTERN_C_SET
+#ifdef  __cplusplus
+#define _EXTERN_C_BEG extern "C" {
+#define _EXTERN_C_END }
+#else
+#define _EXTERN_C_BEG
+#define _EXTERN_C_END
+#endif
+#endif
+
+_EXTERN_C_BEG
+
 #define FAB_FIVERSION       FI_VERSION(1, 5)
 
 struct fab_mrmem {
@@ -206,13 +220,13 @@ int _fab_av_xchg(const char *callf, uint line, struct fab_conn *conn,
 #define fab_av_xchg(...) \
     _fab_av_xchg(__FUNCTION__, __LINE__, __VA_ARGS__)
 
-int _fab_av_insert(const char *callf, uint line, struct fab_conn *conn,
+int _fab_av_insert(const char *callf, uint line, struct fab_dom *dom,
                    union sockaddr_in46 *saddr, fi_addr_t *fi_addr);
 
 #define fab_av_insert(...) \
     _fab_av_insert(__FUNCTION__, __LINE__, __VA_ARGS__)
 
-int _fab_av_remove(const char *callf, uint line, struct fab_conn *conn,
+int _fab_av_remove(const char *callf, uint line, struct fab_dom *dom,
                    fi_addr_t fi_addr);
 
 #define fab_av_remove(...) \
@@ -285,5 +299,13 @@ static inline struct fi_info *fab_conn_info(struct fab_conn *conn)
 {
     return (conn->finfo.info ?: conn->dom->finfo.info);
 }
+
+_EXTERN_C_END
+
+#ifdef _EXTERN_C_SET
+#undef _EXTERN_C_SET
+#undef _EXTERN_C_BEG
+#undef _EXTERN_C_END
+#endif
 
 #endif /* _ZHPEQ_UTIL_FAB_H_ */

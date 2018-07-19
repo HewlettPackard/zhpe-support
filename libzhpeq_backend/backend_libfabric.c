@@ -304,7 +304,7 @@ static int conn_av_remove(struct lfab_work *work)
     struct lfab_work_eng_data *data = work->data;
     struct stuff        *conn = data->conn;
 
-    data->status = fab_av_remove(&conn->fab_conn, data->fi_addr);
+    data->status = fab_av_remove(conn->fab_conn.dom, data->fi_addr);
 
     return 0;
 }
@@ -345,7 +345,7 @@ static int conn_av_insert(struct lfab_work *work)
     struct stuff        *conn = data->conn;
     int                 rc;
 
-    rc = fab_av_insert(&conn->fab_conn, &data->ep_addr, &data->fi_addr);
+    rc = fab_av_insert(conn->fab_conn.dom, &data->ep_addr, &data->fi_addr);
     if (rc >= 0 && rc != 1)
         rc = -FI_EIO;
     if (rc < 0) {

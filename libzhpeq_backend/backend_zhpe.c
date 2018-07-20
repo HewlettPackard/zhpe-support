@@ -378,8 +378,8 @@ static void zhpe_print_info(struct zhpeq *zq)
 static int zhpe_getaddr(struct zhpeq *zq, union sockaddr_in46 *sa)
 {
     sa->sa_family = AF_ZHPE;
-    memcpy(sa->zhpe.szhpe_uuid, &zhpeq_uuid, sizeof(sa->zhpe.szhpe_uuid));
-    sa->zhpe.szhpe_queue = ZHPE_QUEUEINVAL;
+    memcpy(sa->zhpe.sz_uuid, &zhpeq_uuid, sizeof(sa->zhpe.sz_uuid));
+    sa->zhpe.sz_queue = ZHPE_QUEUEINVAL;
 
     return 0;
 }

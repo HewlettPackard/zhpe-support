@@ -757,7 +757,7 @@ static bool lfab_zq(struct stuff *conn)
 
         case ZHPE_HW_OPCODE_PUT:
             conn->msg.context = context;
-            laddr = wqe->dma.lcl_addr;
+            laddr = wqe->dma.rd_addr;
             mr = lcl_mr[TO_KEYIDX(laddr)];
             /* Check if key unregistered. (Race handling.) */
             if ((uintptr_t)mr & 1) {
@@ -768,7 +768,7 @@ static bool lfab_zq(struct stuff *conn)
             conn->msg_iov.iov_base = TO_PTR(TO_ADDR(laddr));
             conn->msg_iov.iov_len = wqe->dma.len;
             conn->rma_iov.len = wqe->dma.len;
-            raddr = wqe->dma.rem_addr;
+            raddr = wqe->dma.wr_addr;
             conn->rma_iov.addr = TO_ADDR(raddr);
             conn->rma_iov.key = bdom->rkey[TO_KEYIDX(raddr)].rkey;
             conn->msg.addr = bdom->rkey[TO_KEYIDX(raddr)].av_idx;
@@ -788,7 +788,7 @@ static bool lfab_zq(struct stuff *conn)
 
         case ZHPE_HW_OPCODE_GET:
             conn->msg.context = context;
-            laddr = wqe->dma.lcl_addr;
+            laddr = wqe->dma.wr_addr;
             mr = lcl_mr[TO_KEYIDX(laddr)];
             /* Check if key unregistered. (Race handling.) */
             if ((uintptr_t)mr & 1) {
@@ -799,7 +799,7 @@ static bool lfab_zq(struct stuff *conn)
             conn->msg_iov.iov_base = TO_PTR(TO_ADDR(laddr));
             conn->msg_iov.iov_len = wqe->dma.len;
             conn->rma_iov.len = wqe->dma.len;
-            raddr = wqe->dma.rem_addr;
+            raddr = wqe->dma.rd_addr;
             conn->rma_iov.addr = TO_ADDR(raddr);
             conn->rma_iov.key = bdom->rkey[TO_KEYIDX(raddr)].rkey;
             conn->msg.addr = bdom->rkey[TO_KEYIDX(raddr)].av_idx;

@@ -746,7 +746,7 @@ int _fab_av_xchg_addr(const char *callf, uint line, struct fab_conn *conn,
         goto done;
     }
     sockaddr_6to4(ep_addr);
-    if (sockaddr_loopback(ep_addr)) {
+    if (sockaddr_loopback(ep_addr, true)) {
         save_port = ep_addr->sin_port;
         ret = do_getsockname(sock_fd, ep_addr);
         if (ret < 0)

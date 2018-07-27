@@ -885,9 +885,10 @@ int _sock_recv_var_blob(const char *callf, uint line,
     return ret;
 }
 
-const char *sockaddr_ntop(const union sockaddr_in46 *sa, char *buf, size_t len)
+const char *sockaddr_ntop(const void *addr, char *buf, size_t len)
 {
     const char          *ret = NULL;
+    const union sockaddr_in46 *sa = addr;
 
     if (!buf) {
         errno = EFAULT;

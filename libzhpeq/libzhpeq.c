@@ -50,7 +50,6 @@ static enum zhpeq_backend b_type;
 
 uuid_t                  zhpeq_uuid;
 
-
 static struct zhpe_shared_data *shared_data;
 
 ZHPEQ_TIMING_TIMERS(ZHPEQ_TIMING_TIMER_DECLARE)
@@ -763,7 +762,7 @@ int zhpeq_nop(struct zhpeq *zq, uint32_t qindex, bool fence,
 }
 
 static inline int zhpeq_rw(struct zhpeq *zq, uint32_t qindex, bool fence,
-                           uint64_t lcl_addr, size_t len, uint64_t rem_addr,
+                           uint64_t rd_addr, size_t len, uint64_t wr_addr,
                            void *context, uint16_t opcode)
 {
     int                 ret = -EINVAL;
@@ -785,8 +784,8 @@ static inline int zhpeq_rw(struct zhpeq *zq, uint32_t qindex, bool fence,
     wqe->hdr.opcode = opcode;
     wqe->hdr.cmp_index = qindex;
     wqe->dma.len = len;
-    wqe->dma.lcl_addr = lcl_addr;
-    wqe->dma.rem_addr = rem_addr;
+    wqe->dma.rd_addr = rd_addr;
+    wqe->dma.wr_addr = wr_addr;
     ret = 0;
 
  done:
@@ -837,7 +836,7 @@ int zhpeq_get(struct zhpeq *zq, uint32_t qindex, bool fence,
               uint64_t lcl_addr, size_t len, uint64_t rem_addr,
               void *context)
 {
-    return zhpeq_rw(zq, qindex, fence, lcl_addr, len, rem_addr, context,
+    return zhpeq_rw(zq, qindex, fence, rem_addr, len, lcl_addr, context,
                     ZHPE_HW_OPCODE_GET);
 }
 
@@ -955,6 +954,7 @@ int zhpeq_mr_reg(struct zhpeq_dom *zdom, const void *buf, size_t len,
     ret = b_ops->mr_reg(zdom, buf, len, access, qkdata_out);
     if (ret >= 0 && (access & ZHPEQ_MR_KEY_VALID))
         (*qkdata_out)->z.key = requested_key;
+
  done:
     return ret;
 }

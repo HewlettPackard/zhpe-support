@@ -232,7 +232,7 @@ static inline int sockaddr_cmp(const void *addr1, const void *addr2,
     return ret;
 }
 
-const char *sockaddr_ntop(const union sockaddr_in46 *sa, char *buf, size_t len);
+const char *sockaddr_ntop(const void *addr, char *buf, size_t len);
 
 static inline bool sockaddr_wildcard6(const struct sockaddr_in6 *sa)
 {
@@ -244,9 +244,10 @@ static inline bool sockaddr_loopback6(const struct sockaddr_in6 *sa)
     return !memcmp(&sa->sin6_addr, &in6addr_loopback, sizeof(sa->sin6_addr));
 }
 
-static inline bool sockaddr_wildcard(const union sockaddr_in46 *sa)
+static inline bool sockaddr_wildcard(const void *addr)
 {
-    bool			ret = false;
+    bool                ret = false;
+    const union sockaddr_in46 *sa = addr;
 
     switch (sa->sa_family) {
 
@@ -265,15 +266,18 @@ static inline bool sockaddr_wildcard(const union sockaddr_in46 *sa)
     return ret;
 }
 
-static inline bool sockaddr_loopback(const union sockaddr_in46 *sa)
+static inline bool sockaddr_loopback(const void *addr, bool loopany)
 {
-    bool			ret = false;
+    bool                ret = false;
+    const union sockaddr_in46 *sa = addr;
+    uint32_t            netmask;
 
     switch (sa->sa_family) {
 
     case AF_INET:
-        ret = ((ntohl(sa->addr4.sin_addr.s_addr) & IN_CLASSA_NET) ==
-               (INADDR_LOOPBACK & IN_CLASSA_NET));
+        netmask = (loopany ? IN_CLASSA_NET : ~(uint32_t)0);
+        ret = ((ntohl(sa->addr4.sin_addr.s_addr) & netmask) ==
+               (INADDR_LOOPBACK & netmask));
         break;
 
     case AF_INET6:
@@ -287,8 +291,9 @@ static inline bool sockaddr_loopback(const union sockaddr_in46 *sa)
     return ret;
 }
 
-static inline void sockaddr_6to4(union sockaddr_in46 *sa)
+static inline void sockaddr_6to4(void *addr)
 {
+    union sockaddr_in46 *sa = addr;
     uint                i;
     uchar               *cp;
 
@@ -326,9 +331,9 @@ void print_info(const char *fmt, ...)
 void print_err(const char *fmt, ...)
     __attribute__ ((format (printf, 1, 2)));
 
-static inline void sockaddr_print(const char *func, uint line,
-                                  const union sockaddr_in46 *sa)
+static inline void sockaddr_print(const char *func, uint line, const void *addr)
 {
+    const union sockaddr_in46 *sa = addr;
     const char          *family = "";
     char                ntop[INET6_ADDRSTRLEN];
 

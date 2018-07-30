@@ -64,10 +64,6 @@ struct cli_wire_msg {
     bool                unidir_mode;
 };
 
-struct svr_wire_msg {
-    int                 dummy;
-};
-
 struct mem_wire_msg {
     uint64_t            zq_remote_rx_addr;
 };
@@ -81,7 +77,7 @@ struct rx_queue {
 };
 
 enum {
-    TX_NONE = 1,
+    TX_NONE = 0,
     TX_WARMUP,
     TX_RUNNING,
     TX_LAST,
@@ -145,17 +141,19 @@ static void stuff_free(struct stuff *stuff)
         zhpeq_zmmu_free(stuff->zdom, stuff->zq_remote_kdata);
         zhpeq_mr_free(stuff->zdom, stuff->zq_local_kdata);
     }
+    if (stuff->open_idx != -1)
+        zhpeq_backend_close(stuff->zq, stuff->open_idx);
     zhpeq_free(stuff->zq);
     zhpeq_domain_free(stuff->zdom);
 
-    do_free(stuff->rx_rcv);
-    do_free(stuff->ring_timestamps);
-    do_free(stuff->tx_addr);
+    free(stuff->rx_rcv);
+    free(stuff->ring_timestamps);
+    free(stuff->tx_addr);
 
     FD_CLOSE(stuff->sock_fd);
 
     if (stuff->allocated)
-        do_free(stuff);
+        free(stuff);
 }
 
 static int do_mem_setup(struct stuff *conn)
@@ -193,8 +191,6 @@ static int do_mem_setup(struct stuff *conn)
         print_func_err(__FUNCTION__, __LINE__, "zhpeq_mr_reg", "", ret);
         goto done;
     }
-    zhpeq_print_qkdata(__FUNCTION__, __LINE__, conn->zdom,
-                       conn->zq_local_kdata);
     ret = zhpeq_lcl_key_access(conn->zq_local_kdata, conn->tx_addr,
                                req, 0, &conn->zq_local_tx_zaddr);
     if (ret < 0) {
@@ -202,8 +198,6 @@ static int do_mem_setup(struct stuff *conn)
                        "", ret);
         goto done;
     }
-    printf("%s,%u:tx_addr %p tx_zaddr 0x%lx\n",
-           __FUNCTION__, __LINE__, conn->tx_addr, conn->zq_local_tx_zaddr);
 
     req = sizeof(*conn->ring_timestamps) * args->ring_entries;
     ret = -posix_memalign((void **)&conn->ring_timestamps, page_size, req);
@@ -269,8 +263,6 @@ static int do_mem_xchg(struct stuff *conn)
         print_func_err(__FUNCTION__, __LINE__, "zhpeq_zmmu_import", "", ret);
         goto done;
     }
-    zhpeq_print_qkdata(__FUNCTION__, __LINE__, conn->zdom,
-                       conn->zq_remote_kdata);
 
     ret = zhpeq_rem_key_access(conn->zq_remote_kdata,
                                mem_msg.zq_remote_rx_addr, conn->ring_end_off,
@@ -280,8 +272,6 @@ static int do_mem_xchg(struct stuff *conn)
                        "", ret);
         goto done;
     }
-    printf("%s,%u:rx_zaddr 0x%lx\n",
-           __FUNCTION__, __LINE__, conn->zq_remote_rx_zaddr);
 
  done:
     do_free(zq_blob);
@@ -363,10 +353,9 @@ static int zq_write(struct zhpeq *zq, bool fence, uint64_t lcl_zaddr,
         goto done;
     }
     zq_index = ret;
-    ret = zhpeq_put(zq, zq_index, false, lcl_zaddr, len, rem_zaddr,
-                    (void *)1);
+    ret = zhpeq_put(zq, zq_index, fence, lcl_zaddr, len, rem_zaddr, NULL);
     if (ret < 0) {
-        print_func_fi_err(__FUNCTION__, __LINE__, "zhpeq_write", "", ret);
+        print_func_err(__FUNCTION__, __LINE__, "zhpeq_put", "", ret);
         goto done;
     }
     ret = zhpeq_commit(zq, zq_index, 1);
@@ -452,10 +441,8 @@ static int do_server_pong(struct stuff *conn)
             zq_rx_addr = conn->zq_remote_rx_zaddr + tx_off;
             ret = zq_write(conn->zq, false, zq_tx_addr, args->ring_entry_len,
                            zq_rx_addr);
-            if (ret < 0) {
-                print_func_fi_err(__FUNCTION__, __LINE__, "zq_write", "", ret);
+            if (ret < 0)
                 goto done;
-            }
         }
     }
     while (tx_avail != conn->tx_avail) {
@@ -599,10 +586,8 @@ static int do_client_pong(struct stuff *conn)
             ret = zq_write(conn->zq, false, zq_tx_addr, args->ring_entry_len,
                            zq_rx_addr);
             lat_write += get_cycles(NULL) - now;
-            if (ret < 0) {
-                print_func_fi_err(__FUNCTION__, __LINE__, "zq_write", "", ret);
+            if (ret < 0)
                 goto done;
-            }
         }
         delta = tx_count - rx_count;
         if (delta > q_max1)
@@ -726,10 +711,8 @@ static int do_client_unidir(struct stuff *conn)
                        zq_rx_addr);
         now = get_cycles(NULL);
         lat_write += get_cycles(NULL) - now;
-        if (ret < 0) {
-            print_func_fi_err(__FUNCTION__, __LINE__, "zq_write", "", ret);
+        if (ret < 0)
             goto done;
-        }
     }
     while (tx_avail != conn->tx_avail) {
         now = get_cycles(NULL);
@@ -792,6 +775,7 @@ int do_zq_setup(struct stuff *conn)
         print_func_err(__FUNCTION__, __LINE__, "zhpeq_open", "", ret);
         goto done;
     }
+    conn->open_idx = ret;
     /* Now let's exchange the memory parameters to the other side. */
     ret = do_mem_setup(conn);
     if (ret < 0)
@@ -812,9 +796,9 @@ static int do_server_one(const struct args *oargs, int conn_fd)
     struct stuff        conn = {
         .args           = args,
         .sock_fd        = conn_fd,
+        .open_idx       = -1,
     };
     struct cli_wire_msg cli_msg;
-    struct svr_wire_msg svr_msg;
 
     /* Let's take a moment to get the client parameters over the socket. */
     ret = sock_recv_fixed_blob(conn.sock_fd, &cli_msg, sizeof(cli_msg));
@@ -829,8 +813,8 @@ static int do_server_one(const struct args *oargs, int conn_fd)
     args->once_mode = !!cli_msg.once_mode;
     args->unidir_mode = !!cli_msg.unidir_mode;
 
-    /* Dummy message for ordering. */
-    ret = sock_send_blob(conn.sock_fd, &svr_msg, sizeof(svr_msg));
+    /* Dummy for ordering. */
+    ret = sock_send_blob(conn.sock_fd, NULL, 0);
     if (ret < 0)
         goto done;
 
@@ -911,12 +895,12 @@ static int do_client(const struct args *args)
 {
     int                 ret;
     struct stuff        conn = {
-            .args = args,
-            .sock_fd = -1,
-            .ring_ops = args->ring_ops,
-        };
+        .args           = args,
+        .sock_fd        = -1,
+        .open_idx       = -1,
+        .ring_ops       = args->ring_ops,
+    };
     struct cli_wire_msg cli_msg;
-    struct svr_wire_msg svr_msg;
 
     ret = connect_sock(args->node, args->service);
     if (ret < 0)
@@ -936,8 +920,8 @@ static int do_client(const struct args *args)
     if (ret < 0)
         goto done;
 
-    /* Dummy message for ordering. */
-    ret = sock_recv_fixed_blob(conn.sock_fd, &svr_msg, sizeof(svr_msg));
+    /* Dummy for ordering. */
+    ret = sock_recv_fixed_blob(conn.sock_fd, NULL, 0);
     if (ret < 0)
         goto done;
 
@@ -976,7 +960,7 @@ static void usage(bool help)
 {
     print_usage(
         help,
-        "Usage:%s [-acosu] [-d <domain>] [-p <provider>] [-t <txqlen>]\n"
+        "Usage:%s [-acosu] [-t <txqlen>]\n"
         "    <port> [<node> <entry_len> <ring_entries>\n"
         "    <op_count/seconds>]\n"
         "All sizes may be postfixed with [kmgtKMGT] to specify the"

@@ -1,3 +1,5 @@
+add_executable(edgetest edgetest.c)
+target_link_libraries(edgetest zhpeq zhpeq_util zhpeq_util_fab)
 add_executable(libzhpeq_ld libzhpeq_ld.c)
 target_link_libraries(libzhpeq_ld zhpeq zhpeq_util)
 add_executable(libzhpeq_util_log libzhpeq_util_log.c)
@@ -12,6 +14,7 @@ add_executable(xingpong xingpong.c)
 target_link_libraries(xingpong zhpeq zhpeq_util zhpeq_util_fab)
 install(
   TARGETS
+  edgetest
   libzhpeq_ld
   libzhpeq_qalloc
   libzhpeq_qattr

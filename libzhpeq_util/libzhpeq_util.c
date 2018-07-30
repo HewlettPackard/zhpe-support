@@ -809,9 +809,9 @@ int _sock_send_blob(const char *callf, uint line, int fd,
     ret = check_func_io(callf, line, "write", "", req, res, 0);
     if (ret < 0)
         goto done;
-    if (!blob_len)
-        goto done;
     req = blob_len;
+    if (!req)
+        goto done;
     res = write(fd, blob, req);
     ret = check_func_io(callf, line, "write", "", req, res, 0);
  done:
@@ -833,10 +833,14 @@ int _sock_recv_fixed_blob(const char *callf, uint line,
     if (ret < 0)
         goto done;
     req = ntohl(wlen);
+    if (!blob_len && req == UINT32_MAX)
+        req = 0;
     if (!_expected_saw(callf, line, "wire len", blob_len, req)) {
         ret = -EINVAL;
         goto done;
     }
+    if (!req)
+        goto done;
     res = read(sock_fd, blob, req);
     ret = check_func_io(callf, line, "read", "", req, res, 0);
  done:

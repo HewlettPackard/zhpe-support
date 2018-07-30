@@ -267,8 +267,7 @@ ZHPEQ_TIMING_COUNTERS(ZHPEQ_TIMING_COUNTER_EXTERN)
 
 #define ZHPEQ_MR_KEY_ONESHOT    ZHPE_MR_KEY_ONESHOT
 #define ZHPEQ_MR_KEY_VALID      ZHPE_MR_KEY_VALID
-#define ZHPEQ_MR_MASK \
-    (ZHPE_MR_KMASK | ZHPEQ_MR_KEY_ONESHOT | ZHPEQ_MR_KEY_VALID)
+
 enum zhpeq_atomic_size {
     ZHPEQ_ATOMIC_SIZE32         = ZHPE_HW_ATOMIC_SIZE_32,
     ZHPEQ_ATOMIC_SIZE64         = ZHPE_HW_ATOMIC_SIZE_64,
@@ -431,7 +430,7 @@ int zhpeq_get(struct zhpeq *zq, uint32_t qindex, bool fence,
               void *context);
 
 int zhpeq_geti(struct zhpeq *zq, uint32_t qindex, bool fence,
-               uint64_t remote_addr, size_t len, void *context);
+               size_t len, uint64_t remote_addr, void *context);
 
 int zhpeq_nop(struct zhpeq *zq, uint32_t qindex, bool fence,
               void *context);

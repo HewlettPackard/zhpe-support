@@ -39,6 +39,9 @@
 #include <dlfcn.h>
 #include <limits.h>
 
+/* Set to 1 to dump qkdata when registered/exported/imported/freed. */
+#define QKDATA_DUMP     (0)
+
 #define LIBNAME         "libzhpeq"
 #define BACKNAME        "libzhpeq_backend.so"
 
@@ -770,8 +773,6 @@ static inline int zhpeq_rw(struct zhpeq *zq, uint32_t qindex, bool fence,
 
     if (!zq)
         goto done;
-    if (!context)
-        goto done;
     if (len > shared_data->default_attr.max_dma_len)
         goto done;
 
@@ -808,8 +809,6 @@ int zhpeq_puti(struct zhpeq *zq, uint32_t qindex, bool fence,
     union zhpe_hw_wq_entry *wqe;
 
     if (!zq)
-        goto done;
-    if (!context)
         goto done;
     if (!buf || !len || len > sizeof(wqe->imm.data))
         goto done;
@@ -848,8 +847,6 @@ int zhpeq_geti(struct zhpeq *zq, uint32_t qindex, bool fence,
 
     if (!zq)
         goto done;
-    if (!context)
-        goto done;
     if (!len || len > sizeof(wqe->imm.data))
         goto done;
 
@@ -879,8 +876,6 @@ int zhpeq_atomic(struct zhpeq *zq, uint32_t qindex, bool fence, bool retval,
     size_t              n_operands;
 
     if (!zq)
-        goto done;
-    if (!context)
         goto done;
     if (!operands)
         goto done;
@@ -954,6 +949,10 @@ int zhpeq_mr_reg(struct zhpeq_dom *zdom, const void *buf, size_t len,
     ret = b_ops->mr_reg(zdom, buf, len, access, qkdata_out);
     if (ret >= 0 && (access & ZHPEQ_MR_KEY_VALID))
         (*qkdata_out)->z.key = requested_key;
+#if QKDATA_DUMP
+    if (ret >= 0)
+        zhpeq_print_qkdata(__FUNCTION__, __LINE__, zdom, *qkdata_out);
+#endif
 
  done:
     return ret;
@@ -969,6 +968,9 @@ int zhpeq_mr_free(struct zhpeq_dom *zdom, struct zhpeq_key_data *qkdata)
     if (!zdom)
         goto done;
 
+#if QKDATA_DUMP
+    zhpeq_print_qkdata(__FUNCTION__, __LINE__, zdom, qkdata);
+#endif
     ret = b_ops->mr_free(zdom, qkdata);
 
  done:
@@ -989,6 +991,10 @@ int zhpeq_zmmu_import(struct zhpeq_dom *zdom, int open_idx, const void *blob,
 
     ret = b_ops->zmmu_import(zdom, open_idx, blob, blob_len, cpu_visible,
                              qkdata_out);
+#if QKDATA_DUMP
+    if (ret >= 0)
+        zhpeq_print_qkdata(__FUNCTION__, __LINE__, zdom, *qkdata_out);
+#endif
 
  done:
     return ret;
@@ -1006,6 +1012,9 @@ int zhpeq_zmmu_export(struct zhpeq_dom *zdom,
     if (!zdom || !qkdata || !blob_len)
         goto done;
 
+#if QKDATA_DUMP
+    zhpeq_print_qkdata(__FUNCTION__, __LINE__, zdom, qkdata);
+#endif
     ret = b_ops->zmmu_export(zdom, qkdata, blob_out, blob_len);
 
  done:
@@ -1022,6 +1031,9 @@ int zhpeq_zmmu_free(struct zhpeq_dom *zdom, struct zhpeq_key_data *qkdata)
     if (!zdom)
         goto done;
 
+#if 0
+    zhpeq_print_qkdata(__FUNCTION__, __LINE__, zdom, qkdata);
+#endif
     ret = b_ops->zmmu_free(zdom, qkdata);
 
  done:
@@ -1153,7 +1165,7 @@ void zhpeq_print_qkdata(const char *func, uint line, struct zhpeq_dom *zdom,
 static void print_qcm1(const char *func, uint line, const volatile void *qcm,
                       uint offset)
 {
-        printf("%s,%u:qcm[0x%02x] = 0x%lx\n",
+        printf("%s,%u:qcm[0x%03x] = 0x%lx\n",
                func, line, offset, ioread64(qcm + offset));
 }
 

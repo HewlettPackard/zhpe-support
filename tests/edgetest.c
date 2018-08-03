@@ -52,16 +52,18 @@
 struct cli_wire_msg {
     uint64_t            buf_len;
     bool                once_mode;
-};
-
-struct svr_wire_msg {
-    int                 dummy;
+    bool                qcm;
+    bool                verbose;
 };
 
 struct op_wire_msg {
     uint64_t            coff;
     uint64_t            soff;
     uint64_t            op_len;
+};
+
+struct error_wire_msg {
+    int32_t             error;
 };
 
 struct op_context {
@@ -83,6 +85,16 @@ struct args {
     uint64_t            soff_max;
     bool                imm;
     bool                once_mode;
+    bool                qcm;
+    bool                stop;
+    bool                verbose;
+};
+
+struct checker_data {
+    const struct args   *args;
+    uint8_t             *buf;
+    struct op_wire_msg  op_msg;
+    bool                banner_done;
 };
 
 struct stuff {
@@ -101,27 +113,27 @@ struct stuff {
 static void stuff_free(struct stuff *stuff)
 {
     void                *buf;
+    bool                qcm = (stuff->args && stuff->args->qcm);
 
     if (!stuff)
         return;
 
     if (stuff->zq) {
-#if 0
-        zhpeq_print_qkdata(__FUNCTION__, __LINE__, stuff->zdom,
-                           stuff->rem_kdata);
-#endif
+        if (qcm)
+            zhpeq_print_qkdata(__FUNCTION__, __LINE__, stuff->zdom,
+                               stuff->rem_kdata);
         zhpeq_zmmu_free(stuff->zdom, stuff->rem_kdata);
         buf = (void *)stuff->lcl_kdata->z.vaddr;
-#if 0
-        zhpeq_print_qkdata(__FUNCTION__, __LINE__, stuff->zdom,
-                           stuff->lcl_kdata);
-#endif
+        if (qcm)
+            zhpeq_print_qkdata(__FUNCTION__, __LINE__, stuff->zdom,
+                               stuff->lcl_kdata);
         zhpeq_mr_free(stuff->zdom, stuff->lcl_kdata);
         free(buf);
     }
     if (stuff->open_idx != -1)
         zhpeq_backend_close(stuff->zq, stuff->open_idx);
-    zhpeq_print_qcm(__FUNCTION__, __LINE__, stuff->zq);
+    if (qcm)
+        zhpeq_print_qcm(__FUNCTION__, __LINE__, stuff->zq);
     zhpeq_free(stuff->zq);
     zhpeq_domain_free(stuff->zdom);
 
@@ -157,9 +169,8 @@ static int do_mem_setup(struct stuff *conn)
         goto done;
     }
     buf = NULL;
-#if 0
-    zhpeq_print_qkdata(__FUNCTION__, __LINE__, conn->zdom, conn->lcl_kdata);
-#endif
+    if (args->qcm)
+        zhpeq_print_qkdata(__FUNCTION__, __LINE__, conn->zdom, conn->lcl_kdata);
 
  done:
     free(buf);
@@ -192,9 +203,8 @@ static int do_mem_xchg(struct stuff *conn)
         print_func_err(__FUNCTION__, __LINE__, "zhpeq_zmmu_import", "", ret);
         goto done;
     }
-#if 0
-    zhpeq_print_qkdata(__FUNCTION__, __LINE__, conn->zdom, conn->rem_kdata);
-#endif
+    if (conn->args->qcm)
+        zhpeq_print_qkdata(__FUNCTION__, __LINE__, conn->zdom, conn->rem_kdata);
 
  done:
     free(blob);
@@ -294,94 +304,149 @@ static int zq_op(struct zhpeq *zq, bool read, void *lcl_buf, uint64_t lcl_zaddr,
     return ret;
 }
 
-static inline void ramp_buf(uint8_t *buf, size_t buf_len, size_t off,
-                            size_t op_len, uint8_t fill, uint8_t start)
+static inline void fill_buf(struct checker_data *data, bool client)
 {
-    size_t              end = off + op_len;
-    size_t              i;
-    uint8_t             v;
+    uint8_t             fill;
 
-    memset(buf, fill, off);
-    memset(buf + end,  fill, buf_len - end);
-    for (i = off, v = start; i < end ; i++, v = (v == 0xFE ? 0x01 : v + 1))
-        buf[i] = v;
+    if (client)
+        fill = 0xFF;
+    else
+        fill = 0x00;
+
+    memset(data->buf, fill, data->args->buf_len);
 }
 
-static int check_buf(uint8_t *buf, size_t buf_len, size_t off,
-                     size_t op_len, uint8_t fill, uint8_t start)
+static inline void ramp_buf(struct checker_data *data, bool client)
 {
-    int                 ret = 0;
-    size_t              end = off + op_len;
+    size_t              off;
+    uint8_t             fill;
+    uint8_t             start;
+    size_t              end;
     size_t              i;
     uint8_t             v;
 
+    if (client) {
+        off = data->op_msg.coff;
+        fill = 0xFF;
+        start = 0x01;
+    } else {
+        off = data->op_msg.soff;
+        fill = 0x00;
+        start = 0x02;
+    }
+    end = off + data->op_msg.op_len;
+
+    memset(data->buf, fill, off);
+    memset(data->buf + end,  fill, data->args->buf_len - end);
+    for (i = off, v = start; i < end ; i++, v = (v == 0xFE ? 0x01 : v + 1))
+        data->buf[i] = v;
+}
+
+static inline void print_banner(struct checker_data *data, bool err)
+{
+    const char          *fmt;
+
+    fmt = "coff 0x%05lx soff 0x%05lx op_len 0x%05lx\n";
+    if (err)
+        print_err(fmt, data->op_msg.coff, data->op_msg.soff,
+                  data->op_msg.op_len);
+    else
+        print_info(fmt, data->op_msg.coff, data->op_msg.soff,
+                   data->op_msg.op_len);
+}
+
+static inline bool checker(struct checker_data *data,
+                           const char *label, size_t off,
+                           uint8_t expected, uint8_t saw)
+{
+
+    if (expected == saw)
+        return false;
+    if (!data->banner_done) {
+        print_banner(data, true);
+        data->banner_done = true;
+    }
+    print_err("%s exp 0x%02x saw 0x%02x\n", label, expected, saw);
+
+    return true;
+}
+
+static int check_buf(struct checker_data *data, bool client)
+{
+    int                 ret = 0;
+    size_t              off;
+    uint8_t             fill;
+    uint8_t             start;
+    size_t              end;
+    size_t              i;
+    uint8_t             v;
+
+    /* Invert start from ramp_buf(). */
+    if (client) {
+        off = data->op_msg.coff;
+        fill = 0xFF;
+        start = 0x02;
+    } else {
+        off = data->op_msg.soff;
+        fill = 0x00;
+        start = 0x01;
+    }
+    end = off + data->op_msg.op_len;
+
     for (i = 0; i < off; i++) {
-        if (expected_saw("head", fill, buf[i]))
-            continue;
-        print_err("boff 0x%05lx\n", i);
-        ret = -ERANGE;
+        if (checker(data, "head", off, fill, data->buf[i]))
+            ret = -ERANGE;
     }
     for (v = start; i < end ; i++, v = (v == 0xFE ? 0x01 : v + 1)) {
-        if (expected_saw("data", v, buf[i]))
-            continue;
-        print_err("boff 0x%05lx\n", i);
-        ret = -ERANGE;
+        if (checker(data, "data", off, v, data->buf[i]))
+            ret = -ERANGE;
     }
-    for (; i < buf_len; i++) {
-        if (expected_saw("tail", fill, buf[i]))
-            continue;
-        print_err("boff 0x%05lx\n", i);
-        ret = -ERANGE;
+    for (; i < data->args->buf_len; i++) {
+        if (checker(data, "tail", off, fill, data->buf[i]))
+            ret = -ERANGE;
     }
 
-    (void)ret;
-    return 0;
+    return ret;
 }
 
 static int do_server_ops(struct stuff *conn)
 {
     int                 ret;
-    uint8_t             fill = 0x00;
-    uint8_t             sramp = 0x01;
-    uint8_t             cramp = 0x02;
-    const struct args   *args = conn->args;
-    uint8_t             *buf = (void *)conn->lcl_kdata->z.vaddr;
-    size_t              buf_len = args->buf_len;
-    struct op_wire_msg  op_msg;
-    size_t              coff;
-    size_t              soff;
-    size_t              op_len;
+    struct checker_data data = {
+        .args           = conn->args,
+        .buf            = (void *)conn->lcl_kdata->z.vaddr,
+    };
+    struct error_wire_msg err_msg;
 
     for (;;) {
-        ret = sock_recv_fixed_blob(conn->sock_fd, &op_msg, sizeof(op_msg));
+        data.banner_done = false;
+        ret = sock_recv_fixed_blob(conn->sock_fd, &data.op_msg,
+                                   sizeof(data.op_msg));
         if (ret < 0)
             goto done;
-        coff = be64toh(op_msg.coff);
-        soff = be64toh(op_msg.soff);
-        op_len = be64toh(op_msg.op_len);
-        if (!op_len)
+        data.op_msg.coff = be64toh(data.op_msg.coff);
+        data.op_msg.soff = be64toh(data.op_msg.soff);
+        data.op_msg.op_len = be64toh(data.op_msg.op_len);
+        if (!data.op_msg.op_len)
             goto done;
-        print_err("coff 0x%05lx soff 0x%05lx op_len 0x%05lx\n",
-                  coff, soff, op_len);
-
         /* Fill buffer for put. */
-        memset(buf, fill, buf_len);
+        fill_buf(&data, false);
         ret = sock_send_blob(conn->sock_fd, NULL, 0);
         if (ret < 0)
             goto done;
         ret = sock_recv_fixed_blob(conn->sock_fd, NULL, 0);
         if (ret < 0)
             goto done;
-        /* Check put. */
-        ret = check_buf(buf, buf_len, soff, op_len, fill, cramp);
-        if (ret < 0)
-            goto done;
+        /* Check put; status will be sent to client. */
+        err_msg.error = htonl(check_buf(&data, false));
 
         /* Fill buffer for get. */
-        ramp_buf(buf, buf_len, soff, op_len, fill, sramp);
-        ret = sock_send_blob(conn->sock_fd, NULL, 0);
+        ramp_buf(&data, false);
+        ret = sock_send_blob(conn->sock_fd, &err_msg, sizeof(err_msg));
         if (ret < 0)
             goto done;
+        if (!data.banner_done && data.args->verbose)
+            print_banner(&data, false);
     }
 
  done:
@@ -390,38 +455,40 @@ static int do_server_ops(struct stuff *conn)
 }
 
 static int do_client_op(struct stuff *conn, size_t coff, size_t soff,
-                        size_t op_len)
+                        size_t op_len, int *data_err)
 {
     int                 ret;
-    uint8_t             fill = 0xFF;
-    uint8_t             sramp = 0x01;
-    uint8_t             cramp = 0x02;
-    const struct args   *args = conn->args;
-    uint8_t             *buf = (void *)conn->lcl_kdata->z.vaddr;
-    size_t              buf_len = args->buf_len;
+    struct checker_data data = {
+        .args           = conn->args,
+        .buf            = (void *)conn->lcl_kdata->z.vaddr,
+    };
     uint64_t            lcl_zaddr = conn->lcl_kdata->laddr + coff;
     uint64_t            rem_zaddr = conn->rem_kdata->z.zaddr + soff;
-    struct op_wire_msg  op_msg;
+    struct error_wire_msg err_msg;
+    int                 rc;
 
-    print_err("coff 0x%05lx soff 0x%05lx op_len 0x%05lx\n", coff, soff, op_len);
-    op_msg.coff = htobe64(coff);
-    op_msg.soff = htobe64(soff);
-    op_msg.op_len = htobe64(op_len);
-    ret = sock_send_blob(conn->sock_fd, &op_msg, sizeof(op_msg));
+    data.op_msg.coff = htobe64(coff);
+    data.op_msg.soff = htobe64(soff);
+    data.op_msg.op_len = htobe64(op_len);
+    ret = sock_send_blob(conn->sock_fd, &data.op_msg, sizeof(data.op_msg));
     if (ret < 0)
         goto done;
     if (!op_len)
         goto done;
+    /* The right way for local routines. */
+    data.op_msg.coff = coff;
+    data.op_msg.soff = soff;
+    data.op_msg.op_len = op_len;
 
     /* Wait for server to be ready. */
     ret = sock_recv_fixed_blob(conn->sock_fd, NULL, 0);
     if (ret < 0)
         goto done;
     /* Fill buffer for put. */
-    ramp_buf(buf, buf_len, coff, op_len, fill, cramp);
+    ramp_buf(&data, true);
     /* Do put. */
-    ret = zq_op(conn->zq, false,
-                (args->imm ? buf + coff : NULL), lcl_zaddr, op_len, rem_zaddr);
+    ret = zq_op(conn->zq, false, (data.args->imm ? data.buf + coff : NULL),
+                lcl_zaddr, op_len, rem_zaddr);
     if (ret < 0)
         goto done;
     ret = sock_send_blob(conn->sock_fd, NULL, 0);
@@ -429,20 +496,31 @@ static int do_client_op(struct stuff *conn, size_t coff, size_t soff,
         goto done;
 
     /* Wait for server to be ready. */
-    ret = sock_recv_fixed_blob(conn->sock_fd, NULL, 0);
+    ret = sock_recv_fixed_blob(conn->sock_fd, &err_msg, sizeof(err_msg));
     if (ret < 0)
         goto done;
+    rc = ntohl(err_msg.error);
+    if (rc < 0) {
+        *data_err = rc;
+        if (data.args->stop)
+            goto done;
+    }
     /* Overwrite ramp for get. */
-    memset(buf + coff, fill, op_len);
+    fill_buf(&data, true);
     /* Do get. */
-    ret = zq_op(conn->zq, true,
-                (args->imm ? buf + coff : NULL), lcl_zaddr, op_len, rem_zaddr);
+    ret = zq_op(conn->zq, true, (data.args->imm ? data.buf + coff : NULL),
+                lcl_zaddr, op_len, rem_zaddr);
     if (ret < 0)
         goto done;
-    ret = check_buf(buf, buf_len, coff, op_len, fill, sramp);
-    if (ret < 0)
-        goto done;
+    rc = check_buf(&data, true);
+    if (rc < 0) {
+        *data_err = rc;
+        if (data.args->stop)
+            goto done;
+    }
 
+    if (!data.banner_done && data.args->verbose)
+        print_banner(&data, false);
  done:
 
     return ret;
@@ -473,6 +551,8 @@ int do_zq_setup(struct stuff *conn)
         print_func_err(__FUNCTION__, __LINE__, "zhpeq_qalloc", "", ret);
         goto done;
     }
+    if (conn->args->qcm)
+        zhpeq_print_qcm(__FUNCTION__, __LINE__, conn->zq);
     /* Get address index. */
     ret = zhpeq_backend_open(conn->zq, conn->sock_fd);
     if (ret < 0) {
@@ -510,7 +590,9 @@ static int do_server_one(const struct args *oargs, int conn_fd)
         goto done;
 
     args->buf_len = be64toh(cli_msg.buf_len);
-    args->once_mode = cli_msg.once_mode;
+    args->once_mode = !!cli_msg.once_mode;
+    args->qcm = !!cli_msg.qcm;
+    args->verbose = !!cli_msg.verbose;
 
     /* Dummy for ordering. */
     ret = sock_send_blob(conn.sock_fd, NULL, 0);
@@ -595,11 +677,12 @@ static int do_client(const struct args *args)
         .sock_fd        = -1,
         .open_idx       = -1,
     };
+    int                 data_err = 0;
     struct cli_wire_msg cli_msg;
     uint64_t            op_len;
     uint64_t            coff;
     uint64_t            soff;
-
+    int                 rc;
 
     ret = connect_sock(args->node, args->service);
     if (ret < 0)
@@ -609,6 +692,8 @@ static int do_client(const struct args *args)
     /* Write the ring parameters to the server. */
     cli_msg.buf_len = htobe64(args->buf_len);
     cli_msg.once_mode = args->once_mode;
+    cli_msg.qcm = args->qcm;
+    cli_msg.verbose = args->verbose;
 
     ret = sock_send_blob(conn.sock_fd, &cli_msg, sizeof(cli_msg));
     if (ret < 0)
@@ -626,19 +711,24 @@ static int do_client(const struct args *args)
     for (op_len = args->write_min; op_len <= args->write_max; op_len++) {
         for (coff = args->coff_min; coff <= args->coff_max; coff++) {
             for (soff = args->soff_min; soff <= args->soff_max; soff++) {
-                ret = do_client_op(&conn, coff, soff, op_len);
+                ret = do_client_op(&conn, coff, soff, op_len, &data_err);
                 if (ret < 0)
                     goto done;
+                if (data_err < 0 && args->stop)
+                    goto err;
             }
         }
     }
+ err:
     /* Send zero length to cause server exit. */
-    ret = do_client_op(&conn, 0, 0, 0);
+    rc = do_client_op(&conn, 0, 0, 0, &data_err);
+    if (rc < 0 && ret >= 0)
+        ret = rc;
 
  done:
     stuff_free(&conn);
 
-    return ret;
+    return (ret < 0 ? ret : data_err);
 }
 
 static void usage(bool help) __attribute__ ((__noreturn__));
@@ -647,9 +737,9 @@ static void usage(bool help)
 {
     print_usage(
         help,
-        "Usage:%s [-o] <port> [<node> <buf_len>\n"
-        "    [<write_max> <cli_off_max> <svr_off_max>\n"
-        "     [<write_min> <cli_off_min> <svr_off_min>]]\n"
+        "Usage:%s [-ioqsv] <port> [<node> <buf_len>\n"
+        "    <write_max> <cli_off_max> <svr_off_max>\n"
+        "    [<write_min> <cli_off_min> <svr_off_min>]]\n"
         "All sizes may be postfixed with [kmgtKMGT] to specify the"
         " base units.\n"
         "Lower case is base 10; upper case is base 2.\n"
@@ -657,6 +747,9 @@ static void usage(bool help)
         "Client only options:\n"
         " -i : use immediate ops, write_max <= 32\n"
         " -o : run once and then server will exit\n"
+        " -q : print qcm and key data\n"
+        " -s : stop on first error\n"
+        " -v : verbose: print a line for each loop\n"
         "Uses ASIC backend unless environment variable\n"
         "ZHPE_BACKEND_LIBFABRIC_PROV is set.\n"
         "ZHPE_BACKEND_LIBFABRIC_DOM can be used to set a specific domain\n",
@@ -687,7 +780,7 @@ int main(int argc, char **argv)
     if (argc == 1)
         usage(true);
 
-    while ((opt = getopt(argc, argv, "io")) != -1) {
+    while ((opt = getopt(argc, argv, "ioqsv")) != -1) {
 
         /* All opts are client only, now. */
         client_opt = true;
@@ -704,6 +797,24 @@ int main(int argc, char **argv)
             if (args.once_mode)
                 usage(false);
             args.once_mode = true;
+            break;
+
+        case 'q':
+            if (args.qcm)
+                usage(false);
+            args.qcm = true;
+            break;
+
+        case 's':
+            if (args.stop)
+                usage(false);
+            args.stop = true;
+            break;
+
+        case 'v':
+            if (args.verbose)
+                usage(false);
+            args.verbose = true;
             break;
 
         default:

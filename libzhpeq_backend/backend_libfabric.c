@@ -84,7 +84,7 @@ enum engine_state {
 struct context {
     struct fi_context2  opaque;
     struct zhpe_result  *result;
-    ZHPEQ_TIMING_CODE(struct zhpeq_timing_stamp timestamp);
+    ZHPEQ_TIMING_CODE(struct zhpe_timing_stamp timestamp);
     uint16_t            cmp_index;
     uint8_t             result_len;
 };
@@ -707,7 +707,7 @@ static bool lfab_zq(struct stuff *conn)
     uint64_t            flags;
     struct context      *context;
     char                *sendbuf;
-    ZHPEQ_TIMING_CODE(struct zhpeq_timing_stamp lfabt_new);
+    ZHPEQ_TIMING_CODE(struct zhpe_timing_stamp lfabt_new);
 
     wq_head = ioread64(zq->qcm + ZHPE_XDM_QCM_CMD_QUEUE_HEAD_OFFSET) & qmask;
     smp_rmb();

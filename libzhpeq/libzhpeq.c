@@ -68,8 +68,8 @@ static struct zhpeq_timing_counter *counter_table[] = {
     NULL
 };
 
-struct zhpeq_timing_stamp zhpeq_timing_tx_start_stamp;
-struct zhpeq_timing_stamp zhpeq_timing_tx_ibv_post_send_stamp;
+struct zhpe_timing_stamp zhpeq_timing_tx_start_stamp;
+struct zhpe_timing_stamp zhpeq_timing_tx_ibv_post_send_stamp;
 
 void zhpeq_timing_reset_timer(struct zhpeq_timing_timer *timer)
 {
@@ -154,8 +154,8 @@ static inline void zhpeq_timing_reserve(struct zhpeq *zq, uint32_t qindex,
                                         uint32_t n_entries)
 {
     uint32_t            i;
-    uint32_t            qmask = zq->info.qlen - 1;
-    struct zhpeq_timing_stamp now;
+    uint32_t            qmask = zq->xqinfo.cmdq.ent - 1;
+    struct zhpe_timing_stamp now;
     union zhpe_hw_wq_entry *wqe;
 
     if (likely(zhpeq_timing_tx_start_stamp.time != 0)) {
@@ -198,9 +198,9 @@ static inline void zhpeq_timing_commit(struct zhpeq *zq, uint32_t qindex,
                                        uint32_t n_entries)
 {
     uint32_t            i;
-    uint32_t            qmask = zq->info.qlen - 1;
-    struct zhpeq_timing_stamp now;
-    struct zhpeq_timing_stamp then;
+    uint32_t            qmask = zq->xqinfo.cmdq.ent - 1;
+    struct zhpe_timing_stamp now;
+    struct zhpe_timing_stamp then;
     union zhpe_hw_wq_entry *wqe;
 
     zhpeq_timing_update_stamp(&now);
@@ -732,7 +732,7 @@ int zhpeq_commit(struct zhpeq *zq, uint32_t qindex, uint32_t n_entries)
         sched_yield();
     }
     ZHPEQ_TIMING_UPDATE(&zhpeq_timing_tx_commit, NULL,
-                        &zhpeq_timing_stamps[ZHPEQ_TIMING_START],
+                        &zhpeq_timing_tx_start_stamp,
                         ZHPEQ_TIMING_UPDATE_OLD_CPU);
 
  done:

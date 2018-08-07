@@ -76,18 +76,13 @@ struct zhpeq_timing_counter {
     volatile uint64_t   count;
 };
 
-struct zhpeq_timing_stamp {
-    struct zhpe_timing_stamp z;
-};
-
 #ifndef __KERNEL__
 
-extern struct zhpeq_timing_stamp zhpeq_timing_tx_start_stamp;
-extern struct zhpeq_timing_stamp zhpeq_timing_tx_ibv_post_send_stamp;
+extern struct zhpe_timing_stamp zhpeq_timing_tx_start_stamp;
+extern struct zhpe_timing_stamp zhpeq_timing_tx_ibv_post_send_stamp;
 
-static inline void zhpeq_timing_update_stamp(struct zhpeq_timing_stamp *qstamp)
+static inline void zhpeq_timing_update_stamp(struct zhpe_timing_stamp *stamp)
 {
-    struct zhpe_timing_stamp *stamp = &qstamp->z;
     uint32_t		lo;
     uint32_t		hi;
     uint32_t		cpu;
@@ -109,21 +104,19 @@ zhpeq_timing_update_count(struct zhpeq_timing_counter *counter)
 
 static inline void
 zhpeq_timing_update(struct zhpeq_timing_timer *timer,
-                    struct zhpeq_timing_stamp *qnew,
-                    struct zhpeq_timing_stamp *qold, uint flags)
+                    struct zhpe_timing_stamp *new,
+                    struct zhpe_timing_stamp *old, uint flags)
 {
-    struct zhpe_timing_stamp *new = &qnew->z;
-    struct zhpe_timing_stamp *old = &qold->z;
     int64_t             delta;
     uint64_t            oldv;
     uint64_t            newv;
-    struct zhpeq_timing_stamp now;
+    struct zhpe_timing_stamp now;
 
     if (!old->time)
         return;
     if (!new) {
         zhpeq_timing_update_stamp(&now);
-        new = &now.z;
+        new = &now;
     }
     delta = new->time - old->time;
     if (delta < 0)
@@ -211,7 +204,7 @@ ZHPEQ_TIMING_COUNTERS(ZHPEQ_TIMING_COUNTER_EXTERN)
 #define ibv_reg_mr(_pd, _addr, _length, _access)                \
 ({                                                              \
     struct ibv_mr       *__ret_mr;                              \
-    struct zhpeq_timing_stamp __start;                          \
+    struct zhpe_timing_stamp __start;                           \
                                                                 \
     zhpeq_timing_update_stamp(&__start);                        \
     __ret_mr =  ibv_reg_mr(_pd, _addr, _length, _access);       \
@@ -223,7 +216,7 @@ ZHPEQ_TIMING_COUNTERS(ZHPEQ_TIMING_COUNTER_EXTERN)
 #define ibv_dereg_mr(_mr)                                       \
 ({                                                              \
     int                 __ret;                                  \
-    struct zhpeq_timing_stamp __start;                          \
+    struct zhpe_timing_stamp __start;                           \
                                                                 \
     zhpeq_timing_update_stamp(&__start);                        \
     __ret =  ibv_dereg_mr(_mr);                                 \

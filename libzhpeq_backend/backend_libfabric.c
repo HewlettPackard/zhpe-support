@@ -1353,7 +1353,7 @@ static struct backend_ops ops = {
 void zhpeq_backend_libfabric_init(void)
 {
     backend_prov = getenv("ZHPE_BACKEND_LIBFABRIC_PROV");
-    backend_dom = getenv("ZHPE_FAB_BACKEND_DOM");
+    backend_dom = getenv("ZHPE_BACKEND_LIBFABRIC_DOM");
 
     if (!backend_prov)
         return;

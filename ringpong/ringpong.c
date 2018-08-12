@@ -385,8 +385,7 @@ static int do_server_pong(struct stuff *conn)
         tx_avail += ret;
     }
     /* Do a send-receive for the final handshake. */
-    ret = fi_recv(fab_conn->ep, conn->rx_addr + rx_off, args->ring_entry_len,
-                  fi_mr_desc(fab_conn->mrmem.mr), 0, &conn->ctx[0]);
+    ret = fi_recv(fab_conn->ep, NULL, 0, NULL, 0, &conn->ctx[0]);
     if (ret < 0) {
         print_func_fi_err(__FUNCTION__, __LINE__, "fi_recv", "", ret);
         goto done;
@@ -546,8 +545,7 @@ static int do_client_pong(struct stuff *conn)
     }
     lat_total1 = get_cycles(NULL) - lat_total1;
     /* Do a send-receive for the final handshake. */
-    ret = fi_send(fab_conn->ep, conn->tx_addr + tx_off, args->ring_entry_len,
-                  fi_mr_desc(fab_conn->mrmem.mr), 0, &conn->ctx[0]);
+    ret = fi_send(fab_conn->ep, NULL, 0, NULL, 0, &conn->ctx[0]);
     if (ret < 0) {
         print_func_fi_err(__FUNCTION__, __LINE__, "fi_send", "", ret);
         goto done;

@@ -629,11 +629,13 @@ static int lfab_open(struct zhpeq *zq, int sock_fd)
 static int lfab_close(struct zhpeq *zq, int open_idx)
 {
     struct stuff        *conn = zq->backend_data;
-    struct fab_conn     *fab_conn = &conn->fab_conn;
+    struct lfab_work_eng_data av_op = {
+        .eng            = &eng,
+        .conn           = conn,
+        .fi_addr        = open_idx,
+    };
 
-    (void)fab_av_remove(fab_conn->dom, open_idx);
-
-    return 0;
+    return do_av_op(&av_op, conn_av_remove);
 }
 
 static inline void cq_write(struct zhpeq *zq, void *vcontext, int status)

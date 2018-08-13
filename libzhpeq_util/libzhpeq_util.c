@@ -47,10 +47,19 @@ static bool             log_syslog;
 static bool             log_syslog_init;
 static int              log_level = LOG_ERR;
 
-void zhpeq_util_init(char *argv0, int default_log_level, bool use_syslog)
+static void __attribute__((constructor)) lib_init(void)
 {
     long                rcl;
 
+    /* Make sure page_size is set before use; if we can't get it, just die. */
+    rcl = sysconf(_SC_PAGESIZE);
+    if (rcl == -1)
+        abort();
+    page_size = rcl;
+}
+
+void zhpeq_util_init(char *argv0, int default_log_level, bool use_syslog)
+{
     /* Allow to be called multiple times for testing. */
     appname = basename(argv0);
     log_level  = default_log_level;
@@ -58,16 +67,6 @@ void zhpeq_util_init(char *argv0, int default_log_level, bool use_syslog)
     if (log_syslog && !log_syslog_init) {
         log_syslog_init = true;
         openlog(appname, LOG_PID | LOG_PERROR, LOG_DAEMON);
-    }
-
-    if (!page_size) {
-        rcl = sysconf(_SC_PAGESIZE);
-        if (rcl == -1) {
-            print_func_err(__FUNCTION__, __LINE__, "sysconf", "_SC_PAGESIZE",
-                           errno);
-            abort();
-        }
-        page_size = rcl;
     }
 }
 

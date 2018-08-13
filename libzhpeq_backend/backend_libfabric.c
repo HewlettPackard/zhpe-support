@@ -742,7 +742,6 @@ static bool lfab_zq(struct stuff *conn)
 
         case ZHPE_HW_OPCODE_NOP:
             lfabt_cmdpost(nop, wqe, context);
-            conn->tx_completed++;
             cq_write(zq, context, 0);
             break;
 
@@ -918,7 +917,7 @@ static bool lfab_zq(struct stuff *conn)
             break;
 
         default:
-            conn->tx_completed++;
+            cq_write(zq, context, -EINVAL);
             print_err("%s,%u:Unexpected opcode 0x%02x\n",
                       __FUNCTION__, __LINE__, wqe->hdr.opcode);
             goto done;

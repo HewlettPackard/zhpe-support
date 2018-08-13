@@ -467,31 +467,20 @@ static struct stuff *stuff_alloc(struct fab_dom *dom)
 static int lfab_qalloc(struct zhpeq *zq, int cmd_qlen, int cmp_qlen,
                        int traffic_class, int priority, int slice_mask)
 {
-    int                 ret;
-    union zhpe_op       op;
-    union zhpe_req      *req = &op.req;
-    union zhpe_rsp      *rsp = &op.rsp;
-
-    if (cmd_qlen < cmp_qlen)
-        cmd_qlen = cmp_qlen;
-    req->hdr.opcode = ZHPE_OP_QALLOC;
-    req->qalloc.qlen = cmd_qlen;
-    ret = zhpeq_driver_cmd(&op, sizeof(req->qalloc), sizeof(rsp->qalloc));
-    if (ret < 0)
-        goto done;
+    /* Tell caller we don't have a driver. */
+    zq->fd = -1;
     /* Use xqinfo for compatiblity with asic code. */
-    zq->xqinfo.qcm.size = rsp->qalloc.info.rsize;
-    zq->xqinfo.qcm.off = rsp->qalloc.info.reg_off;
-    zq->xqinfo.cmdq.ent = rsp->qalloc.info.qlen;
-    zq->xqinfo.cmdq.size = rsp->qalloc.info.qsize;
-    zq->xqinfo.cmdq.off = rsp->qalloc.info.wq_off;
-    zq->xqinfo.cmplq.ent = rsp->qalloc.info.qlen;
-    zq->xqinfo.cmplq.size = rsp->qalloc.info.qsize;
-    zq->xqinfo.cmplq.off = rsp->qalloc.info.cq_off;
+    zq->xqinfo.qcm.size =
+        roundup64(ZHPE_XDM_QCM_CMPL_QUEUE_TAIL_TOGGLE_OFFSET + 8, page_size);
+    zq->xqinfo.qcm.off = 0;
+    zq->xqinfo.cmdq.ent = cmd_qlen;
+    zq->xqinfo.cmdq.size = roundup64(cmd_qlen * ZHPE_ENTRY_LEN, page_size);
+    zq->xqinfo.cmdq.off = 0;
+    zq->xqinfo.cmplq.ent = cmp_qlen;
+    zq->xqinfo.cmplq.size = roundup64(cmp_qlen * ZHPE_ENTRY_LEN, page_size);
+    zq->xqinfo.cmplq.off = 0;
 
- done:
-
-    return ret;
+    return 0;
 }
 
 static int lfab_qalloc_post(struct zhpeq *zq)
@@ -1022,12 +1011,20 @@ done:
     return NULL;
 }
 
-static int lfab_lib_init(void)
+static int lfab_lib_init(struct zhpeq_attr *attr)
 {
+    attr->backend = ZHPE_BACKEND_LIBFABRIC;
+    attr->z.max_tx_queues = 1024;
+    attr->z.max_rx_queues = 1024;
+    attr->z.max_hw_qlen  = 65535;
+    attr->z.max_sw_qlen  = 65535;
+    attr->z.max_dma_len  = (1U << 31);
+
     mutex_init(&eng.mutex, NULL);
     cond_init(&eng.cond, NULL);
     STAILQ_INIT(&eng.work_list);
     CIRCLEQ_INIT(&eng.zq_head);
+
     return 0;
 }
 
@@ -1037,11 +1034,8 @@ static int lfab_qfree_pre(struct zhpeq *zq)
 
     zq->backend_data = NULL;
     if (conn) {
-        /* FIXME: How to do a clean shutdown? */
-#if 0
         while (conn->tx_queued != conn->tx_completed)
             sched_yield();
-#endif
         stuff_free(conn);
     }
 
@@ -1050,21 +1044,7 @@ static int lfab_qfree_pre(struct zhpeq *zq)
 
 static int lfab_qfree(struct zhpeq *zq)
 {
-    union zhpe_op       op;
-    union zhpe_req      *req = &op.req;
-    union zhpe_rsp      *rsp = &op.rsp;
-
-    req->hdr.opcode = ZHPE_OP_QFREE;
-    req->qfree.info.rsize = zq->xqinfo.qcm.size;
-    req->qfree.info.reg_off = zq->xqinfo.qcm.off;
-    req->qfree.info.qlen = zq->xqinfo.cmdq.ent;
-    req->qfree.info.qsize = zq->xqinfo.cmdq.size;
-    req->qfree.info.wq_off = zq->xqinfo.cmdq.off;
-    req->qfree.info.qlen = zq->xqinfo.cmplq.ent;
-    req->qfree.info.qsize = zq->xqinfo.cmplq.size;
-    req->qfree.info.cq_off = zq->xqinfo.cmplq.off;
-
-    return zhpeq_driver_cmd(&op, sizeof(req->qfree), sizeof(rsp->qfree));
+    return 0;
 }
 
 static int lfab_wq_signal(struct zhpeq *zq)
@@ -1350,14 +1330,13 @@ static struct backend_ops ops = {
     .getaddr            = lfab_getaddr,
 };
 
-void zhpeq_backend_libfabric_init(void)
+void zhpeq_backend_libfabric_init(int fd)
 {
     backend_prov = getenv("ZHPE_BACKEND_LIBFABRIC_PROV");
     backend_dom = getenv("ZHPE_BACKEND_LIBFABRIC_DOM");
 
-    if (!backend_prov)
+    if (fd != -1)
         return;
 
     zhpeq_register_backend(ZHPE_BACKEND_LIBFABRIC, &ops);
 }
-

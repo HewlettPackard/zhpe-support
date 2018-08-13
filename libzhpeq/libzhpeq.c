@@ -45,15 +45,12 @@
 #define LIBNAME         "libzhpeq"
 #define BACKNAME        "libzhpeq_backend.so"
 
-static int              dev_fd = -1;
-static const char       *dev_name = "/dev/" DRIVER_NAME;
+static pthread_mutex_t  init_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static struct backend_ops *b_ops;
-static enum zhpeq_backend b_type;
+static struct zhpeq_attr b_attr;
 
 uuid_t                  zhpeq_uuid;
-
-static struct zhpe_shared_data *shared_data;
 
 ZHPEQ_TIMING_TIMERS(ZHPEQ_TIMING_TIMER_DECLARE)
 ZHPEQ_TIMING_COUNTERS(ZHPEQ_TIMING_COUNTER_DECLARE)
@@ -272,90 +269,6 @@ static inline void zhpeq_timing_commit(struct zhpeq *zq, uint32_t qindex,
 
 #endif
 
-/* For the moment, we will do all driver I/O synchronously.*/
-
-int zhpeq_driver_cmd(union zhpe_op *op, size_t req_len, size_t rsp_len)
-{
-    int                 ret = 0;
-    int                 opcode = op->hdr.opcode;
-    ssize_t             res;
-
-    op->hdr.version = ZHPE_OP_VERSION;
-    op->hdr.index = 0;
-
-    res = write(dev_fd, op, req_len);
-    ret = check_func_io(__FUNCTION__, __LINE__, "write", dev_name,
-                        req_len, res, 0);
-    if (ret < 0)
-        goto done;
-
-    res = read(dev_fd, op, rsp_len);
-    ret = check_func_io(__FUNCTION__, __LINE__, "read", dev_name,
-                        rsp_len, res, 0);
-    if (ret < 0)
-        goto done;
-    ret = -EIO;
-    if (res < sizeof(op->hdr)) {
-        print_err("%s,%u:Unexpected short read %lu\n",
-                  __FUNCTION__, __LINE__, res);
-        goto done;
-    }
-    ret = -EINVAL;
-    if (!expected_saw("version", ZHPE_OP_VERSION, op->hdr.version))
-        goto done;
-    if (!expected_saw("opcode", opcode | ZHPE_OP_RESPONSE, op->hdr.opcode))
-        goto done;
-    if (!expected_saw("index", 0, op->hdr.index))
-        goto done;
-    ret = op->hdr.status;
-    if (ret < 0)
-        print_err("%s,%u:zhpe command 0x%02x returned error %d:%s\n",
-                  __FUNCTION__, __LINE__, op->hdr.opcode,
-                  -ret, strerror(-ret));
-
- done:
-    return ret;
-}
-
-static int _zhpe_munmap(const char *callf, uint line,
-                        void *addr, size_t length)
-{
-    int                 ret = 0;
-
-    if (!addr || !length)
-        goto done;
-
-    if (munmap(addr, length) == -1)
-        ret = -errno;
- done:
-    return ret;
-}
-
-#define zhpe_munmap(_addr, _length) \
-    _zhpe_munmap(__FUNCTION__, __LINE__, _addr, _length)
-
-
-static void *_zhpe_mmap(const char *callf, uint line,
-                        size_t size, int prot, off_t offset, int *error)
-{
-    void                *ret;
-    int                 err = 0;
-
-    ret = mmap(NULL, size, prot, MAP_SHARED, dev_fd, offset);
-    if (ret == MAP_FAILED) {
-        err = -errno;
-        ret = NULL;
-        print_func_err(callf, line, "mmap", dev_name, err);
-    }
-    if (error)
-        *error = err;
-
-    return ret;
-}
-
-#define zhpe_mmap(...) \
-    _zhpe_mmap(__FUNCTION__, __LINE__, __VA_ARGS__)
-
 static void __attribute__((constructor)) lib_init(void)
 {
     void                *dlhandle = dlopen(BACKNAME, RTLD_NOW);
@@ -368,21 +281,16 @@ static void __attribute__((constructor)) lib_init(void)
 
 void zhpeq_register_backend(enum zhpe_backend backend, struct backend_ops *ops)
 {
-    /* The libfabric backend wins, because it will only register
-     * if an environment variable is set.
+    /* For the moment, the zhpe backend will only register if the zhpe device
+     * can be opened and the libfabric backend will only register if the zhpe
+     * device can't be opened.
      */
+
     switch (backend) {
 
-    case ZHPEQ_BACKEND_ZHPE:
-        if (!b_ops) {
-            b_ops = ops;
-            b_type = backend;
-        }
-        break;
-
     case ZHPEQ_BACKEND_LIBFABRIC:
+    case ZHPEQ_BACKEND_ZHPE:
         b_ops = ops;
-        b_type = backend;
         break;
 
     default:
@@ -393,66 +301,26 @@ void zhpeq_register_backend(enum zhpe_backend backend, struct backend_ops *ops)
 
 int zhpeq_init(int api_version)
 {
-    int                 ret;
+    int                 ret = -EINVAL;
     static int          init_status = 1;
-    union zhpe_op       op;
-    union zhpe_req      *req = &op.req;
-    union zhpe_rsp      *rsp = &op.rsp;
-    ulong               check_val;
-    ulong               check_off;
 
-    ret = init_status;
-    if (ret <= 0)
-        return ret;
-
-    dev_fd = open(dev_name, O_RDWR);
-    if (dev_fd == -1) {
-        ret = -errno;
-        goto done;
-    }
-
-    ret = -EINVAL;
-    if (!expected_saw("api_version", ZHPEQ_API_VERSION, api_version))
-        goto done;
-    if (api_version != ZHPEQ_API_VERSION)
-        goto done;
-    if (!expected_saw("sizeof(zhpe_hw_wq_entry)",
-                      ZHPE_ENTRY_LEN, sizeof(union zhpe_hw_wq_entry)))
-        goto done;
-    if (!expected_saw("sizeof(zhpeq_cq_entry)",
-                      ZHPE_ENTRY_LEN, sizeof(struct zhpeq_cq_entry)))
-        goto done;
-
-    req->hdr.opcode = ZHPE_OP_INIT;
-    ret = zhpeq_driver_cmd(&op, sizeof(req->init), sizeof(rsp->init));
-    if (ret < 0)
-        goto done;
-
-    shared_data = zhpe_mmap(rsp->init.shared_size, PROT_READ,
-                            rsp->init.shared_offset, &ret);
-    if (!shared_data)
-        goto done;
-    ret = -EINVAL;
-    if (!expected_saw("shared_magic", ZHPE_MAGIC, shared_data->magic))
-        goto done;
-    if (!expected_saw("shared_version", ZHPE_SHARED_VERSION,
-                      shared_data->version))
-        goto done;
-    memcpy(zhpeq_uuid, rsp->init.uuid, sizeof(zhpeq_uuid));
-
-    check_off = rsp->init.shared_size - sizeof(ulong);
-    if (check_off >= sizeof(*shared_data)) {
-        check_off += rsp->init.shared_offset;
-        check_val = *(ulong *)((void *)shared_data + check_off);
-        if (!expected_saw("shared_check_last", check_off, check_val))
+    if (init_status > 0) {
+        if (!expected_saw("api_version", ZHPEQ_API_VERSION, api_version))
             goto done;
+        if (!expected_saw("sizeof(zhpe_hw_wq_entry)",
+                          ZHPE_ENTRY_LEN, sizeof(union zhpe_hw_wq_entry)))
+            goto done;
+        if (!expected_saw("sizeof(zhpeq_cq_entry)",
+                          ZHPE_ENTRY_LEN, sizeof(struct zhpeq_cq_entry)))
+        goto done;
+        mutex_lock(&init_mutex);
+        if (b_ops->lib_init)
+            ret = b_ops->lib_init(&b_attr);
+        init_status = (ret <= 0 ? ret : 0);
+        mutex_unlock(&init_mutex);
     }
-    ret = 0;
-    if (b_ops->lib_init)
-        ret = b_ops->lib_init();
-
+    ret = init_status;
  done:
-    init_status = (ret < 0 ? ret : 0);
 
     return ret;
 }
@@ -465,8 +333,7 @@ int zhpeq_query_attr(struct zhpeq_attr *attr)
     if (!attr)
         goto done;
 
-    attr->backend = b_type;
-    attr->z = shared_data->default_attr;
+    *attr = b_attr;
     ret = 0;
 
  done:
@@ -539,13 +406,13 @@ int zhpeq_free(struct zhpeq *zq)
 
     ret = 0;
     /* Unmap qcm, wq, and cq. */
-    rc = zhpe_munmap((void *)zq->qcm, zq->xqinfo.qcm.size);
+    rc = do_munmap((void *)zq->qcm, zq->xqinfo.qcm.size);
     if (ret >= 0 && rc < 0)
         ret = rc;
-    rc = zhpe_munmap(zq->wq, zq->xqinfo.cmdq.size);
+    rc = do_munmap(zq->wq, zq->xqinfo.cmdq.size);
     if (ret >= 0 && rc < 0)
         ret = rc;
-    rc = zhpe_munmap(zq->cq, zq->xqinfo.cmplq.size);
+    rc = do_munmap(zq->cq, zq->xqinfo.cmplq.size);
     if (ret >= 0 && rc < 0)
         ret = rc;
     /* Call the driver to free the queue. */
@@ -571,15 +438,14 @@ int zhpeq_alloc(struct zhpeq_dom *zdom, int cmd_qlen, int cmp_qlen,
     union xdm_cmp_tail  tail = {
         .bits.toggle_valid = 1,
     };
+    int                 flags;
 
     if (!zq_out)
         goto done;
     *zq_out = NULL;
     if (!zdom ||
-        cmd_qlen < 2 ||
-        cmd_qlen > shared_data->default_attr.max_hw_qlen ||
-        cmp_qlen < 2 ||
-        cmp_qlen > shared_data->default_attr.max_hw_qlen ||
+        cmd_qlen < 2 || cmd_qlen > b_attr.z.max_hw_qlen ||
+        cmp_qlen < 2 || cmp_qlen > b_attr.z.max_hw_qlen ||
         traffic_class < 0 || traffic_class > ZHPEQ_TC_MAX ||
         priority < 0 || priority > ZHPEQ_PRI_MAX ||
         (slice_mask & ~(ALL_SLICES | SLICE_DEMAND)))
@@ -589,10 +455,15 @@ int zhpeq_alloc(struct zhpeq_dom *zdom, int cmd_qlen, int cmp_qlen,
     zq = do_calloc(1, sizeof(*zq));
     if (!zq)
         goto done;
-    zq->debug_flags = shared_data->debug_flags;
     zq->zdom = zdom;
     spin_init(&zq->tail_lock, PTHREAD_PROCESS_PRIVATE);
     zq->tail_lock_init = true;
+
+    if (cmd_qlen < cmp_qlen)
+        cmd_qlen = cmp_qlen;
+
+    cmd_qlen = (1U << (fls64(cmd_qlen) + 1));
+    cmp_qlen = (1U << (fls64(cmp_qlen) + 1));
 
     ret = b_ops->qalloc(zq, cmd_qlen, cmp_qlen, traffic_class,
                         priority, slice_mask);
@@ -603,17 +474,19 @@ int zhpeq_alloc(struct zhpeq_dom *zdom, int cmd_qlen, int cmp_qlen,
     if (!zq->context)
         goto done;
 
+    /* zq->fd == -1 means we're faking things out. */
+    flags = (zq->fd == -1 ? MAP_ANONYMOUS | MAP_PRIVATE : MAP_SHARED);
     /* Map registers, wq, and cq. */
-    zq->qcm = zhpe_mmap(zq->xqinfo.qcm.size, PROT_READ | PROT_WRITE,
-                        zq->xqinfo.qcm.off, &ret);
+    zq->qcm = do_mmap(NULL, zq->xqinfo.qcm.size, PROT_READ | PROT_WRITE,
+                      flags, zq->fd, zq->xqinfo.qcm.off, &ret);
     if (!zq->qcm)
         goto done;
-    zq->wq = zhpe_mmap(zq->xqinfo.cmdq.size, PROT_READ | PROT_WRITE,
-                       zq->xqinfo.cmdq.off, &ret);
+    zq->wq = do_mmap(NULL, zq->xqinfo.cmdq.size, PROT_READ | PROT_WRITE,
+                     flags, zq->fd, zq->xqinfo.cmdq.off, &ret);
     if (!zq->wq)
         goto done;
-    zq->cq = zhpe_mmap(zq->xqinfo.cmplq.size, PROT_READ | PROT_WRITE,
-                       zq->xqinfo.cmplq.off, &ret);
+    zq->cq = do_mmap(NULL, zq->xqinfo.cmplq.size, PROT_READ | PROT_WRITE,
+                     flags, zq->fd, zq->xqinfo.cmplq.off, &ret);
     if (!zq->cq)
         goto done;
     if (b_ops->qalloc_post) {
@@ -773,7 +646,7 @@ static inline int zhpeq_rw(struct zhpeq *zq, uint32_t qindex, bool fence,
 
     if (!zq)
         goto done;
-    if (len > shared_data->default_attr.max_dma_len)
+    if (len > b_attr.z.max_dma_len)
         goto done;
 
     qindex = qindex & (zq->xqinfo.cmdq.ent - 1);
@@ -1098,7 +971,7 @@ ssize_t zhpeq_cq_read(struct zhpeq *zq, struct zhpeq_cq_entry *entries,
 void zhpeq_print_info(struct zhpeq *zq)
 {
     const char          *b_str = "unknown";
-    struct zhpe_attr    *attr = &shared_data->default_attr;
+    struct zhpe_attr    *attr = &b_attr.z;
 
     switch (attr->backend) {
 

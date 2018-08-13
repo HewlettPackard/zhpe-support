@@ -45,11 +45,6 @@
 
 #include <assert.h>
 #include <endian.h>
-#include <pthread.h>
-
-#include <arpa/inet.h>
-
-#include <sys/mman.h>
 
 #include <uuid/uuid.h>
 
@@ -67,10 +62,12 @@
 
 _EXTERN_C_BEG
 
+#define DEV_NAME        "/dev/"DRIVER_NAME
+
 #define CACHE_ALIGNED    __attribute__ ((aligned (64)))
 
 struct backend_ops {
-    int                 (*lib_init)(void);
+    int                 (*lib_init)(struct zhpeq_attr *attr);
     int                 (*domain)(struct zhpeq_dom *zdom);
     int                 (*domain_free)(struct zhpeq_dom *zdom);
     int                 (*qalloc)(struct zhpeq *zq, int cmd_qlen, int cmp_qlen,
@@ -105,10 +102,9 @@ struct backend_ops {
 
 extern uuid_t           zhpeq_uuid;
 
-int zhpeq_driver_cmd(union zhpe_op *op, size_t req_len, size_t rsp_len);
 void zhpeq_register_backend(enum zhpe_backend backend, struct backend_ops *ops);
-void zhpeq_backend_libfabric_init(void);
-void zhpeq_backend_zhpe_init(void);
+void zhpeq_backend_libfabric_init(int fd);
+void zhpeq_backend_zhpe_init(int fd);
 
 #define FREE_END        (-1)
 
@@ -126,13 +122,13 @@ struct zhpeq_dom {
 
 struct zhpeq {
     struct zhpeq_dom    *zdom;
-    uint                debug_flags;
     struct zhpe_xqinfo  xqinfo;
     volatile void       *qcm;
     union zhpe_hw_wq_entry *wq;
     union zhpe_hw_cq_entry *cq;
     void                **context;
     void                *backend_data;
+    int                 fd;
     pthread_spinlock_t  tail_lock CACHE_ALIGNED;
     /* Shadow for wq and cq, q_head may be updated in progress thread. */
     uint32_t            q_head CACHE_ALIGNED;

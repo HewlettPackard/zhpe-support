@@ -54,6 +54,7 @@
 
 #include <arpa/inet.h>
 
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -367,12 +368,6 @@ void print_usage(bool use_stdout, const char *fmt, ...)
 void print_errs(const char *callf, uint line, char *errf_str,
                 int err, const char *errs);
 
-void print_func_errs(const char *callf, uint line, const char *errf,
-                     const char *arg, int err, const char *errs);
-
-void print_func_errns(const char *callf, uint line, const char *errf,
-                      llong arg, bool arg_hex, int err, const char *errs);
-
 void print_func_err(const char *callf, uint line, const char *errf,
                     const char *arg, int err);
 
@@ -649,6 +644,61 @@ static inline void smp_wmb(void)
 #endif
 
 #undef _BARRIED_DEFINED
+
+static inline int _do_munmap(const char *callf, uint line,
+                             void *addr, size_t length)
+{
+    int                 ret = 0;
+
+    if (!addr && !length)
+        return 0;
+
+    if (munmap(addr, length) == -1) {
+        ret = -errno;
+        print_func_err(callf, line, "munmap", "", ret);
+    }
+
+    return ret;
+}
+
+#define do_munmap(...) \
+    _do_munmap(__FUNCTION__, __LINE__, __VA_ARGS__)
+
+static inline void *_do_mmap(const char *callf, uint line,
+                             void *addr, size_t length, int prot, int flags,
+                             int fd, off_t offset, int *error)
+{
+    void                *ret;
+    int                 err = 0;
+
+    ret = mmap(addr, length, prot, flags, fd, offset);
+    if (ret == MAP_FAILED) {
+        err = -errno;
+        ret = NULL;
+        print_func_err(callf, line, "mmap", "", err);
+    }
+    if (error)
+        *error = err;
+
+    return ret;
+}
+
+#define do_mmap(...) \
+    _do_mmap(__FUNCTION__, __LINE__, __VA_ARGS__)
+
+static inline int fls64(uint64_t v)
+{
+    int                 ret = -1;
+
+    asm("bsrq %1,%q0" : "+r" (ret) : "r" (v));
+
+    return ret;
+}
+
+static inline uint64_t roundup64(uint64_t val, uint64_t round)
+{
+    return ((val + round - 1) / round * round);
+}
 
 _EXTERN_C_END
 

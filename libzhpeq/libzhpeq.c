@@ -973,7 +973,7 @@ void zhpeq_print_info(struct zhpeq *zq)
     const char          *b_str = "unknown";
     struct zhpe_attr    *attr = &b_attr.z;
 
-    switch (attr->backend) {
+    switch (b_attr.backend) {
 
     case ZHPEQ_BACKEND_ZHPE:
         b_str = "zhpe";

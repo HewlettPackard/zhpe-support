@@ -42,7 +42,8 @@
 
 #define FIVERSION       FI_VERSION(1, 5)
 
-#define SLEEP_THRESHOLD_NS (100000)
+#define SLEEP_THRESHOLD_NS ((uint64_t)100000)
+#define QFREE_THRESHOLD_NS ((uint64_t)1000000000)
 
 #define AV_MAX          (16383)
 
@@ -229,6 +230,9 @@ struct lfab_work_eng_data {
     struct stuff        *conn;
     union sockaddr_in46 ep_addr;
     fi_addr_t           fi_addr;
+    struct timespec     ts_last;
+    uint64_t            tx_queued;
+    uint64_t            tx_completed;
     int                 status;
 };
 
@@ -237,11 +241,38 @@ static int conn_eng_remove(struct lfab_work *work)
     struct lfab_work_eng_data *data = work->data;
     struct engine       *eng = data->eng;
     struct stuff        *conn = data->conn;
+    struct timespec     ts_now;
 
-    if (conn->eng) {
-        CIRCLEQ_REMOVE(&eng->zq_head, &conn->lentry, ptrs);
-        conn->eng = NULL;
-    }
+    if (!conn->eng)
+        return 0;
+    /* All operations done? */
+    if (conn->tx_queued == conn->tx_completed)
+        goto remove;
+    /* No:we will stooge around for up to 1 second after progress stops. */
+    clock_gettime_monotonic(&ts_now);
+    if (data->status > 0) {
+        data->status = 0;
+        /* Save current progress and timestamp. */
+        data->tx_queued = conn->tx_queued;
+        data->tx_completed = conn->tx_completed;
+        data->ts_last = ts_now;
+    } else if (data->tx_completed != conn->tx_completed) {
+        /* Have new ops been issued? */
+        if ((int64_t)(conn->tx_completed - data->tx_queued) > 0)
+            /* Yes: give up. */
+            goto remove;
+        /* Update progress and timestamp. */
+        data->tx_completed = conn->tx_completed;
+        data->ts_last = ts_now;
+    } else if (ts_delta(&data->ts_last, &ts_now) > QFREE_THRESHOLD_NS)
+        goto remove;
+
+    /* Remain in queue. */
+    return 1;
+
+ remove:
+    CIRCLEQ_REMOVE(&eng->zq_head, &conn->lentry, ptrs);
+    conn->eng = NULL;
 
     return 0;
 }
@@ -358,11 +389,13 @@ static int stuff_free(struct stuff *stuff)
     if ((eng = stuff->eng)) {
         data.eng = eng;
         data.conn = stuff;
+        data.status = 1;
         lfab_work_init(&work);
         lfab_work_queue(&eng->work_list, &eng->mutex, false,
                         lfab_work_eng_signal, eng,
                         &work, conn_eng_remove, &data, true);
         lfab_work_destroy(&work);
+        ret = data.status;
     }
     do_free(stuff->context);
     if (stuff->results_mr)
@@ -1032,13 +1065,8 @@ static int lfab_qfree_pre(struct zhpeq *zq)
     struct stuff        *conn = zq->backend_data;
 
     zq->backend_data = NULL;
-    if (conn) {
-        while (conn->tx_queued != conn->tx_completed)
-            sched_yield();
-        stuff_free(conn);
-    }
 
-    return 0;
+    return stuff_free(conn);
 }
 
 static int lfab_qfree(struct zhpeq *zq)

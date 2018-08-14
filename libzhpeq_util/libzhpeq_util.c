@@ -93,7 +93,7 @@ void print_dbg(const char *fmt, ...)
     va_list             ap;
 
     va_start(ap, fmt);
-    vlog(LOG_DEBUG, stderr, appname, fmt, ap);
+    vlog(LOG_DEBUG, stdout, appname, fmt, ap);
     va_end(ap);
 }
 
@@ -102,7 +102,7 @@ void print_info(const char *fmt, ...)
     va_list             ap;
 
     va_start(ap, fmt);
-    vlog(LOG_INFO, stderr, appname, fmt, ap);
+    vlog(LOG_INFO, stdout, appname, fmt, ap);
     va_end(ap);
 }
 

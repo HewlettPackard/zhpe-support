@@ -98,6 +98,7 @@ struct args {
     uint64_t            ring_entries;
     uint64_t            ring_ops;
     uint64_t            tx_avail;
+    uint64_t            warmup;
     bool                aligned_mode;
     bool                copy_mode;
     bool                once_mode;
@@ -950,11 +951,15 @@ static int do_client(const struct args *args)
     if (ret < 0)
         goto done;
 
+    conn.ring_warmup = args->warmup;
     /* Compute warmup operations. */
     if (args->seconds_mode) {
-        conn.ring_warmup = get_tsc_freq();
-        conn.ring_ops = conn.ring_ops * get_tsc_freq() + conn.ring_warmup;
-    } else {
+        if (conn.ring_warmup == SIZE_MAX)
+            conn.ring_warmup = 1;
+        conn.ring_ops += conn.ring_warmup;
+        conn.ring_warmup *= get_tsc_freq();
+        conn.ring_ops *= get_tsc_freq();
+    } else if (conn.ring_warmup == SIZE_MAX) {
         conn.ring_warmup = conn.ring_ops / 10;
         if (conn.ring_warmup < args->ring_entries)
             conn.ring_warmup = args->ring_entries;
@@ -998,6 +1003,7 @@ static void usage(bool help)
         " -s : treat the final argument as seconds\n"
         " -t <txqlen> : length of tx request queue\n"
         " -u : uni-directional client-to-server traffic (no copy)\n"
+        " -w <ops> : number of warmup operations\n"
         "If provider is zhpe, uses ASIC backend unless environment variable\n"
         "ZHPE_BACKEND_LIBFABRIC_PROV is set.\n"
         "ZHPE_BACKEND_LIBFABRIC_DOM can be used to set a specific domain\n",
@@ -1014,7 +1020,10 @@ static void usage(bool help)
 int main(int argc, char **argv)
 {
     int                 ret = 1;
-    struct args         args = { .ep_type = FI_EP_MSG };
+    struct args         args = {
+        .ep_type        = FI_EP_MSG,
+        .warmup         = SIZE_MAX,
+    };
     bool                client_opt = false;
     int                 opt;
 
@@ -1023,7 +1032,7 @@ int main(int argc, char **argv)
     if (argc == 1)
         usage(true);
 
-    while ((opt = getopt(argc, argv, "acd:op:rst:u")) != -1) {
+    while ((opt = getopt(argc, argv, "acd:op:rst:uw:")) != -1) {
 
         /* All opts are client only, now. */
         client_opt = true;
@@ -1084,6 +1093,15 @@ int main(int argc, char **argv)
             if (args.unidir_mode)
                 usage(false);
             args.unidir_mode = true;
+            break;
+
+        case 'w':
+            if (args.warmup != SIZE_MAX)
+                usage(false);
+            if (parse_kb_uint64_t(__FUNCTION__, __LINE__, "warmup",
+                                  optarg, &args.warmup, 0, 0,
+                                  SIZE_MAX - 1, PARSE_KB | PARSE_KIB) < 0)
+                usage(false);
             break;
 
         default:

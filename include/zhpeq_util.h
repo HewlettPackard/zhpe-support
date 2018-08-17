@@ -700,6 +700,14 @@ static inline uint64_t roundup64(uint64_t val, uint64_t round)
     return ((val + round - 1) / round * round);
 }
 
+static inline uint64_t roundup_pow_of_2(uint64_t val)
+{
+    if (!val || !(val & (val - 1)))
+        return val;
+
+    return ((uint64_t)1 << (fls64(val + 1)));
+}
+
 _EXTERN_C_END
 
 #ifdef _EXTERN_C_SET

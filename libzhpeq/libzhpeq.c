@@ -462,8 +462,8 @@ int zhpeq_alloc(struct zhpeq_dom *zdom, int cmd_qlen, int cmp_qlen,
     if (cmd_qlen < cmp_qlen)
         cmd_qlen = cmp_qlen;
 
-    cmd_qlen = (1U << (fls64(cmd_qlen) + 1));
-    cmp_qlen = (1U << (fls64(cmp_qlen) + 1));
+    cmd_qlen = roundup_pow_of_2(cmd_qlen);
+    cmp_qlen = roundup_pow_of_2(cmp_qlen);
 
     ret = b_ops->qalloc(zq, cmd_qlen, cmp_qlen, traffic_class,
                         priority, slice_mask);

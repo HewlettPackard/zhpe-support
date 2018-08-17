@@ -51,6 +51,7 @@
 
 struct cli_wire_msg {
     uint64_t            buf_len;
+    bool                imm;
     bool                once_mode;
     bool                qcm;
     bool                verbose;
@@ -91,7 +92,6 @@ struct args {
 };
 
 struct checker_data {
-    const struct args   *args;
     uint8_t             *buf;
     struct op_wire_msg  op_msg;
     bool                banner_done;
@@ -304,7 +304,8 @@ static int zq_op(struct zhpeq *zq, bool read, void *lcl_buf, uint64_t lcl_zaddr,
     return ret;
 }
 
-static inline void fill_buf(struct checker_data *data, bool client)
+static inline void fill_buf(struct stuff *conn, struct checker_data *data,
+                            bool client)
 {
     uint8_t             fill;
 
@@ -313,10 +314,11 @@ static inline void fill_buf(struct checker_data *data, bool client)
     else
         fill = 0x00;
 
-    memset(data->buf, fill, data->args->buf_len);
+    memset(data->buf, fill, conn->args->buf_len);
 }
 
-static inline void ramp_buf(struct checker_data *data, bool client)
+static inline void ramp_buf(struct stuff *conn, struct checker_data *data,
+                            bool client)
 {
     size_t              off;
     uint8_t             fill;
@@ -337,7 +339,7 @@ static inline void ramp_buf(struct checker_data *data, bool client)
     end = off + data->op_msg.op_len;
 
     memset(data->buf, fill, off);
-    memset(data->buf + end,  fill, data->args->buf_len - end);
+    memset(data->buf + end,  fill, conn->args->buf_len - end);
     for (i = off, v = start; i < end ; i++, v = (v == 0xFE ? 0x01 : v + 1))
         data->buf[i] = v;
 }
@@ -356,7 +358,7 @@ static inline void print_banner(struct checker_data *data, bool err)
 }
 
 static inline bool checker(struct checker_data *data,
-                           const char *label, size_t off,
+                           const char *label, bool imm, size_t off,
                            uint8_t expected, uint8_t saw)
 {
 
@@ -366,12 +368,14 @@ static inline bool checker(struct checker_data *data,
         print_banner(data, true);
         data->banner_done = true;
     }
-    print_err("%s exp 0x%02x saw 0x%02x\n", label, expected, saw);
+    print_err("%s imm %d off 0x%04lx exp 0x%02x saw 0x%02x\n",
+              label, imm, off, expected, saw);
 
     return true;
 }
 
-static int check_buf(struct checker_data *data, bool client)
+static int check_buf(struct stuff *conn, struct checker_data *data,
+                      bool imm, bool client)
 {
     int                 ret = 0;
     size_t              off;
@@ -394,17 +398,42 @@ static int check_buf(struct checker_data *data, bool client)
     end = off + data->op_msg.op_len;
 
     for (i = 0; i < off; i++) {
-        if (checker(data, "head", off, fill, data->buf[i]))
+        if (checker(data, "head", imm, i, fill, data->buf[i]))
             ret = -ERANGE;
     }
     for (v = start; i < end ; i++, v = (v == 0xFE ? 0x01 : v + 1)) {
-        if (checker(data, "data", off, v, data->buf[i]))
+        if (checker(data, "data", imm, i, v, data->buf[i]))
             ret = -ERANGE;
     }
-    for (; i < data->args->buf_len; i++) {
-        if (checker(data, "tail", off, fill, data->buf[i]))
+    for (; i < conn->args->buf_len; i++) {
+        if (checker(data, "tail", imm, i, fill, data->buf[i]))
             ret = -ERANGE;
     }
+
+    return ret;
+}
+
+static int do_server_1op(struct stuff *conn, struct checker_data *data,
+                         bool imm)
+{
+    int                 ret;
+    struct error_wire_msg err_msg;
+
+    /* Fill buffer for put. */
+    fill_buf(conn, data, false);
+    ret = sock_send_blob(conn->sock_fd, NULL, 0);
+    if (ret < 0)
+        goto done;
+    ret = sock_recv_fixed_blob(conn->sock_fd, NULL, 0);
+    if (ret < 0)
+        goto done;
+    /* Check put; status will be sent to client. */
+    err_msg.error = htonl(check_buf(conn, data, imm, false));
+
+    /* Fill buffer for get. */
+    ramp_buf(conn, data, false);
+    ret = sock_send_blob(conn->sock_fd, &err_msg, sizeof(err_msg));
+ done:
 
     return ret;
 }
@@ -413,15 +442,13 @@ static int do_server_ops(struct stuff *conn)
 {
     int                 ret;
     struct checker_data data = {
-        .args           = conn->args,
         .buf            = (void *)conn->lcl_kdata->z.vaddr,
     };
-    struct error_wire_msg err_msg;
 
     for (;;) {
         data.banner_done = false;
         ret = sock_recv_fixed_blob(conn->sock_fd, &data.op_msg,
-                                   sizeof(data.op_msg));
+                                    sizeof(data.op_msg));
         if (ret < 0)
             goto done;
         data.op_msg.coff = be64toh(data.op_msg.coff);
@@ -429,26 +456,77 @@ static int do_server_ops(struct stuff *conn)
         data.op_msg.op_len = be64toh(data.op_msg.op_len);
         if (!data.op_msg.op_len)
             goto done;
-        /* Fill buffer for put. */
-        fill_buf(&data, false);
-        ret = sock_send_blob(conn->sock_fd, NULL, 0);
+        if (data.op_msg.op_len <= ZHPEQ_IMM_MAX && conn->args->imm) {
+            ret = do_server_1op(conn, &data, true);
+            if (ret < 0)
+                goto done;
+            /* We need another ack before do_server_1op kills the buffer. */
+            ret = sock_recv_fixed_blob(conn->sock_fd, NULL, 0);
+            if (ret < 0)
+                goto done;
+        }
+        ret = do_server_1op(conn, &data, false);
         if (ret < 0)
             goto done;
-        ret = sock_recv_fixed_blob(conn->sock_fd, NULL, 0);
-        if (ret < 0)
-            goto done;
-        /* Check put; status will be sent to client. */
-        err_msg.error = htonl(check_buf(&data, false));
-
-        /* Fill buffer for get. */
-        ramp_buf(&data, false);
-        ret = sock_send_blob(conn->sock_fd, &err_msg, sizeof(err_msg));
-        if (ret < 0)
-            goto done;
-        if (!data.banner_done && data.args->verbose)
+        if (!data.banner_done && conn->args->verbose)
             print_banner(&data, false);
     }
 
+ done:
+
+    return ret;
+}
+
+static int do_client_1op(struct stuff *conn, struct checker_data *data,
+                         bool imm, int *data_err)
+{
+    int                 ret;
+    uint8_t             *lcl_buf = (imm ? data->buf + data->op_msg.coff : NULL);
+    uint64_t            lcl_zaddr = conn->lcl_kdata->laddr + data->op_msg.coff;
+    uint64_t            rem_zaddr = (conn->rem_kdata->z.zaddr +
+                                     data->op_msg.soff);
+    struct error_wire_msg err_msg;
+    int                 rc;
+
+    /* Wait for server to be ready. */
+    ret = sock_recv_fixed_blob(conn->sock_fd, NULL, 0);
+    if (ret < 0)
+        goto done;
+    /* Fill buffer for put. */
+    ramp_buf(conn, data, true);
+    /* Do put. */
+    ret = zq_op(conn->zq, false, lcl_buf, lcl_zaddr, data->op_msg.op_len,
+                rem_zaddr);
+    if (ret < 0)
+        goto done;
+    ret = sock_send_blob(conn->sock_fd, NULL, 0);
+    if (ret < 0)
+        goto done;
+
+    /* Wait for server to be ready. */
+    ret = sock_recv_fixed_blob(conn->sock_fd, &err_msg, sizeof(err_msg));
+    if (ret < 0)
+        goto done;
+    rc = ntohl(err_msg.error);
+    if (rc < 0) {
+        *data_err = rc;
+        if (conn->args->stop)
+            goto done;
+    }
+
+    /* Overwrite ramp for get. */
+    fill_buf(conn, data, true);
+    /* Do get. */
+    ret = zq_op(conn->zq, true, lcl_buf, lcl_zaddr, data->op_msg.op_len,
+                rem_zaddr);
+    if (ret < 0)
+        goto done;
+    rc = check_buf(conn, data, imm, true);
+    if (rc < 0) {
+        *data_err = rc;
+        if (conn->args->stop)
+            goto done;
+    }
  done:
 
     return ret;
@@ -459,13 +537,8 @@ static int do_client_op(struct stuff *conn, size_t coff, size_t soff,
 {
     int                 ret;
     struct checker_data data = {
-        .args           = conn->args,
         .buf            = (void *)conn->lcl_kdata->z.vaddr,
     };
-    uint64_t            lcl_zaddr = conn->lcl_kdata->laddr + coff;
-    uint64_t            rem_zaddr = conn->rem_kdata->z.zaddr + soff;
-    struct error_wire_msg err_msg;
-    int                 rc;
 
     data.op_msg.coff = htobe64(coff);
     data.op_msg.soff = htobe64(soff);
@@ -480,46 +553,18 @@ static int do_client_op(struct stuff *conn, size_t coff, size_t soff,
     data.op_msg.soff = soff;
     data.op_msg.op_len = op_len;
 
-    /* Wait for server to be ready. */
-    ret = sock_recv_fixed_blob(conn->sock_fd, NULL, 0);
-    if (ret < 0)
-        goto done;
-    /* Fill buffer for put. */
-    ramp_buf(&data, true);
-    /* Do put. */
-    ret = zq_op(conn->zq, false, (data.args->imm ? data.buf + coff : NULL),
-                lcl_zaddr, op_len, rem_zaddr);
-    if (ret < 0)
-        goto done;
-    ret = sock_send_blob(conn->sock_fd, NULL, 0);
-    if (ret < 0)
-        goto done;
-
-    /* Wait for server to be ready. */
-    ret = sock_recv_fixed_blob(conn->sock_fd, &err_msg, sizeof(err_msg));
-    if (ret < 0)
-        goto done;
-    rc = ntohl(err_msg.error);
-    if (rc < 0) {
-        *data_err = rc;
-        if (data.args->stop)
+    if (data.op_msg.op_len <= ZHPEQ_IMM_MAX && conn->args->imm) {
+        ret = do_client_1op(conn, &data, true, data_err);
+        if (ret < 0)
+            goto done;
+        if (*data_err && conn->args->stop)
+            goto done;
+        ret = sock_send_blob(conn->sock_fd, NULL, 0);
+        if (ret < 0)
             goto done;
     }
-    /* Overwrite ramp for get. */
-    fill_buf(&data, true);
-    /* Do get. */
-    ret = zq_op(conn->zq, true, (data.args->imm ? data.buf + coff : NULL),
-                lcl_zaddr, op_len, rem_zaddr);
-    if (ret < 0)
-        goto done;
-    rc = check_buf(&data, true);
-    if (rc < 0) {
-        *data_err = rc;
-        if (data.args->stop)
-            goto done;
-    }
-
-    if (!data.banner_done && data.args->verbose)
+    ret = do_client_1op(conn, &data, false, data_err);
+    if (!data.banner_done && conn->args->verbose)
         print_banner(&data, false);
  done:
 
@@ -556,7 +601,7 @@ int do_zq_setup(struct stuff *conn)
     /* Get address index. */
     ret = zhpeq_backend_open(conn->zq, conn->sock_fd);
     if (ret < 0) {
-        print_func_err(__FUNCTION__, __LINE__, "zhpeq_open", "", ret);
+        print_func_err(__FUNCTION__, __LINE__, "zhpeq_backend_open", "", ret);
         goto done;
     }
     conn->open_idx = ret;
@@ -590,6 +635,7 @@ static int do_server_one(const struct args *oargs, int conn_fd)
         goto done;
 
     args->buf_len = be64toh(cli_msg.buf_len);
+    args->imm = !!cli_msg.imm;
     args->once_mode = !!cli_msg.once_mode;
     args->qcm = !!cli_msg.qcm;
     args->verbose = !!cli_msg.verbose;
@@ -691,6 +737,7 @@ static int do_client(const struct args *args)
 
     /* Write the ring parameters to the server. */
     cli_msg.buf_len = htobe64(args->buf_len);
+    cli_msg.imm = args->imm;
     cli_msg.once_mode = args->once_mode;
     cli_msg.qcm = args->qcm;
     cli_msg.verbose = args->verbose;
@@ -745,7 +792,7 @@ static void usage(bool help)
         "Lower case is base 10; upper case is base 2.\n"
         "Server requires just port; client requires 6 or 9 arguments.\n"
         "Client only options:\n"
-        " -i : use immediate ops, write_max <= 32\n"
+        " -i : disable immediate ops\n"
         " -o : run once and then server will exit\n"
         " -q : print qcm and key data\n"
         " -s : stop on first error\n"
@@ -764,7 +811,9 @@ static void usage(bool help)
 int main(int argc, char **argv)
 {
     int                 ret = 1;
-    struct args         args = { NULL };
+    struct args         args = {
+        .imm            = true,
+    };
     bool                client_opt = false;
     int                 opt;
     int                 rc;
@@ -788,9 +837,9 @@ int main(int argc, char **argv)
         switch (opt) {
 
         case 'i':
-            if (args.imm)
+            if (!args.imm)
                 usage(false);
-            args.imm = true;
+            args.imm = false;
             break;
 
         case 'o':
@@ -839,8 +888,7 @@ int main(int argc, char **argv)
                               SIZE_MAX, PARSE_KB | PARSE_KIB) < 0 ||
             parse_kb_uint64_t(__FUNCTION__, __LINE__, "write_max",
                               argv[optind++], &args.write_max, 0, 1,
-                              (args.imm ? ZHPEQ_IMM_MAX : args.buf_len),
-                              PARSE_KB | PARSE_KIB) < 0 ||
+                              args.buf_len, PARSE_KB | PARSE_KIB) < 0 ||
             parse_kb_uint64_t(__FUNCTION__, __LINE__, "cli_off_max",
                               argv[optind++], &args.coff_max, 0, 0,
                               args.buf_len - args.write_max,

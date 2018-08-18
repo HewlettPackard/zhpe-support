@@ -1,4 +1,4 @@
 [submodule "asic"]
 	path = asic
-	url = git@github.hpe.com:MDC-SW/zhpe-support.git
-	branch = carbon
+	url = git@github.com:HewlettPackard/zhpe-driver.git
+	branch = master

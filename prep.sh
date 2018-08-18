@@ -49,7 +49,6 @@ INSD=$1
 
 (
     cd $APPDIR
-    asic/prep.sh "$INSD"
     B=build
     rm -rf $B
     mkdir -p $B/include

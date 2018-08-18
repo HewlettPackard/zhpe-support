@@ -1,7 +1,7 @@
-add_executable(driver_nops driver_nops.c)
-target_link_libraries(driver_nops zhpeq_util)
+add_executable(edgetest edgetest.c)
+target_link_libraries(edgetest zhpeq zhpeq_util zhpeq_util_fab)
 add_executable(libzhpeq_ld libzhpeq_ld.c)
-target_link_libraries(libzhpeq_ld zhpeq)
+target_link_libraries(libzhpeq_ld zhpeq zhpeq_util)
 add_executable(libzhpeq_util_log libzhpeq_util_log.c)
 target_link_libraries(libzhpeq_util_log zhpeq_util)
 add_executable(libzhpeq_qalloc libzhpeq_qalloc.c)
@@ -14,7 +14,7 @@ add_executable(xingpong xingpong.c)
 target_link_libraries(xingpong zhpeq zhpeq_util zhpeq_util_fab)
 install(
   TARGETS
-  driver_nops
+  edgetest
   libzhpeq_ld
   libzhpeq_qalloc
   libzhpeq_qattr

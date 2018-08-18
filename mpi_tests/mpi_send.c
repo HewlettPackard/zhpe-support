@@ -45,7 +45,7 @@ int main(int argc, char **argv)
     int                 ret = 1;
     struct zhpeq_timing_timer total = { "total" };
     struct zhpeq_timing_timer turnaround = { "turnaround" };
-    struct zhpeq_timing_stamp *buf = NULL;
+    struct zhpe_timing_stamp *buf = NULL;
     uint64_t            size = sizeof(*buf);
     uint64_t            loops;
     uint64_t            i;
@@ -56,8 +56,10 @@ int main(int argc, char **argv)
     if (MPI_Init(&argc, &argv) != MPI_SUCCESS)
         goto done;
 
-    if (argc < 2 || argc > 3)
+    if (argc < 2 || argc > 3) {
         fprintf(stderr, "Need loops and, optionally, size >= 12.\n");
+        goto done;
+    }
 
     if (parse_kb_uint64_t(__FUNCTION__, __LINE__, "loops",
                           argv[1], &loops, 0, 1, SIZE_MAX,

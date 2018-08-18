@@ -39,24 +39,42 @@
 
 #define _GNU_SOURCE
 
+#include <zhpeq.h>
 #include <zhpeq_util.h>
 #include <zhpe.h>
 
 #include <assert.h>
-#include <pthread.h>
+#include <endian.h>
 
-#include <arpa/inet.h>
+#include <uuid/uuid.h>
 
-#include <sys/mman.h>
+/* Do extern "C" without goofing up emacs. */
+#ifndef _EXTERN_C_SET
+#define _EXTERN_C_SET
+#ifdef  __cplusplus
+#define _EXTERN_C_BEG extern "C" {
+#define _EXTERN_C_END }
+#else
+#define _EXTERN_C_BEG
+#define _EXTERN_C_END
+#endif
+#endif
 
-typedef size_t __attribute__ ((aligned(64))) cache_size_t;
+_EXTERN_C_BEG
+
+#define DEV_NAME        "/dev/"DRIVER_NAME
+
+#define CACHE_ALIGNED    __attribute__ ((aligned (64)))
 
 struct backend_ops {
-    int                 (*lib_init)(void);
-    int                 (*domain)(const union zhpeq_backend_params *params,
-                                  struct zhpeq_dom *zdom);
+    int                 (*lib_init)(struct zhpeq_attr *attr);
+    int                 (*domain)(struct zhpeq_dom *zdom);
     int                 (*domain_free)(struct zhpeq_dom *zdom);
-    int                 (*qalloc)(struct zhpeq_dom *zdom, struct zhpeq *zq);
+    int                 (*qalloc)(struct zhpeq *zq, int cmd_qlen, int cmp_qlen,
+                                  int traffic_class, int priority,
+                                  int slice_mask);
+    int                 (*qalloc_post)(struct zhpeq *zq);
+    int                 (*qfree_pre)(struct zhpeq *zq);
     int                 (*qfree)(struct zhpeq *zq);
     int                 (*open)(struct zhpeq *zq, int sock_fd);
     int                 (*close)(struct zhpeq *zq, int open_idx);
@@ -67,16 +85,26 @@ struct backend_ops {
                                   struct zhpeq_key_data **kdata_out);
     int                 (*mr_free)(struct zhpeq_dom *zdom,
                                    struct zhpeq_key_data *kdata);
-    int                 (*zmmu_free)(struct zhpeq *zq,
+    int                 (*zmmu_free)(struct zhpeq_dom *zdom,
                                      struct zhpeq_key_data *kdata);
-    int                 (*zmmu_import)(struct zhpeq *zq, int open_idx,
+    int                 (*zmmu_import)(struct zhpeq_dom *zdom, int open_idx,
                                        const void *blob, size_t blob_len,
+                                       bool cpu_visible,
                                        struct zhpeq_key_data **kdata_out);
-    int                 (*zmmu_export)(struct zhpeq *zq,
+    int                 (*zmmu_export)(struct zhpeq_dom *zdom,
                                        const struct zhpeq_key_data *kdata,
                                        void **blob_out, size_t *blob_len);
     void                (*print_info)(struct zhpeq *zq);
+    int                 (*getaddr)(struct zhpeq *zq, union sockaddr_in46 *sa);
+    char                *(*qkdata_id_str)(struct zhpeq_dom *zdom,
+                                          const struct zhpeq_key_data *qkdata);
 };
+
+extern uuid_t           zhpeq_uuid;
+
+void zhpeq_register_backend(enum zhpe_backend backend, struct backend_ops *ops);
+void zhpeq_backend_libfabric_init(int fd);
+void zhpeq_backend_zhpe_init(int fd);
 
 #define FREE_END        (-1)
 
@@ -94,16 +122,17 @@ struct zhpeq_dom {
 
 struct zhpeq {
     struct zhpeq_dom    *zdom;
-    uint                debug_flags;
-    struct zhpe_info    info;
-    struct zhpe_hw_reg  *reg;
+    struct zhpe_xqinfo  xqinfo;
+    volatile void       *qcm;
     union zhpe_hw_wq_entry *wq;
     union zhpe_hw_cq_entry *cq;
     void                **context;
     void                *backend_data;
-    uint32_t            q_head;         /* Shadow for wq and cq */
-    pthread_spinlock_t __attribute__ ((aligned(64))) tail_lock;
-    uint32_t            tail_reserved;
+    int                 fd;
+    pthread_spinlock_t  tail_lock CACHE_ALIGNED;
+    /* Shadow for wq and cq, q_head may be updated in progress thread. */
+    uint32_t            q_head CACHE_ALIGNED;
+    uint32_t            tail_reserved CACHE_ALIGNED;
     uint32_t            tail_commit;
     bool                tail_lock_init;
 };
@@ -113,9 +142,94 @@ static inline uint8_t cq_valid(uint32_t idx, uint32_t qmask)
     return ((idx & (qmask + 1)) ? 0 : ZHPE_HW_CQ_VALID);
 }
 
-extern struct backend_ops libfabric_ops;
-
 #define likely(x)		__builtin_expect((x), 1)
 #define unlikely(x)		__builtin_expect((x), 0)
+
+static inline uint64_t ioread64(const volatile void *addr)
+{
+    return le64toh(*(const volatile uint64_t *)addr);
+}
+
+static inline void iowrite64(uint64_t value, volatile void *addr)
+{
+    *(volatile uint64_t *)addr = htole64(value);
+}
+
+struct key_data_packed {
+    uint64_t            key;
+    uint64_t            vaddr;
+    uint64_t            zaddr;
+    uint64_t            len;
+    uint8_t             access;
+} __attribute__((packed));
+
+static inline void pack_kdata(const struct zhpeq_key_data *qkdata,
+                              struct key_data_packed *pdata,
+                              uint64_t zaddr)
+{
+    const struct zhpe_key_data *kdata = &qkdata->z;
+
+    pdata->key = be64toh(kdata->key);
+    pdata->vaddr = be64toh(kdata->vaddr);
+    pdata->zaddr = be64toh(zaddr);
+    pdata->len = be64toh(kdata->len);
+    pdata->access = kdata->access;
+}
+
+static inline void unpack_kdata(const struct key_data_packed *pdata,
+                                struct zhpeq_key_data *qkdata)
+{
+    struct zhpe_key_data *kdata = &qkdata->z;
+
+    kdata->key = htobe64(pdata->key);
+    kdata->vaddr = htobe64(pdata->vaddr);
+    kdata->zaddr = htobe64(pdata->zaddr);
+    kdata->len = htobe64(pdata->len);
+    kdata->access = pdata->access;
+}
+
+#define ZHPEQ_MR_V1             (1U)
+#define ZHPEQ_MR_REMOTE         ((uint32_t)1 << 31)
+
+struct zhpeq_mr_desc_common_hdr {
+    uint32_t            magic;
+    uint32_t            version;
+};
+
+struct zhpeq_mr_desc_v1 {
+    struct zhpeq_mr_desc_common_hdr hdr;
+    struct zhpeq_key_data qkdata;
+    uint32_t            access_plus;
+    int                 uuid_idx;
+};
+
+union zhpeq_mr_desc {
+    struct zhpeq_mr_desc_common_hdr hdr;
+    struct zhpeq_mr_desc_v1 v1;
+};
+
+/* FIXME: probably works for now, but ditch bit fields. */
+union xdm_cmp_tail {
+    struct zhpe_xdm_cmpl_queue_tail_toggle bits;
+    uint64_t            u64;
+};
+
+union xdm_active {
+    struct zhpe_xdm_active_status_error bits;
+    uint64_t            u64;
+};
+
+union rdm_rcv_tail {
+    struct zhpe_rdm_rcv_queue_tail_toggle bits;
+    uint64_t            u64;
+};
+
+_EXTERN_C_END
+
+#ifdef _EXTERN_C_SET
+#undef _EXTERN_C_SET
+#undef _EXTERN_C_BEG
+#undef _EXTERN_C_END
+#endif
 
 #endif /* _LIBZHPEQ_INTERNAL_H */

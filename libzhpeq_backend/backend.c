@@ -36,7 +36,21 @@
 
 #include <internal.h>
 
-static void __attribute__((constructor)) lib_init(void)
+static void __attribute__((constructor)) backend_lib_init(void)
 {
-    zhpeq_register_backend(ZHPEQ_BACKEND_LIBFABRIC, &libfabric_ops);
+    int                 fd = -1;
+    int                 err;
+
+    fd = open(DEV_NAME, O_RDWR);
+    if (fd == -1) {
+        err = errno;
+        print_dbg("%s,%u:open(%s) returned error %d:%s\n",
+                  __FUNCTION__, __LINE__, DEV_NAME, err, strerror(err));
+    }
+
+    zhpeq_backend_libfabric_init(fd);
+    zhpeq_backend_zhpe_init(fd);
+
+    if (fd != -1)
+        close(fd);
 }

@@ -47,10 +47,19 @@ static bool             log_syslog;
 static bool             log_syslog_init;
 static int              log_level = LOG_ERR;
 
-void zhpeq_util_init(char *argv0, int default_log_level, bool use_syslog)
+static void __attribute__((constructor)) lib_init(void)
 {
     long                rcl;
 
+    /* Make sure page_size is set before use; if we can't get it, just die. */
+    rcl = sysconf(_SC_PAGESIZE);
+    if (rcl == -1)
+        abort();
+    page_size = rcl;
+}
+
+void zhpeq_util_init(char *argv0, int default_log_level, bool use_syslog)
+{
     /* Allow to be called multiple times for testing. */
     appname = basename(argv0);
     log_level  = default_log_level;
@@ -58,16 +67,6 @@ void zhpeq_util_init(char *argv0, int default_log_level, bool use_syslog)
     if (log_syslog && !log_syslog_init) {
         log_syslog_init = true;
         openlog(appname, LOG_PID | LOG_PERROR, LOG_DAEMON);
-    }
-
-    if (!page_size) {
-        rcl = sysconf(_SC_PAGESIZE);
-        if (rcl == -1) {
-            print_func_err(__FUNCTION__, __LINE__, "sysconf", "_SC_PAGESIZE",
-                           errno);
-            abort();
-        }
-        page_size = rcl;
     }
 }
 
@@ -94,7 +93,7 @@ void print_dbg(const char *fmt, ...)
     va_list             ap;
 
     va_start(ap, fmt);
-    vlog(LOG_DEBUG, stderr, appname, fmt, ap);
+    vlog(LOG_DEBUG, stdout, appname, fmt, ap);
     va_end(ap);
 }
 
@@ -103,7 +102,7 @@ void print_info(const char *fmt, ...)
     va_list             ap;
 
     va_start(ap, fmt);
-    vlog(LOG_INFO, stderr, appname, fmt, ap);
+    vlog(LOG_INFO, stdout, appname, fmt, ap);
     va_end(ap);
 }
 
@@ -663,6 +662,21 @@ void *_do_malloc(const char *callf, uint line, size_t size)
     return ret;
 }
 
+void *_do_realloc(const char *callf, uint line, void *ptr, size_t size)
+{
+    void                *ret = realloc(ptr, size);
+    int                 save_err;
+
+    if (!ret) {
+        save_err = errno;
+        print_err("%s,%u:Failed to allocate %Lu bytes\n",
+                  callf, line, (ullong)size);
+        errno = save_err;
+    }
+
+    return ret;
+}
+
 void *_do_calloc(const char *callf, uint line, size_t nmemb, size_t size)
 {
     void                *ret = calloc(nmemb, size);
@@ -794,9 +808,9 @@ int _sock_send_blob(const char *callf, uint line, int fd,
     ret = check_func_io(callf, line, "write", "", req, res, 0);
     if (ret < 0)
         goto done;
-    if (!blob_len)
-        goto done;
     req = blob_len;
+    if (!req)
+        goto done;
     res = write(fd, blob, req);
     ret = check_func_io(callf, line, "write", "", req, res, 0);
  done:
@@ -818,10 +832,14 @@ int _sock_recv_fixed_blob(const char *callf, uint line,
     if (ret < 0)
         goto done;
     req = ntohl(wlen);
+    if (!blob_len && req == UINT32_MAX)
+        req = 0;
     if (!_expected_saw(callf, line, "wire len", blob_len, req)) {
         ret = -EINVAL;
         goto done;
     }
+    if (!req)
+        goto done;
     res = read(sock_fd, blob, req);
     ret = check_func_io(callf, line, "read", "", req, res, 0);
  done:
@@ -866,6 +884,104 @@ int _sock_recv_var_blob(const char *callf, uint line,
         free(*blob);
         *blob = NULL;
     }
+
+    return ret;
+}
+
+const char *sockaddr_ntop(const void *addr, char *buf, size_t len)
+{
+    const char          *ret = NULL;
+    const union sockaddr_in46 *sa = addr;
+
+    if (!buf) {
+        errno = EFAULT;
+        goto done;
+    }
+    errno = 0;
+
+    switch (sa->sa_family) {
+
+    case AF_INET:
+        ret = inet_ntop(AF_INET, &sa->addr4.sin_addr, buf, len);
+        break;
+
+    case AF_INET6:
+        ret = inet_ntop(AF_INET6, &sa->addr6.sin6_addr, buf, len);
+        break;
+
+    case AF_ZHPE:
+        if (len  < ZHPE_ADDRSTRLEN) {
+            errno = ENOSPC;
+            break;
+        }
+        uuid_unparse_upper(sa->zhpe.sz_uuid, buf);
+        ret = buf;
+        break;
+
+    default:
+        errno = EAFNOSUPPORT;
+        break;
+    }
+    if (!ret && len > 0)
+        buf[0] = '\0';
+ done:
+
+    return ret;
+}
+
+int sockaddr_cmpx(const union sockaddr_in46 *sa1,
+                  const union sockaddr_in46 *sa2, bool noport)
+{
+    int                 ret;
+    union sockaddr_in46 local1;
+    union sockaddr_in46 local2;
+
+    /* We should only be called if family1 != family2 */
+    switch (sa1->sa_family) {
+
+    case AF_INET:
+        memcpy(&local1, sa1, sizeof(struct sockaddr_in));
+        break;
+
+    case AF_INET6:
+        memcpy(&local1, sa1, sizeof(struct sockaddr_in6));
+        sockaddr_6to4(&local1);
+        if (local1.sa_family == AF_INET)
+            break;
+
+    default:
+        ret = memcmp(&sa1->sa_family, &sa2->sa_family, sizeof(sa1->sa_family));
+        goto done;
+
+    }
+
+    /* We should only be called if family2 != family2 */
+    switch (sa2->sa_family) {
+
+    case AF_INET:
+        memcpy(&local2, sa2, sizeof(struct sockaddr_in));
+        break;
+
+    case AF_INET6:
+        memcpy(&local2, sa2, sizeof(struct sockaddr_in6));
+        sockaddr_6to4(&local2);
+        if (local2.sa_family == AF_INET)
+            break;
+
+    default:
+        ret = memcmp(&sa1->sa_family, &sa2->sa_family, sizeof(sa1->sa_family));
+        goto done;
+
+    }
+
+    /* We'll only get here if both addresses can be "reduced" to IPv4. */
+    ret = memcmp(&local1.addr4.sin_addr, &local2.addr4.sin_addr,
+                 sizeof(local1.addr4.sin_addr));
+    if (ret || noport)
+        goto done;
+    ret = memcmp(&local1.sin_port, &local2.sin_port, sizeof(local1.sin_port));
+
+ done:
 
     return ret;
 }

@@ -53,9 +53,125 @@ static void usage(bool help)
         "         specified, qlen will be selected randomly and [-s]"
         " allows\n"
         "         specifying a seed for random().\n",
-        appname, attr.max_tx_queues, attr.max_hw_qlen);
+        appname, attr.z.max_tx_queues, attr.z.max_hw_qlen);
 
     exit(255);
+}
+
+static bool pages_ok(const char *label, volatile void *ptr, size_t off,
+                     size_t size, bool zero)
+{
+    bool                ret = false;
+    uint64_t            check_off;
+    uint64_t            check_val;
+    volatile uint64_t   *check_ptr;
+
+    /* FIXME: A lot of hardcoding. */
+    size -= sizeof(*check_ptr);
+    for (check_off = page_size - sizeof(*check_ptr);
+         check_off <= size; check_off += page_size) {
+        check_ptr = ptr + check_off;
+        check_val = *check_ptr;
+        if (zero) {
+            if (!expected_saw(label, 0, check_val))
+                goto done;
+            *check_ptr = off + check_off;
+        } else if (!expected_saw(label, off + check_off, check_val))
+            goto done;
+    }
+    ret = true;
+
+ done:
+    return ret;
+}
+
+static int qcm_ok(volatile void *qcm, struct zhpe_xqinfo *info, size_t i,
+                  bool zhpe, bool zero)
+{
+    bool                ret = false;
+    uint64_t            check_off;
+    uint64_t            check_val;
+    volatile uint64_t   *check_ptr;
+
+    if (zhpe) {
+        check_off = 0;
+        check_ptr = qcm + check_off;
+        check_val = *check_ptr;
+        if (check_val == 0 && (check_val & 0x3F)) {
+            print_err("Offset 0x%Lx unexpected value 0x%Lx\n",
+                      (ullong)check_off, (ullong)check_val);
+            goto done;
+        }
+        check_off = 8;
+        check_ptr = qcm + check_off;
+        check_val = *check_ptr;
+        if (check_val == 0 && (check_val & 0x3F)) {
+            print_err("Offset 0x%Lx unexpected value 0x%Lx\n",
+                      (ullong)check_off, (ullong)check_val);
+            goto done;
+        }
+        check_off = 0x10;
+        check_ptr = qcm + check_off;
+        check_val = *check_ptr;
+        if (!expected_saw("cmdq.ent", info->cmdq.ent, check_val & 0xFFFFFFFFUL))
+            goto done;
+        if (!expected_saw("cmplq.ent", info->cmplq.ent, check_val >> 32))
+            goto done;
+        check_off = 0x18;
+        check_ptr = qcm + check_off;
+        check_val = *check_ptr;
+        if ((check_val & 0xFFFF) == 0 ||
+            ((check_val >> 20) & 0xF) != (i & 0xF) ||
+            ((check_val >> 24) & 0x1) != (i & 0x1) ||
+            ((check_val >> 24) & 0xFE) != 0x40 ||
+            ((check_val >> 32) & 0xFFFF) == 0 ||
+            (check_val >> 48) != 0) {
+            print_err("Offset 0x%Lx unexpected value 0x%Lx\n",
+                      (ullong)check_off, (ullong)check_val);
+            goto done;
+        }
+        check_off = 0x20;
+        check_ptr = qcm + check_off;
+        check_val = *check_ptr;
+        if (!expected_saw("mstop", 0, check_val))
+            goto done;
+        check_off = 0x28;
+        check_ptr = qcm + check_off;
+        check_val = *check_ptr;
+        if (!expected_saw("active", 0x8000, check_val))
+            goto done;
+        check_off = 0x40;
+        check_ptr = qcm + check_off;
+        check_val = *check_ptr;
+        if (!expected_saw("stop", 0, check_val))
+            goto done;
+    }
+    check_off = 0x80;
+    check_ptr = qcm + check_off;
+    check_val = *check_ptr;
+    if (!expected_saw("cmdt", 0, check_val))
+        goto done;
+    check_off = 0xc0;
+    check_ptr = qcm + check_off;
+    check_val = *check_ptr;
+    if (!expected_saw("cmph", 0, check_val))
+        goto done;
+    check_off = 0x100;
+    check_ptr = qcm + check_off;
+    check_val = *check_ptr;
+    if (!expected_saw("cmpt", 0x80000000, check_val))
+        goto done;
+    if (!zhpe && !pages_ok("qcm", qcm, info->qcm.off, info->qcm.size, zero))
+        goto done;
+    ret = true;
+ done:
+    return ret;
+}
+
+static bool queue_ok(const char *label, volatile void *ptr,
+                     struct zhpe_queue *q, bool zero)
+{
+    return pages_ok(label, ptr, q->off, q->size, zero);
 }
 
 int main(int argc, char **argv)
@@ -66,15 +182,15 @@ int main(int argc, char **argv)
     uint                *shuffle = NULL;
     bool                seed = false;
     size_t              qlen = 0;
-    size_t              req;
+    size_t              cmd_len;
+    size_t              cmp_len;
     int                 rc;
     size_t              queues;
     int                 opt;
     size_t              h;
     size_t              i;
     uint64_t            u64;
-    ulong               check_off;
-    ulong               check_val;
+    bool                zhpe;
 
     zhpeq_util_init(argv[0], LOG_DEBUG, false);
 
@@ -89,6 +205,7 @@ int main(int argc, char **argv)
         print_func_err(__FUNCTION__, __LINE__, "zhpeq_query_attr", "", rc);
         goto done;
     }
+    zhpe = (attr.backend == ZHPEQ_BACKEND_ZHPE);
 
     if (argc == 1)
         usage(true);
@@ -126,7 +243,7 @@ int main(int argc, char **argv)
 
     if (parse_kb_uint64_t(__FUNCTION__, __LINE__, "queues",
                           argv[optind++], &u64, 0,
-                          1, attr.max_tx_queues, 0) < 0)
+                          1, attr.z.max_tx_queues, 0) < 0)
         usage(false);
 
     queues = u64;
@@ -134,7 +251,7 @@ int main(int argc, char **argv)
     if (argc > 1) {
         if (parse_kb_uint64_t(__FUNCTION__, __LINE__, "qlen",
                               argv[optind++], &u64, 0,
-                              2, attr.max_hw_qlen, 0) < 0)
+                              2, attr.z.max_hw_qlen, 0) < 0)
             usage(false);
         qlen = u64;
     }
@@ -151,7 +268,7 @@ int main(int argc, char **argv)
     } else
         random_array(shuffle, queues);
 
-    rc = zhpeq_domain_alloc(NULL, &zdom);
+    rc = zhpeq_domain_alloc(&zdom);
     if (rc < 0) {
         print_func_err(__FUNCTION__, __LINE__, "zhpeq_domain_alloc", "", rc);
         goto done;
@@ -161,77 +278,57 @@ int main(int argc, char **argv)
      * Allocate queues, with random lengths if qlen == 0, and set
      * debugging values used to check that memory is allocated correctly.
      * The shuffle array puts the list in random order.
-     *
-     * XXX: this test requires the driver be loaded with debug=1 (TESTMODE)
      */
     for (h = 0; h < queues; h++) {
         i = shuffle[h];
         if (zq[i])
             print_err("%s,%u:random_array() broken\n", __FUNCTION__, __LINE__);
-        req = (qlen ?: random_range(2, attr.max_hw_qlen));
-        rc = zhpeq_alloc(zdom, req, &zq[i]);
+        cmd_len = (qlen ?: random_range(2, attr.z.max_hw_qlen));
+        cmp_len = (qlen ?: random_range(2, attr.z.max_hw_qlen));
+        rc = zhpeq_alloc(zdom, cmd_len, cmp_len, i & 0xF, i & 0x1, 0, &zq[i]);
         if (rc < 0) {
             print_func_errn(__FUNCTION__, __LINE__, "zhpeq_alloc", qlen, false,
                             rc);
             goto done;
         }
-        if (zq[i]->info.qlen < req) {
-            print_err("%s,%u:returned qlen %u < req %lu.\n",
-                      __FUNCTION__, __LINE__, zq[i]->info.qlen, req);
+        if (zq[i]->xqinfo.cmdq.ent < cmd_len) {
+            print_err("%s,%u:returned cmd_len %u < %lu.\n",
+                      __FUNCTION__, __LINE__, zq[i]->xqinfo.cmdq.ent, cmd_len);
             goto done;
         }
-        if (zq[i]->info.qlen & (zq[i]->info.qlen - 1)) {
+        if (zq[i]->xqinfo.cmdq.ent & (zq[i]->xqinfo.cmdq.ent - 1)) {
             print_err("%s,%u:returned qlen %u not a power of 2.\n",
-                      __FUNCTION__, __LINE__, zq[i]->info.qlen);
+                      __FUNCTION__, __LINE__, zq[i]->xqinfo.cmdq.ent);
             goto done;
         }
-        check_off = page_size - sizeof(ulong);
-        if (attr.backend != ZHPEQ_BACKEND_ZHPE
-            && check_off >= sizeof(*zq[i]->reg)) {
-            check_val = *(ulong *)((void *)zq[i]->reg + check_off);
-            if (!expected_saw("regs", 0, check_val))
-                goto done;
-            *(ulong *)((void *)zq[i]->reg + check_off) =
-                zq[i]->info.reg_off + check_off;
+        if (zq[i]->xqinfo.cmplq.ent < cmp_len) {
+            print_err("%s,%u:returned cmp_len %u < %lu.\n",
+                      __FUNCTION__, __LINE__, zq[i]->xqinfo.cmplq.ent, cmp_len);
+            goto done;
         }
-        for (check_off = page_size - sizeof(ulong);
-             check_off < zq[i]->info.qsize;
-             check_off += page_size) {
-            check_val = *(ulong *)((void *)zq[i]->wq + check_off);
-            if (!expected_saw("wq", 0, check_val))
-                goto done;
-            *(ulong *)((void *)zq[i]->wq + check_off) =
-                zq[i]->info.wq_off + check_off;
-            check_val = *(ulong *)((void *)zq[i]->cq + check_off);
-            if (!expected_saw("cq", 0, check_val))
-                goto done;
-            *(ulong *)((void *)zq[i]->cq + check_off) =
-                zq[i]->info.cq_off + check_off;
+        if (zq[i]->xqinfo.cmplq.ent & (zq[i]->xqinfo.cmplq.ent - 1)) {
+            print_err("%s,%u:returned qlen %u not a power of 2.\n",
+                      __FUNCTION__, __LINE__, zq[i]->xqinfo.cmplq.ent);
+            goto done;
         }
+        if (!qcm_ok(zq[i]->qcm, &zq[i]->xqinfo, i, zhpe, true))
+            goto done;
+        if (!queue_ok("cmdq",  zq[i]->wq, &zq[i]->xqinfo.cmdq, true))
+            goto done;
+        if (!queue_ok("cmpq",  zq[i]->cq, &zq[i]->xqinfo.cmplq, true))
+            goto done;
     }
     for (i = 0; i < queues; i++) {
-        check_off = page_size - sizeof(ulong);
-        if (attr.backend != ZHPEQ_BACKEND_ZHPE
-            && check_off >= sizeof(*zq[i]->reg)) {
-            check_val = *(ulong *)((void *)zq[i]->reg + check_off);
-            if (!expected_saw("regs", zq[i]->info.reg_off + check_off,
-                              check_val))
-                goto done;
-        }
-        for (check_off = page_size - sizeof(ulong);
-             check_off < zq[i]->info.qsize;
-             check_off += page_size) {
-            check_val = *(ulong *)((void *)zq[i]->wq + check_off);
-            if (!expected_saw("wq", zq[i]->info.wq_off + check_off, check_val))
-                goto done;
-            check_val = *(ulong *)((void *)zq[i]->cq + check_off);
-            if (!expected_saw("cq", zq[i]->info.cq_off + check_off, check_val))
-                goto done;
-        }
+        if (!qcm_ok(zq[i]->qcm, &zq[i]->xqinfo, i, zhpe, false))
+            goto done;
+        if (!queue_ok("cmdq",  zq[i]->wq, &zq[i]->xqinfo.cmdq, false))
+            goto done;
+        if (!queue_ok("cmpq",  zq[i]->cq, &zq[i]->xqinfo.cmplq, false))
+            goto done;
     }
-    /* Free queues: if qlen == 0, free a random 50%. */
+    /* Free a random 50%. */
     for (i = 0; i < queues; i++) {
-        if (!qlen && random_range(0, 1))
+        if (random_range(0, 1))
             continue;
         zhpeq_free(zq[i]);
         zq[i] = NULL;
@@ -240,26 +337,14 @@ int main(int argc, char **argv)
     for (i = 0; i < queues; i++) {
         if (!zq[i])
             continue;
-        check_off = page_size - sizeof(ulong);
-        if (attr.backend != ZHPEQ_BACKEND_ZHPE
-            && check_off >= sizeof(*zq[i]->reg)) {
-            check_val = *(ulong *)((void *)zq[i]->reg + check_off);
-            if (!expected_saw("regs", zq[i]->info.reg_off + check_off,
-                              check_val))
-                goto done;
-        }
-        for (check_off = page_size - sizeof(ulong);
-             check_off < zq[i]->info.qsize;
-             check_off += page_size) {
-            check_val = *(ulong *)((void *)zq[i]->wq + check_off);
-            if (!expected_saw("wq", zq[i]->info.wq_off + check_off, check_val))
-                goto done;
-            check_val = *(ulong *)((void *)zq[i]->cq + check_off);
-            if (!expected_saw("cq", zq[i]->info.cq_off + check_off, check_val))
-                goto done;
-        }
+        if (!qcm_ok(zq[i]->qcm, &zq[i]->xqinfo, i, zhpe, false))
+            goto done;
+        if (!queue_ok("cmdq",  zq[i]->wq, &zq[i]->xqinfo.cmdq, false))
+            goto done;
+        if (!queue_ok("cmpq",  zq[i]->cq, &zq[i]->xqinfo.cmplq, false))
+            goto done;
     }
-    /* If qlen == 0, leave a mess for exit+driver to clean up. */
+    /* Leave a mess for exit+driver to clean up. */
     ret = 0;
 
  done:

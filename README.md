@@ -78,29 +78,18 @@ The emulation provided by the libzhpeq library has been mostly tested using the 
 	$ sudo make install
 Make sure the new version of libtoolize is first in your PATH.
    
-## Building just the driver and helper into ${TEST_DIR}
-
-NOTE: Builds in the zhpe-support tree currently install automatically into ${TEST_DIR}. This is not true for zhpe-libfabric and zhpe-ompi.
-
-### 1. Clone zhpe-support into ${SRC_DIR}
-	$ cd ${SRC_DIR}
-	$ git clone https://github.com/HewlettPackard/zhpe-support.git
-
-### 2. Generate makefiles and build and load driver.
-	$ cd ${SRC_DIR}/zhpe-support
-	$ ./prep.sh ${TEST_DIR}
-	$ make driver
-	$ sudo -i insmod ${TEST_DIR}/lib/modules/zhpe.ko helper_path=${TEST_DIR}/bin/zhpe_helper
-
 ## Building zhpe-support, zhpe-libfabric, and OpenMPI (with libfabric support). Everything will be installed into ${TEST_DIR}
 
 ### 1. Clone source trees in ${SRC_DIR}
 	$ cd ${SRC_DIR}
 	$ git clone https://github.com/HewlettPackard/zhpe-support.git
+	$ git submodule init
+	$ git submodule update
 	$ git clone -b zhpe https://github.com/HewlettPackard/zhpe-libfabric.git
 	$ git clone https://github.com/open-mpi/ompi.git
 	$ cd ompi
-	$ git checkout v3.0.0
+	$ git checkout v4.0.x
+Version 3.1.1 has also been tested, but we are focused on v4.0.x at this point.
 
 ### 2. Build and install zhpe library
 	$ cd ${SRC_DIR}/zhpe-support
@@ -156,19 +145,23 @@ NOTE: Builds in the zhpe-support tree currently install automatically into ${TES
 	$ export LD_LIBRARY_PATH=${TEST_DIR}/lib
 	$ ${TEST_DIR}/libexec/xingpong
 
-### Here is how to run xingpong on one or two nodes (the server is hostname1), using the sockets provider.
-(If another provider (e.g., verbs) is available on your system you may specify it using the -p option.)
+### Here is how to run xingpong on one or two nodes (the server is hostname1), using the first provider found.
+The sockets provider is tried last and will be used if no others can be found. If you wish to force a specific provider
+that supports RDM endpoints (e.g., verbs), you may specify this by exporting  
+ZHPE_BACKEND_LIBFABRIC_PROV=**provider** for both the client and server. A specific domain may be
+specified by exporting ZHPE_BACKEND_LIBFABRIC_PROV=**domain**
 
 #### 1. Start the server on the hostname1 (running the server in the backgroun)
 	$ ${TEST_DIR}/libexec/xingpong 2222  &
     
 #### 2. Start a client and point it at the server (hostname1 in the example below):
-	$ ${TEST_DIR}/libexec/xingpong -o -p sockets 2222 hostname1 1 1 1
+	$ ${TEST_DIR}/libexec/xingpong -o 2222 hostname1 1 1 1
+
 
 ## Test libfabric RDMA APIs:  ringpong
 ringpong is very similar to xingpong, except that it uses the libfabric APIs
 instead of the libzhpeq APIs to do the data transfers. Replace the command
-in above example with "ringpong" and use "-p zhpe" to exercise the libfabric
+in above example with "ringpong" and use "-r -p zhpe" to exercise the libfabric
 zhpe provider.
 
 ## Running OpenMPI over zhpe-libfabric (Using the right options.)
@@ -180,5 +173,5 @@ to verify the correct transports are being used, but are not required
 for correct operation.
 
 	$ export LD_LIBRARY_PATH=${TEST_DIR}/lib
-	$ ${TEST_DIR}/bin/mpirun -x LD_LIBRARY_PATH --hostfile ~/hostfile -n 2 --bind-to socket --mca btl ^openib --mca mtl_ofi_provider_include zhpe --mca btl_base_verbose 100 --mca mtl_base_verbose 100 --mca pml_base_verbose 100 <command>
+	$ ${TEST_DIR}/bin/mpirun -x LD_LIBRARY_PATH --hostfile ~/hostfile -n 2 --bind-to socket --mca btl ^openib,tcp,vader --mca mtl_ofi_provider_include zhpe -x ZHPE_BACKEND_LIBFABRIC_PROV=provider --mca btl_base_verbose 100 --mca mtl_base_verbose 100 --mca pml_base_verbose 100 <command>
 

@@ -97,10 +97,10 @@ void fab_dom_free(struct fab_dom *dom)
     if (use_count > 1)
         return;
 
+    fab_finfo_free(&dom->finfo);
     FI_CLOSE(dom->av);
     FI_CLOSE(dom->domain);
     FI_CLOSE(dom->fabric);
-    fab_finfo_free(&dom->finfo);
 
     for (use = dom->av_head; use; use = next) {
         next = use->next;
@@ -624,12 +624,12 @@ void fab_print_info(struct fab_conn *conn)
     }
 
     if (!conn && info)
-        printf("Available providers/domains:\n");
+        print_info("Available providers/domains:\n");
     for (; info; info = info->next) {
-        printf("provider %s domain %s tx_size %Lu ep_type %s\n",
-               info->fabric_attr->prov_name, info->domain_attr->name,
-               (ullong)info->tx_attr->size,
-               fi_tostr(&info->ep_attr->type, FI_TYPE_EP_TYPE));
+        print_info("provider %s domain %s tx_size %Lu ep_type %s\n",
+                   info->fabric_attr->prov_name, info->domain_attr->name,
+                   (ullong)info->tx_attr->size,
+                   fi_tostr(&info->ep_attr->type, FI_TYPE_EP_TYPE));
         /* Only print the active info for a live conn. */
         if (conn)
             break;
@@ -736,6 +736,7 @@ int _fab_av_xchg_addr(const char *callf, uint line, struct fab_conn *conn,
 {
     int                 ret;
     size_t              addr_len = sizeof(*ep_addr);
+    in_port_t           save_port;
 
     ret = fi_getname(&conn->ep->fid, ep_addr, &addr_len);
     if (ret >= 0 && !sockaddr_valid(ep_addr, addr_len, true))
@@ -744,12 +745,22 @@ int _fab_av_xchg_addr(const char *callf, uint line, struct fab_conn *conn,
         print_func_fi_err(callf, line, "fi_getname", "", ret);
         goto done;
     }
+    sockaddr_6to4(ep_addr);
+    if (sockaddr_loopback(ep_addr, true)) {
+        save_port = ep_addr->sin_port;
+        ret = do_getsockname(sock_fd, ep_addr);
+        if (ret < 0)
+            goto done;
+        sockaddr_6to4(ep_addr);
+        ep_addr->sin_port = save_port;
+    }
     if (ret < 0 || sock_fd == -1)
         goto done;
-    ret = _sock_send_blob(callf, line, sock_fd, ep_addr, addr_len);
+    ret = _sock_send_blob(callf, line, sock_fd, ep_addr, sizeof(*ep_addr));
     if (ret < 0)
         goto done;
-    ret = _sock_recv_fixed_blob(callf, line, sock_fd, ep_addr, addr_len);
+    ret = _sock_recv_fixed_blob(callf, line, sock_fd, ep_addr,
+                                sizeof(*ep_addr));
     if (ret < 0)
         goto done;
  done:
@@ -798,7 +809,7 @@ int _fab_av_xchg(const char *callf, uint line, struct fab_conn *conn,
     ret = _fab_av_xchg_addr(callf, line, conn, sock_fd, &ep_addr);
     if (ret < 0)
         goto done;
-    ret = _fab_av_insert(callf, line, conn, &ep_addr, fi_addr);
+    ret = _fab_av_insert(callf, line, conn->dom, &ep_addr, fi_addr);
     if (ret < 0)
         goto done;
     fi_addr_valid = true;
@@ -810,18 +821,17 @@ int _fab_av_xchg(const char *callf, uint line, struct fab_conn *conn,
  done:
     if (ret < 0) {
         if (fi_addr_valid)
-            _fab_av_remove(callf, line, conn, *fi_addr);
+            _fab_av_remove(callf, line, conn->dom, *fi_addr);
         print_func_err(callf, line, "_fab_av_xchg", "", ret);
     }
 
     return ret;
 }
 
-int _fab_av_insert(const char *callf, uint line, struct fab_conn *conn,
+int _fab_av_insert(const char *callf, uint line, struct fab_dom *dom,
                    union sockaddr_in46 *saddr, fi_addr_t *fi_addr)
 {
     int                 ret;
-    struct fab_dom      *dom = conn->dom;
     struct fab_av_use   *use;
 
     mutex_lock(&dom->av_mutex);
@@ -857,11 +867,10 @@ int _fab_av_insert(const char *callf, uint line, struct fab_conn *conn,
     return ret;
 }
 
-int _fab_av_remove(const char *callf, uint line, struct fab_conn *conn,
+int _fab_av_remove(const char *callf, uint line, struct fab_dom *dom,
                    fi_addr_t fi_addr)
 {
     int                 ret = -FI_EINVAL;
-    struct fab_dom      *dom = conn->dom;
     struct fab_av_use   *use;
 
     mutex_lock(&dom->av_mutex);
@@ -874,7 +883,7 @@ int _fab_av_remove(const char *callf, uint line, struct fab_conn *conn,
         ret = 0;
         goto done;
     }
-    ret = fi_av_remove(conn->dom->av, &fi_addr, 1, 0);
+    ret = fi_av_remove(dom->av, &fi_addr, 1, 0);
     if (ret < 0)
 	print_func_fi_err(callf, line, "fi_av_remove", "", ret);
 

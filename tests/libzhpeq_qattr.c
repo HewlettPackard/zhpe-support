@@ -34,8 +34,7 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <zhpe.h>
-
+#include <zhpeq.h>
 #include <zhpeq_util.h>
 
 static void usage(bool help) __attribute__ ((__noreturn__));
@@ -69,11 +68,11 @@ int main(int argc, char **argv)
         print_func_err(__FUNCTION__, __LINE__, "zhpeq_query_attr", "", rc);
         goto done;
     }
-    printf("%s:max_tx_queues : %u\n", appname, attr.max_tx_queues);
-    printf("%s:max_rx_queues : %u\n", appname, attr.max_rx_queues);
-    printf("%s:max_hw_qlen   : %u\n", appname, attr.max_hw_qlen);
-    printf("%s:max_sw_qlen   : %u\n", appname, attr.max_sw_qlen);
-    printf("%s:max_dma_len   : %Lu\n", appname, (ullong)attr.max_dma_len);
+    printf("%s:max_tx_queues : %u\n", appname, attr.z.max_tx_queues);
+    printf("%s:max_rx_queues : %u\n", appname, attr.z.max_rx_queues);
+    printf("%s:max_hw_qlen   : %u\n", appname, attr.z.max_hw_qlen);
+    printf("%s:max_sw_qlen   : %u\n", appname, attr.z.max_sw_qlen);
+    printf("%s:max_dma_len   : %Lu\n", appname, (ullong)attr.z.max_dma_len);
 
  done:
     return ret;

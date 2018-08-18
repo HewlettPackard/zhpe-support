@@ -51,8 +51,7 @@ INSD=$1
     cd $APPDIR
     B=build
     rm -rf $B
-    mkdir -p $B
+    mkdir -p $B/include
     cd $B
-    ln -s ../include
     cmake -D INSD="$INSD" -D COPT="$COPT" -D LIBF="$LIBF" ..
 )

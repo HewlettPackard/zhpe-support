@@ -64,10 +64,6 @@ struct cli_wire_msg {
     bool                unidir_mode;
 };
 
-struct svr_wire_msg {
-    int                 dummy;
-};
-
 struct mem_wire_msg {
     uint64_t            zq_remote_rx_addr;
 };
@@ -81,7 +77,7 @@ struct rx_queue {
 };
 
 enum {
-    TX_NONE,
+    TX_NONE = 0,
     TX_WARMUP,
     TX_RUNNING,
     TX_LAST,
@@ -90,13 +86,13 @@ enum {
 STAILQ_HEAD(rx_queue_head, rx_queue);
 
 struct args {
-    union zhpeq_backend_params zq_params;
     const char          *node;
     const char          *service;
     uint64_t            ring_entry_len;
     uint64_t            ring_entries;
     uint64_t            ring_ops;
     uint64_t            tx_avail;
+    uint64_t            warmup;
     bool                aligned_mode;
     bool                copy_mode;
     bool                once_mode;
@@ -143,20 +139,22 @@ static void stuff_free(struct stuff *stuff)
         return;
 
     if (stuff->zq) {
-        zhpeq_zmmu_free(stuff->zq, stuff->zq_remote_kdata);
+        zhpeq_zmmu_free(stuff->zdom, stuff->zq_remote_kdata);
         zhpeq_mr_free(stuff->zdom, stuff->zq_local_kdata);
     }
+    if (stuff->open_idx != -1)
+        zhpeq_backend_close(stuff->zq, stuff->open_idx);
     zhpeq_free(stuff->zq);
     zhpeq_domain_free(stuff->zdom);
 
-    do_free(stuff->rx_rcv);
-    do_free(stuff->ring_timestamps);
-    do_free(stuff->tx_addr);
+    free(stuff->rx_rcv);
+    free(stuff->ring_timestamps);
+    free(stuff->tx_addr);
 
     FD_CLOSE(stuff->sock_fd);
 
     if (stuff->allocated)
-        do_free(stuff);
+        free(stuff);
 }
 
 static int do_mem_setup(struct stuff *conn)
@@ -183,16 +181,15 @@ static int do_mem_setup(struct stuff *conn)
                         ret);
         goto done;
     }
-    memset(conn->tx_addr, 0, req);
+    memset(conn->tx_addr, TX_NONE, req);
     conn->rx_addr = conn->tx_addr + off;
 
     ret = zhpeq_mr_reg(conn->zdom, conn->tx_addr, req,
                        (ZHPEQ_MR_GET | ZHPEQ_MR_PUT |
-                        ZHPEQ_MR_GET_REMOTE | ZHPEQ_MR_PUT_REMOTE |
-                        ZHPEQ_MR_KEY_VALID),
+                        ZHPEQ_MR_GET_REMOTE | ZHPEQ_MR_PUT_REMOTE),
                        0, &conn->zq_local_kdata);
     if (ret < 0) {
-        print_func_err(__FUNCTION__, __LINE__, "zhpeq_mr_regattr", "", ret);
+        print_func_err(__FUNCTION__, __LINE__, "zhpeq_mr_reg", "", ret);
         goto done;
     }
     ret = zhpeq_lcl_key_access(conn->zq_local_kdata, conn->tx_addr,
@@ -237,7 +234,7 @@ static int do_mem_xchg(struct stuff *conn)
     struct mem_wire_msg mem_msg;
     size_t              zq_blob_len;
 
-    ret = zhpeq_zmmu_export(conn->zq, conn->zq_local_kdata, &zq_blob,
+    ret = zhpeq_zmmu_export(conn->zdom, conn->zq_local_kdata, &zq_blob,
                             &zq_blob_len);
     if (ret < 0) {
         print_func_err(__FUNCTION__, __LINE__, "zhpeq_zmmu_export", "", ret);
@@ -261,8 +258,8 @@ static int do_mem_xchg(struct stuff *conn)
 
     mem_msg.zq_remote_rx_addr = be64toh(mem_msg.zq_remote_rx_addr);
 
-    ret = zhpeq_zmmu_import(conn->zq, conn->open_idx, zq_blob, zq_blob_len,
-                            &conn->zq_remote_kdata);
+    ret = zhpeq_zmmu_import(conn->zdom, conn->open_idx, zq_blob, zq_blob_len,
+                            false, &conn->zq_remote_kdata);
     if (ret < 0) {
         print_func_err(__FUNCTION__, __LINE__, "zhpeq_zmmu_import", "", ret);
         goto done;
@@ -295,7 +292,7 @@ static inline int zq_completions(struct zhpeq *zq)
         goto done;
     }
     for (i = 0; i < ret; i++) {
-        if (zq_comp[i].status != ZHPEQ_CQ_STATUS_SUCCESS) {
+        if (zq_comp[i].z.status != ZHPEQ_CQ_STATUS_SUCCESS) {
             print_err("%s,%u:I/O error\n", __FUNCTION__, __LINE__);
             ret = -EIO;
             break;
@@ -357,10 +354,9 @@ static int zq_write(struct zhpeq *zq, bool fence, uint64_t lcl_zaddr,
         goto done;
     }
     zq_index = ret;
-    ret = zhpeq_put(zq, zq_index, false, lcl_zaddr, len, rem_zaddr,
-                    (void *)1);
+    ret = zhpeq_put(zq, zq_index, fence, lcl_zaddr, len, rem_zaddr, NULL);
     if (ret < 0) {
-        print_func_fi_err(__FUNCTION__, __LINE__, "zhpeq_write", "", ret);
+        print_func_err(__FUNCTION__, __LINE__, "zhpeq_put", "", ret);
         goto done;
     }
     ret = zhpeq_commit(zq, zq_index, 1);
@@ -446,10 +442,8 @@ static int do_server_pong(struct stuff *conn)
             zq_rx_addr = conn->zq_remote_rx_zaddr + tx_off;
             ret = zq_write(conn->zq, false, zq_tx_addr, args->ring_entry_len,
                            zq_rx_addr);
-            if (ret < 0) {
-                print_func_fi_err(__FUNCTION__, __LINE__, "zq_write", "", ret);
+            if (ret < 0)
                 goto done;
-            }
         }
     }
     while (tx_avail != conn->tx_avail) {
@@ -593,10 +587,8 @@ static int do_client_pong(struct stuff *conn)
             ret = zq_write(conn->zq, false, zq_tx_addr, args->ring_entry_len,
                            zq_rx_addr);
             lat_write += get_cycles(NULL) - now;
-            if (ret < 0) {
-                print_func_fi_err(__FUNCTION__, __LINE__, "zq_write", "", ret);
+            if (ret < 0)
                 goto done;
-            }
         }
         delta = tx_count - rx_count;
         if (delta > q_max1)
@@ -720,10 +712,8 @@ static int do_client_unidir(struct stuff *conn)
                        zq_rx_addr);
         now = get_cycles(NULL);
         lat_write += get_cycles(NULL) - now;
-        if (ret < 0) {
-            print_func_fi_err(__FUNCTION__, __LINE__, "zq_write", "", ret);
+        if (ret < 0)
             goto done;
-        }
     }
     while (tx_avail != conn->tx_avail) {
         now = get_cycles(NULL);
@@ -762,19 +752,20 @@ int do_zq_setup(struct stuff *conn)
     ret = -EINVAL;
     conn->tx_avail = args->tx_avail;
     if (conn->tx_avail) {
-        if (conn->tx_avail > zq_attr.max_hw_qlen)
+        if (conn->tx_avail > zq_attr.z.max_hw_qlen)
             goto done;
     } else
         conn->tx_avail = ZQ_LEN;
 
     /* Allocate domain. */
-    ret = zhpeq_domain_alloc(&args->zq_params, &conn->zdom);
+    ret = zhpeq_domain_alloc(&conn->zdom);
     if (ret < 0) {
         print_func_err(__FUNCTION__, __LINE__, "zhpeq_domain_alloc", "", ret);
         goto done;
     }
     /* Allocate zqueue. */
-    ret = zhpeq_alloc(conn->zdom, conn->tx_avail + 1, &conn->zq);
+    ret = zhpeq_alloc(conn->zdom, conn->tx_avail + 1, conn->tx_avail + 1,
+                      0, 0, 0,  &conn->zq);
     if (ret < 0) {
         print_func_err(__FUNCTION__, __LINE__, "zhpeq_qalloc", "", ret);
         goto done;
@@ -785,6 +776,7 @@ int do_zq_setup(struct stuff *conn)
         print_func_err(__FUNCTION__, __LINE__, "zhpeq_open", "", ret);
         goto done;
     }
+    conn->open_idx = ret;
     /* Now let's exchange the memory parameters to the other side. */
     ret = do_mem_setup(conn);
     if (ret < 0)
@@ -805,24 +797,14 @@ static int do_server_one(const struct args *oargs, int conn_fd)
     struct stuff        conn = {
         .args           = args,
         .sock_fd        = conn_fd,
+        .open_idx       = -1,
     };
     struct cli_wire_msg cli_msg;
-    struct svr_wire_msg svr_msg;
-    char                *s;
 
     /* Let's take a moment to get the client parameters over the socket. */
     ret = sock_recv_fixed_blob(conn.sock_fd, &cli_msg, sizeof(cli_msg));
     if (ret < 0)
         goto done;
-    ret = sock_recv_string(conn.sock_fd, &s);
-    if (ret < 0)
-        goto done;
-    args->zq_params.libfabric.provider_name = s;
-    ret = sock_recv_string(conn.sock_fd, &s);
-    if (ret < 0)
-        goto done;
-    args->zq_params.libfabric.domain_name = s;
-
 
     args->ring_entry_len = be64toh(cli_msg.ring_entry_len);
     args->ring_entries = be64toh(cli_msg.ring_entries);
@@ -832,8 +814,8 @@ static int do_server_one(const struct args *oargs, int conn_fd)
     args->once_mode = !!cli_msg.once_mode;
     args->unidir_mode = !!cli_msg.unidir_mode;
 
-    /* Dummy message for ordering. */
-    ret = sock_send_blob(conn.sock_fd, &svr_msg, sizeof(svr_msg));
+    /* Dummy for ordering. */
+    ret = sock_send_blob(conn.sock_fd, NULL, 0);
     if (ret < 0)
         goto done;
 
@@ -848,8 +830,6 @@ static int do_server_one(const struct args *oargs, int conn_fd)
 
  done:
     stuff_free(&conn);
-    free((void *)args->zq_params.libfabric.provider_name);
-    free((void *)args->zq_params.libfabric.domain_name);
 
     if (ret >= 0)
         ret = (cli_msg.once_mode ? 1 : 0);
@@ -916,12 +896,12 @@ static int do_client(const struct args *args)
 {
     int                 ret;
     struct stuff        conn = {
-            .args = args,
-            .sock_fd = -1,
-            .ring_ops = args->ring_ops,
-        };
+        .args           = args,
+        .sock_fd        = -1,
+        .open_idx       = -1,
+        .ring_ops       = args->ring_ops,
+    };
     struct cli_wire_msg cli_msg;
-    struct svr_wire_msg svr_msg;
 
     ret = connect_sock(args->node, args->service);
     if (ret < 0)
@@ -940,17 +920,9 @@ static int do_client(const struct args *args)
     ret = sock_send_blob(conn.sock_fd, &cli_msg, sizeof(cli_msg));
     if (ret < 0)
         goto done;
-    ret = sock_send_string(conn.sock_fd,
-                           args->zq_params.libfabric.provider_name);
-    if (ret < 0)
-        goto done;
-    ret = sock_send_string(conn.sock_fd,
-                           args->zq_params.libfabric.domain_name);
-    if (ret < 0)
-        goto done;
 
-    /* Dummy message for ordering. */
-    ret = sock_recv_fixed_blob(conn.sock_fd, &svr_msg, sizeof(svr_msg));
+    /* Dummy for ordering. */
+    ret = sock_recv_fixed_blob(conn.sock_fd, NULL, 0);
     if (ret < 0)
         goto done;
 
@@ -958,11 +930,15 @@ static int do_client(const struct args *args)
     if (ret < 0)
         goto done;
 
+    conn.ring_warmup = args->warmup;
     /* Compute warmup operations. */
     if (args->seconds_mode) {
-        conn.ring_warmup = get_tsc_freq();
-        conn.ring_ops = conn.ring_ops * get_tsc_freq() + conn.ring_warmup;
-    } else {
+        if (conn.ring_warmup == SIZE_MAX)
+            conn.ring_warmup = 1;
+        conn.ring_ops += conn.ring_warmup;
+        conn.ring_warmup *= get_tsc_freq();
+        conn.ring_ops *= get_tsc_freq();
+    } else if (conn.ring_warmup == SIZE_MAX) {
         conn.ring_warmup = conn.ring_ops / 10;
         if (conn.ring_warmup < args->ring_entries)
             conn.ring_warmup = args->ring_entries;
@@ -989,7 +965,7 @@ static void usage(bool help)
 {
     print_usage(
         help,
-        "Usage:%s [-acosu] [-d <domain>] [-p <provider>] [-t <txqlen>]\n"
+        "Usage:%s [-acosu] [-t <txqlen>]\n"
         "    <port> [<node> <entry_len> <ring_entries>\n"
         "    <op_count/seconds>]\n"
         "All sizes may be postfixed with [kmgtKMGT] to specify the"
@@ -999,12 +975,14 @@ static void usage(bool help)
         "Client only options:\n"
         " -a : cache line align entries\n"
         " -c : copy mode\n"
-        " -d <domain> : domain/device to bind to (eg. mlx5_0)\n"
         " -o : run once and then server will exit\n"
-        " -p <provider> : provider to use\n"
         " -s : treat the final argument as seconds\n"
         " -t <txqlen> : length of tx request queue\n"
-        " -u : uni-directional client-to-server traffic (no copy)\n",
+        " -u : uni-directional client-to-server traffic (no copy)\n"
+        " -w <ops> : number of warmup operations\n"
+        "Uses ASIC backend unless environment variable\n"
+        "ZHPE_BACKEND_LIBFABRIC_PROV is set.\n"
+        "ZHPE_BACKEND_LIBFABRIC_DOM can be used to set a specific domain\n",
         appname);
 
     if (help)
@@ -1017,7 +995,7 @@ int main(int argc, char **argv)
 {
     int                 ret = 1;
     struct args         args = {
-        .zq_params.backend = ZHPEQ_BACKEND_LIBFABRIC,
+        .warmup         = SIZE_MAX,
     };
     bool                client_opt = false;
     int                 opt;
@@ -1034,7 +1012,7 @@ int main(int argc, char **argv)
     if (argc == 1)
         usage(true);
 
-    while ((opt = getopt(argc, argv, "acd:op:st:u")) != -1) {
+    while ((opt = getopt(argc, argv, "acost:uw:")) != -1) {
 
         /* All opts are client only, now. */
         client_opt = true;
@@ -1053,22 +1031,10 @@ int main(int argc, char **argv)
             args.copy_mode = true;
             break;
 
-        case 'd':
-            if (args.zq_params.libfabric.domain_name)
-                usage(false);
-            args.zq_params.libfabric.domain_name = optarg;
-            break;
-
         case 'o':
             if (args.once_mode)
                 usage(false);
             args.once_mode = true;
-            break;
-
-        case 'p':
-            if (args.zq_params.libfabric.provider_name)
-                usage(false);
-            args.zq_params.libfabric.provider_name = optarg;
             break;
 
         case 's':
@@ -1090,6 +1056,15 @@ int main(int argc, char **argv)
             if (args.unidir_mode)
                 usage(false);
             args.unidir_mode = true;
+            break;
+
+        case 'w':
+            if (args.warmup != SIZE_MAX)
+                usage(false);
+            if (parse_kb_uint64_t(__FUNCTION__, __LINE__, "warmup",
+                                  optarg, &args.warmup, 0, 0,
+                                  SIZE_MAX - 1, PARSE_KB | PARSE_KIB) < 0)
+                usage(false);
             break;
 
         default:

@@ -3,12 +3,11 @@ MAKEFILE_PATH := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 BUILD := $(MAKEFILE_PATH)/build
 
 TARGETS = \
-	driver \
-	early \
 	libzhpeq \
 	libzhpeq_backend \
+	libzhpeq_util \
+	libzhpeq_util_fab \
 	mpi_tests \
-	early \
 	ringpong \
 	tests
 
@@ -20,15 +19,16 @@ all install:
 distclean:
 	rm -rf $(BUILD)
 
-driver:
-	make -C $(BUILD)/helper VERBOSE=$(VERBOSE) install
-
-early: driver libzhpeq
-
-libzhpeq:
+libzhpeq: libzhpeq_util
 	make -C $(BUILD)/$@ VERBOSE=$(VERBOSE) install
 
 libzhpeq_backend:
+	make -C $(BUILD)/$@ VERBOSE=$(VERBOSE) install
+
+libzhpeq_util:
+	make -C $(BUILD)/$@ VERBOSE=$(VERBOSE) install
+
+libzhpeq_util_fab:
 	make -C $(BUILD)/$@ VERBOSE=$(VERBOSE) install
 
 mpi_tests:

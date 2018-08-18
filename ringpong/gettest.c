@@ -96,6 +96,7 @@ struct args {
     uint64_t            ring_entries;
     uint64_t            ring_ops;
     uint64_t            tx_avail;
+    uint64_t            warmup;
     bool                aligned_mode;
     bool                once_mode;
     bool                seconds_mode;
@@ -256,35 +257,6 @@ do_fab_completions(const char *callf, uint line, struct fid_cq *cq)
 #define do_fab_completions(...) \
     do_fab_completions(__FUNCTION__, __LINE__, __VA_ARGS__)
 
-static ssize_t send_with_flags(const char *callf, uint line,
-                               struct fid_ep *ep, const void *buf,
-                               size_t len, void *desc, fi_addr_t dest_addr,
-                               void *context, uint64_t flags)
-{
-    int                 ret;
-    struct fi_msg       msg;
-    struct iovec        msg_iov;
-
-    memset(&msg, 0, sizeof(msg));
-    msg_iov.iov_base = (void *) buf;
-    msg_iov.iov_len = len;
-
-    msg.msg_iov = &msg_iov;
-    msg.desc = &desc;
-    msg.iov_count = 1;
-    msg.addr = dest_addr;
-    msg.context = context;
-
-    ret = fi_sendmsg(ep, &msg, flags);
-    if (ret < 0)
-        print_func_fi_err(callf, line, __FUNCTION__, "", ret);
-
-    return ret;
-}
-
-#define send_with_flags(...) \
-    send_with_flags(__FUNCTION__, __LINE__, __VA_ARGS__)
-
 static int do_server_source(struct stuff *conn)
 {
     int                 ret = 0;
@@ -399,8 +371,7 @@ static int do_client_get(struct stuff *conn)
     lat_total1 = get_cycles(NULL) - lat_total1;
 
     /* Do a send-receive for the final handshake. */
-    ret = send_with_flags(fab_conn->ep, NULL, 0, NULL, 0, NULL,
-                          FI_DELIVERY_COMPLETE);
+    ret = fi_send(fab_conn->ep, NULL, 0, NULL, 0, &conn->ctx[0]);
     if (ret < 0)
         goto done;
     while (!(ret = do_fab_completions(fab_conn->tx_cq)));
@@ -661,11 +632,15 @@ static int do_client(const struct args *args)
     if (ret < 0)
         goto done;
 
+    conn.ring_warmup = args->warmup;
     /* Compute warmup operations. */
     if (args->seconds_mode) {
-        conn.ring_warmup = get_tsc_freq();
-        conn.ring_ops = conn.ring_ops * get_tsc_freq() + conn.ring_warmup;
-    } else {
+        if (conn.ring_warmup == SIZE_MAX)
+            conn.ring_warmup = 1;
+        conn.ring_ops += conn.ring_warmup;
+        conn.ring_warmup *= get_tsc_freq();
+        conn.ring_ops *= get_tsc_freq();
+    } else if (conn.ring_warmup == SIZE_MAX) {
         conn.ring_warmup = conn.ring_ops / 10;
         if (conn.ring_warmup < args->ring_entries)
             conn.ring_warmup = args->ring_entries;
@@ -703,7 +678,8 @@ static void usage(bool help)
         " -p <provider> : provider to use\n"
         " -r : use RDM endpoints\n"
         " -s : treat the final argument as seconds\n"
-        " -t <txqlen> : length of tx request queue\n",
+        " -t <txqlen> : length of tx request queue\n"
+        " -w <ops> : number of warmup operations\n",
         appname);
 
     if (help) {
@@ -717,7 +693,10 @@ static void usage(bool help)
 int main(int argc, char **argv)
 {
     int                 ret = 1;
-    struct args         args = { .ep_type = FI_EP_MSG };
+    struct args         args = {
+        .ep_type        = FI_EP_MSG,
+        .warmup         = SIZE_MAX,
+    };
     bool                client_opt = false;
     int                 opt;
 
@@ -726,7 +705,7 @@ int main(int argc, char **argv)
     if (argc == 1)
         usage(true);
 
-    while ((opt = getopt(argc, argv, "ad:op:rst:")) != -1) {
+    while ((opt = getopt(argc, argv, "ad:op:rst:w:")) != -1) {
 
         /* All opts are client only, now. */
         client_opt = true;
@@ -774,6 +753,15 @@ int main(int argc, char **argv)
             if (parse_kb_uint64_t(__FUNCTION__, __LINE__, "tx_avail",
                                   optarg, &args.tx_avail, 0, 1,
                                   SIZE_MAX, PARSE_KB | PARSE_KIB) < 0)
+                usage(false);
+            break;
+
+        case 'w':
+            if (args.warmup != SIZE_MAX)
+                usage(false);
+            if (parse_kb_uint64_t(__FUNCTION__, __LINE__, "warmup",
+                                  optarg, &args.warmup, 0, 0,
+                                  SIZE_MAX - 1, PARSE_KB | PARSE_KIB) < 0)
                 usage(false);
             break;
 

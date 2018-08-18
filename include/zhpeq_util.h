@@ -54,10 +54,31 @@
 
 #include <arpa/inet.h>
 
+#include <sys/mman.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 
-#include <sys/socket.h>
+#include <uuid/uuid.h>
+
+/* Do extern "C" without goofing up emacs. */
+#ifndef _EXTERN_C_SET
+#define _EXTERN_C_SET
+#ifdef  __cplusplus
+#define _EXTERN_C_BEG extern "C" {
+#define _EXTERN_C_END }
+#else
+#define _EXTERN_C_BEG
+#define _EXTERN_C_END
+#endif
+#endif
+
+_EXTERN_C_BEG
+
+#ifndef container_of
+#define container_of(_ptr, _type, _field)                       \
+    ((_type *)((char *)(_ptr) - offsetof(_type, _field)))
+#endif
 
 #define NOOPTIMIZE      asm volatile("")
 
@@ -83,9 +104,21 @@ do {                                                            \
 
 typedef long long       llong;
 typedef unsigned long long ullong;
+typedef unsigned char   uchar;
 
 extern const char       *appname;
 extern size_t           page_size;
+
+/* Borrow AF_UNIX since it should never be seen. */
+#define AF_ZHPE         AF_UNIX
+#define ZHPE_ADDRSTRLEN (37)
+#define ZHPE_QUEUEINVAL (0xFFFFFFFFUL)
+
+struct sockaddr_zhpe {
+    sa_family_t         sz_family;
+    uuid_t              sz_uuid;
+    uint32_t            sz_queue;
+};
 
 union sockaddr_in46 {
     uint64_t            alignment;
@@ -96,6 +129,7 @@ union sockaddr_in46 {
     };
     struct sockaddr_in  addr4;
     struct sockaddr_in6 addr6;
+    struct sockaddr_zhpe zhpe;
 };
 
 static inline size_t sockaddr_len(const void *addr)
@@ -109,6 +143,9 @@ static inline size_t sockaddr_len(const void *addr)
 
     case AF_INET6:
         return sizeof(struct sockaddr_in6);
+
+    case AF_ZHPE:
+        return sizeof(struct sockaddr_zhpe);
 
     default:
         return 0;
@@ -144,26 +181,47 @@ static inline union sockaddr_in46 *sockaddr_dup(const void *addr)
     return ret;
 }
 
-static inline int sockaddr_cmp(const void *addr1, const void *addr2)
+int sockaddr_cmpx(const union sockaddr_in46 *sa1,
+                  const union sockaddr_in46 *sa2, bool noport);
+
+static inline int sockaddr_cmp(const void *addr1, const void *addr2,
+                               bool noport)
 {
     int                 ret;
     const union sockaddr_in46 *sa1 = addr1;
     const union sockaddr_in46 *sa2 = addr2;
 
-    ret = memcmp(&sa1->sa_family, &sa2->sa_family, sizeof(sa1->sa_family));
-    if (ret)
+    if (sa1->sa_family != sa2->sa_family) {
+        ret = sockaddr_cmpx(sa1, sa2, noport);
         goto done;
+    }
 
+    /* Use memcmp everywhere for -1, 0, 1 behavior. */
     switch (sa1->sa_family) {
 
     case AF_INET:
         ret = memcmp(&sa1->addr4.sin_addr, &sa2->addr4.sin_addr,
                      sizeof(sa1->addr4.sin_addr));
+        if (ret || noport)
+            goto done;
+        ret = memcmp(&sa1->sin_port, &sa2->sin_port, sizeof(sa1->sin_port));
         break;
 
     case AF_INET6:
         ret = memcmp(&sa1->addr6.sin6_addr, &sa2->addr6.sin6_addr,
                      sizeof(sa1->addr6.sin6_addr));
+        if (ret || noport)
+            goto done;
+        ret = memcmp(&sa1->sin_port, &sa2->sin_port, sizeof(sa1->sin_port));
+        break;
+
+    case AF_ZHPE:
+        ret = memcmp(&sa1->zhpe.sz_uuid, &sa2->zhpe.sz_uuid,
+                     sizeof(sa1->zhpe.sz_uuid));
+        if (ret || noport)
+            goto done;
+        ret = memcmp(&sa1->zhpe.sz_queue, &sa2->zhpe.sz_queue,
+                     sizeof(sa1->zhpe.sz_queue));
         break;
 
     default:
@@ -171,40 +229,99 @@ static inline int sockaddr_cmp(const void *addr1, const void *addr2)
         break;
     }
 
-    if (ret)
-        goto done;
-
-    ret = memcmp(&sa1->sin_port, &sa2->sin_port, sizeof(sa1->sin_port));
  done:
     return ret;
 }
 
-static inline const char *sockaddr_ntop(const union sockaddr_in46 *sa,
-                                        char *buf, size_t len)
+const char *sockaddr_ntop(const void *addr, char *buf, size_t len);
+
+static inline bool sockaddr_wildcard6(const struct sockaddr_in6 *sa)
 {
-    const char          *ret = NULL;
+    return !memcmp(&sa->sin6_addr, &in6addr_any, sizeof(sa->sin6_addr));
+}
+
+static inline bool sockaddr_loopback6(const struct sockaddr_in6 *sa)
+{
+    return !memcmp(&sa->sin6_addr, &in6addr_loopback, sizeof(sa->sin6_addr));
+}
+
+static inline bool sockaddr_wildcard(const void *addr)
+{
+    bool                ret = false;
+    const union sockaddr_in46 *sa = addr;
 
     switch (sa->sa_family) {
 
     case AF_INET:
-        ret = inet_ntop(AF_INET, &sa->addr4.sin_addr, buf, len);
+        ret = (sa->addr4.sin_addr.s_addr == htonl(INADDR_ANY));
         break;
 
     case AF_INET6:
-        ret = inet_ntop(AF_INET6, &sa->addr6.sin6_addr, buf, len);
+        ret = sockaddr_wildcard6(&sa->addr6);
         break;
 
     default:
-        if (*buf && len)
-            buf[0] = '\0';
-        errno = EAFNOSUPPORT;
         break;
     }
 
     return ret;
 }
 
-void zhpeq_util_init(char *argv0, int default_log_level, bool use_syslog);
+static inline bool sockaddr_loopback(const void *addr, bool loopany)
+{
+    bool                ret = false;
+    const union sockaddr_in46 *sa = addr;
+    uint32_t            netmask;
+
+    switch (sa->sa_family) {
+
+    case AF_INET:
+        netmask = (loopany ? IN_CLASSA_NET : ~(uint32_t)0);
+        ret = ((ntohl(sa->addr4.sin_addr.s_addr) & netmask) ==
+               (INADDR_LOOPBACK & netmask));
+        break;
+
+    case AF_INET6:
+        ret = sockaddr_loopback6(&sa->addr6);
+        break;
+
+    default:
+        break;
+    }
+
+    return ret;
+}
+
+static inline void sockaddr_6to4(void *addr)
+{
+    union sockaddr_in46 *sa = addr;
+    uint                i;
+    uchar               *cp;
+
+    if (sa->sa_family != AF_INET6)
+        goto done;
+    if (sockaddr_wildcard6(&sa->addr6))
+        sa->addr4.sin_addr.s_addr = htonl(INADDR_ANY);
+    else if (sockaddr_loopback6(&sa->addr6))
+        sa->addr4.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    else {
+        /* IPV4 mapped: ten bytes of zero followed by 2 bytes of 0xFF? */
+        for (i = 0, cp = sa->addr6.sin6_addr.s6_addr; i < 10; i++, cp++) {
+            if (*cp)
+                goto done;
+        }
+        for (i = 0; i < 2; i++, cp++) {
+            if (*cp != 0xFF)
+                goto done;
+        }
+        memmove(&sa->addr4.sin_addr, cp, sizeof(sa->addr4.sin_addr));
+    }
+    sa->sa_family = AF_INET;
+
+ done:
+
+    return;
+}
 
 void print_dbg(const char *fmt, ...)
     __attribute__ ((format (printf, 1, 2)));
@@ -215,6 +332,33 @@ void print_info(const char *fmt, ...)
 void print_err(const char *fmt, ...)
     __attribute__ ((format (printf, 1, 2)));
 
+static inline void sockaddr_print(const char *func, uint line, const void *addr)
+{
+    const union sockaddr_in46 *sa = addr;
+    const char          *family = "";
+    char                ntop[INET6_ADDRSTRLEN];
+
+    switch (sa->sa_family) {
+
+    case AF_INET:
+        family = "ipv4";
+        break;
+
+    case AF_INET6:
+        family = "ipv6";
+        break;
+
+    default:
+        break;
+    }
+
+    print_info("%s,%u:%s:%s:%d\n",
+               func, line, family, sockaddr_ntop(sa, ntop, sizeof(ntop)),
+               sa->sin_port);
+}
+
+void zhpeq_util_init(char *argv0, int default_log_level, bool use_syslog);
+
 char *errf_str(const char *fmt, ...)
     __attribute__ ((format (printf, 1, 2)));
 
@@ -223,12 +367,6 @@ void print_usage(bool use_stdout, const char *fmt, ...)
 
 void print_errs(const char *callf, uint line, char *errf_str,
                 int err, const char *errs);
-
-void print_func_errs(const char *callf, uint line, const char *errf,
-                     const char *arg, int err, const char *errs);
-
-void print_func_errns(const char *callf, uint line, const char *errf,
-                      llong arg, bool arg_hex, int err, const char *errs);
 
 void print_func_err(const char *callf, uint line, const char *errf,
                     const char *arg, int err);
@@ -328,6 +466,11 @@ void *_do_malloc(const char *callf, uint line, size_t size);
 
 #define do_malloc(...) \
     _do_malloc(__FUNCTION__, __LINE__, __VA_ARGS__)
+
+void *_do_realloc(const char *callf, uint line, void *ptr, size_t size);
+
+#define do_realloc(...) \
+    _do_realloc(__FUNCTION__, __LINE__, __VA_ARGS__)
 
 void *_do_calloc(const char *callf, uint line, size_t nmemb, size_t size);
 
@@ -501,5 +644,76 @@ static inline void smp_wmb(void)
 #endif
 
 #undef _BARRIED_DEFINED
+
+static inline int _do_munmap(const char *callf, uint line,
+                             void *addr, size_t length)
+{
+    int                 ret = 0;
+
+    if (!addr && !length)
+        return 0;
+
+    if (munmap(addr, length) == -1) {
+        ret = -errno;
+        print_func_err(callf, line, "munmap", "", ret);
+    }
+
+    return ret;
+}
+
+#define do_munmap(...) \
+    _do_munmap(__FUNCTION__, __LINE__, __VA_ARGS__)
+
+static inline void *_do_mmap(const char *callf, uint line,
+                             void *addr, size_t length, int prot, int flags,
+                             int fd, off_t offset, int *error)
+{
+    void                *ret;
+    int                 err = 0;
+
+    ret = mmap(addr, length, prot, flags, fd, offset);
+    if (ret == MAP_FAILED) {
+        err = -errno;
+        ret = NULL;
+        print_func_err(callf, line, "mmap", "", err);
+    }
+    if (error)
+        *error = err;
+
+    return ret;
+}
+
+#define do_mmap(...) \
+    _do_mmap(__FUNCTION__, __LINE__, __VA_ARGS__)
+
+static inline int fls64(uint64_t v)
+{
+    int                 ret = -1;
+
+    asm("bsrq %1,%q0" : "+r" (ret) : "r" (v));
+
+    return ret;
+}
+
+static inline uint64_t roundup64(uint64_t val, uint64_t round)
+{
+    return ((val + round - 1) / round * round);
+}
+
+static inline uint64_t roundup_pow_of_2(uint64_t val)
+{
+    if (!val || !(val & (val - 1)))
+        return val;
+
+    return ((uint64_t)1 << (fls64(val + 1)));
+}
+
+_EXTERN_C_END
+
+#ifdef _EXTERN_C_SET
+#undef _EXTERN_C_SET
+#undef _EXTERN_C_BEG
+#undef _EXTERN_C_END
+#endif
 
 #endif /* _ZHPEQ_UTIL_H_ */

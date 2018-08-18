@@ -83,6 +83,8 @@ Make sure the new version of libtoolize is first in your PATH.
 ### 1. Clone source trees in ${SRC_DIR}
 	$ cd ${SRC_DIR}
 	$ git clone https://github.com/HewlettPackard/zhpe-support.git
+	$ git submodule init
+	$ git submodule update
 	$ git clone -b zhpe https://github.com/HewlettPackard/zhpe-libfabric.git
 	$ git clone https://github.com/open-mpi/ompi.git
 	$ cd ompi

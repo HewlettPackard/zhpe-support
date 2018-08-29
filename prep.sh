@@ -55,7 +55,8 @@ INSD=$1
 
 (
     cd $APPDIR
-    ln -sfT $DRVR asic
+    rm -f asic
+    ln -sf $DRVR asic
     B=build
     rm -rf $B
     mkdir -p $B/include

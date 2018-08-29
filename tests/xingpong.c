@@ -187,7 +187,7 @@ static int do_mem_setup(struct stuff *conn)
     ret = zhpeq_mr_reg(conn->zdom, conn->tx_addr, req,
                        (ZHPEQ_MR_GET | ZHPEQ_MR_PUT |
                         ZHPEQ_MR_GET_REMOTE | ZHPEQ_MR_PUT_REMOTE),
-                       0, &conn->zq_local_kdata);
+                       &conn->zq_local_kdata);
     if (ret < 0) {
         print_func_err(__FUNCTION__, __LINE__, "zhpeq_mr_reg", "", ret);
         goto done;
@@ -230,12 +230,12 @@ static int do_mem_setup(struct stuff *conn)
 static int do_mem_xchg(struct stuff *conn)
 {
     int                 ret;
-    void                *zq_blob = NULL;
+    char                blob[ZHPEQ_KEY_BLOB_MAX];
     struct mem_wire_msg mem_msg;
-    size_t              zq_blob_len;
+    size_t              blob_len;
 
-    ret = zhpeq_zmmu_export(conn->zdom, conn->zq_local_kdata, &zq_blob,
-                            &zq_blob_len);
+    blob_len = sizeof(blob);
+    ret = zhpeq_zmmu_export(conn->zdom, conn->zq_local_kdata, blob, &blob_len);
     if (ret < 0) {
         print_func_err(__FUNCTION__, __LINE__, "zhpeq_zmmu_export", "", ret);
         goto done;
@@ -246,19 +246,19 @@ static int do_mem_xchg(struct stuff *conn)
     ret = sock_send_blob(conn->sock_fd, &mem_msg, sizeof(mem_msg));
     if (ret < 0)
         goto done;
-    ret = sock_send_blob(conn->sock_fd, zq_blob, zq_blob_len);
+    ret = sock_send_blob(conn->sock_fd, blob, blob_len);
     if (ret < 0)
         goto done;
     ret = sock_recv_fixed_blob(conn->sock_fd, &mem_msg, sizeof(mem_msg));
     if (ret < 0)
         goto done;
-    ret = sock_recv_fixed_blob(conn->sock_fd, zq_blob, zq_blob_len);
+    ret = sock_recv_fixed_blob(conn->sock_fd, blob, blob_len);
     if (ret < 0)
         goto done;
 
     mem_msg.zq_remote_rx_addr = be64toh(mem_msg.zq_remote_rx_addr);
 
-    ret = zhpeq_zmmu_import(conn->zdom, conn->open_idx, zq_blob, zq_blob_len,
+    ret = zhpeq_zmmu_import(conn->zdom, conn->open_idx, blob, blob_len,
                             false, &conn->zq_remote_kdata);
     if (ret < 0) {
         print_func_err(__FUNCTION__, __LINE__, "zhpeq_zmmu_import", "", ret);
@@ -275,7 +275,6 @@ static int do_mem_xchg(struct stuff *conn)
     }
 
  done:
-    do_free(zq_blob);
 
     return ret;
 }

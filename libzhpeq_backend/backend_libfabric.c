@@ -1157,7 +1157,6 @@ static int lfab_mr_reg(struct zhpeq_dom *zdom,
                             TO_ADDR(desc->qkdata.z.vaddr));
     desc->qkdata.laddr = desc->qkdata.z.zaddr;
     desc->qkdata.z.access = access;
-    desc->qkdata.z.key = fi_mr_key(mr);
     *qkdata_out = &desc->qkdata;
 
     ret = 0;
@@ -1282,32 +1281,18 @@ static int lfab_zmmu_free(struct zhpeq_dom *zdom, struct zhpeq_key_data *qkdata)
 
 static int lfab_zmmu_export(struct zhpeq_dom *zdom,
                             const struct zhpeq_key_data *qkdata,
-                            void **blob_out, size_t *blob_len)
+                            void *blob, size_t *blob_len)
 {
-    int                 ret = -EINVAL;
     struct zdom_data    *bdom = zdom->backend_data;
-    struct zhpeq_mr_desc_v1 *desc = container_of(qkdata,
-                                                 struct zhpeq_mr_desc_v1,
-                                                 qkdata);
-    struct key_data_packed *blob = NULL;
 
-    if (desc->hdr.magic != ZHPE_MAGIC || desc->hdr.version != ZHPEQ_MR_V1)
-        goto done;
+    if (*blob_len < sizeof(struct key_data_packed))
+        return -EINVAL;
 
-    ret = -ENOMEM;
-    *blob_len = sizeof(*blob);
-    blob = do_malloc(*blob_len);
-    if (!blob)
-        goto done;
-
+    *blob_len = sizeof(struct key_data_packed);
     pack_kdata(qkdata, blob,
                fi_mr_key(bdom->lcl_mr[TO_KEYIDX(qkdata->z.zaddr)]));
-    *blob_out = blob;
 
-    ret = 0;
-
- done:
-    return ret;
+    return 0;
 }
 
 static void lfab_print_info(struct zhpeq *zq)

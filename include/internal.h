@@ -93,7 +93,7 @@ struct backend_ops {
                                        struct zhpeq_key_data **kdata_out);
     int                 (*zmmu_export)(struct zhpeq_dom *zdom,
                                        const struct zhpeq_key_data *kdata,
-                                       void **blob_out, size_t *blob_len);
+                                       void *blob, size_t *blob_len);
     void                (*print_info)(struct zhpeq *zq);
     int                 (*getaddr)(struct zhpeq *zq, union sockaddr_in46 *sa);
     char                *(*qkdata_id_str)(struct zhpeq_dom *zdom,
@@ -156,7 +156,6 @@ static inline void iowrite64(uint64_t value, volatile void *addr)
 }
 
 struct key_data_packed {
-    uint64_t            key;
     uint64_t            vaddr;
     uint64_t            zaddr;
     uint64_t            len;
@@ -169,7 +168,6 @@ static inline void pack_kdata(const struct zhpeq_key_data *qkdata,
 {
     const struct zhpe_key_data *kdata = &qkdata->z;
 
-    pdata->key = be64toh(kdata->key);
     pdata->vaddr = be64toh(kdata->vaddr);
     pdata->zaddr = be64toh(zaddr);
     pdata->len = be64toh(kdata->len);
@@ -181,7 +179,6 @@ static inline void unpack_kdata(const struct key_data_packed *pdata,
 {
     struct zhpe_key_data *kdata = &qkdata->z;
 
-    kdata->key = htobe64(pdata->key);
     kdata->vaddr = htobe64(pdata->vaddr);
     kdata->zaddr = htobe64(pdata->zaddr);
     kdata->len = htobe64(pdata->len);

@@ -258,8 +258,9 @@ ZHPEQ_TIMING_COUNTERS(ZHPEQ_TIMING_COUNTER_EXTERN)
 #define ZHPEQ_MR_GET_REMOTE     ZHPE_MR_GET_REMOTE
 #define ZHPEQ_MR_PUT_REMOTE     ZHPE_MR_PUT_REMOTE
 
-#define ZHPEQ_MR_KEY_ONESHOT    ZHPE_MR_KEY_ONESHOT
-#define ZHPEQ_MR_KEY_VALID      ZHPE_MR_KEY_VALID
+#define ZHPEQ_MR_KEY_ZERO_OFF   ZHPE_MR_FLAG0
+#define ZHPEQ_MR_KEY_ONESHOT    ZHPE_MR_FLAG1
+#define ZHPEQ_MR_KEY_INTERNAL   ZHPE_MR_FLAG2
 
 enum zhpeq_atomic_size {
     ZHPEQ_ATOMIC_SIZE32         = ZHPE_HW_ATOMIC_SIZE_32,
@@ -306,6 +307,7 @@ enum {
     ZHPEQ_PRI_MAX               = 1,
     ZHPEQ_TC_MAX                = 15,
     ZHPEQ_IMM_MAX               = ZHPE_IMM_MAX,
+    ZHPEQ_KEY_BLOB_MAX          = 32,
 };
 
 struct zhpeq_attr {
@@ -331,38 +333,37 @@ struct zhpeq_dom;
 
 static inline int zhpeq_rem_key_access(struct zhpeq_key_data *qkdata,
                                        uint64_t start, uint64_t len,
-                                       uint64_t access, uint64_t *zaddr)
+                                       uint32_t qaccess, uint64_t *zaddr)
 {
-    int                 ret = 0;
     struct zhpe_key_data *kdata = &qkdata->z;
 
-    if (kdata &&
-        start >= kdata->vaddr && start + len <= kdata->vaddr + kdata->len &&
-        (access & kdata->access) == access)
-        *zaddr = (start - kdata->vaddr) + kdata->zaddr;
-    else
-        ret = -EINVAL;
+    if (!kdata)
+        return -EINVAL;
+    if (kdata->access & ZHPEQ_MR_KEY_ZERO_OFF)
+        start += kdata->vaddr;
+    if ((qaccess & kdata->access) != qaccess ||
+        start < kdata->vaddr || start + len > kdata->vaddr + kdata->len)
+        return -EINVAL;
+    *zaddr = (start - kdata->vaddr) + kdata->zaddr;
 
-    return ret;
+    return 0;
 }
 
 static inline int zhpeq_lcl_key_access(struct zhpeq_key_data *qkdata,
                                        void *buf, uint64_t len,
-                                       uint64_t access, uint64_t *zaddr)
+                                       uint32_t qaccess, uint64_t *zaddr)
 {
-    int                 ret = 0;
     uintptr_t           start = (uintptr_t)buf;
     struct zhpe_key_data *kdata = &qkdata->z;
 
-    if (kdata &&
-        start >= kdata->vaddr && start + len <= kdata->vaddr + kdata->len &&
-        (access & kdata->access) == access)
-        *zaddr = (start - kdata->vaddr) + qkdata->laddr;
-    else
-        ret = -EINVAL;
+    if (!kdata)
+        return -EINVAL;
+    if ((qaccess & kdata->access) != qaccess ||
+        start < kdata->vaddr || start + len > kdata->vaddr + kdata->len)
+        return -EINVAL;
+    *zaddr = (start - kdata->vaddr) + qkdata->laddr;
 
-    return ret;
-    return zhpeq_rem_key_access(qkdata, (uintptr_t)buf, len, access, zaddr);
+    return 0;
 }
 
 int zhpeq_init(int api_version);
@@ -387,14 +388,13 @@ ssize_t zhpeq_cq_read(struct zhpeq *zq, struct zhpeq_cq_entry *entries,
                       size_t n_entries);
 
 int zhpeq_mr_reg(struct zhpeq_dom *zdom, const void *buf, size_t len,
-                 uint32_t access, uint64_t requested_key,
-                 struct zhpeq_key_data **qkdata_out);
+                 uint32_t access, struct zhpeq_key_data **qkdata_out);
 
 int zhpeq_mr_free(struct zhpeq_dom *zdom, struct zhpeq_key_data *qkdata);
 
 int zhpeq_zmmu_export(struct zhpeq_dom *zdom,
                       const struct zhpeq_key_data *qkdata,
-                      void **blob_out, size_t *blob_len);
+                      void *blob, size_t *blob_len);
 
 int zhpeq_zmmu_import(struct zhpeq_dom *zdom, int open_idx,
                       const void *blob, size_t blob_len, bool cpu_visible,

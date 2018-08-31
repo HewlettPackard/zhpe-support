@@ -1,4 +1,4 @@
-add_library(zhpeq_util_fab SHARED libzhpeq_util_fab.c)
+add_library(zhpeq_util_fab STATIC libzhpeq_util_fab.c)
 target_link_libraries(zhpeq_util_fab PUBLIC fabric uuid)
 
 install(TARGETS zhpeq_util_fab DESTINATION lib)

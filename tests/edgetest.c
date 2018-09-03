@@ -35,7 +35,7 @@
  */
 
 #include <zhpeq.h>
-#include <zhpeq_util_fab.h>
+#include <zhpeq_util.h>
 
 /* Need internal.h for backend timing stuff. */
 #include <internal.h>

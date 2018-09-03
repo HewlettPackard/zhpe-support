@@ -13,6 +13,9 @@ if (CMAKE_COMPILER_IS_GNUCC)
   add_compile_options(-g -Wall -Werror)
 endif (CMAKE_COMPILER_IS_GNUCC)
 
+set(THREADS_PREFER_PTHREAD_FLAG TRUE)
+find_package(Threads REQUIRED)
+
 include_directories(include asic/include)
 
 # Libraries/tests

@@ -109,8 +109,8 @@ typedef unsigned char   uchar;
 extern const char       *appname;
 extern size_t           page_size;
 
-/* Borrow AF_UNIX since it should never be seen. */
-#define AF_ZHPE         AF_UNIX
+/* Borrow AF_APPLETALK since it should never be seen. */
+#define AF_ZHPE         AF_APPLETALK
 #define ZHPE_ADDRSTRLEN (37)
 #define ZHPE_QUEUEINVAL (0xFFFFFFFFUL)
 

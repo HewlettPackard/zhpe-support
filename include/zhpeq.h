@@ -37,14 +37,10 @@
 #ifndef _ZHPEQ_H_
 #define _ZHPEQ_H_
 
-#ifndef __KERNEL__
-
 #include <errno.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
-
-#endif
 
 #include <zhpe_uapi.h>
 
@@ -75,8 +71,6 @@ struct zhpeq_timing_counter {
     const char          *name;
     volatile uint64_t   count;
 };
-
-#ifndef __KERNEL__
 
 extern struct zhpe_timing_stamp zhpeq_timing_tx_start_stamp;
 extern struct zhpe_timing_stamp zhpeq_timing_tx_ibv_post_send_stamp;
@@ -150,8 +144,6 @@ void *zhpeq_timing_reset_all(void);
 void zhpeq_timing_print_timer(struct zhpeq_timing_timer *timer);
 void zhpeq_timing_print_counter(struct zhpeq_timing_counter *counter);
 void zhpeq_timing_print_all(void *saved);
-
-#endif /* __KERNEL__ */
 
 #ifdef ZHPEQ_TIMING
 

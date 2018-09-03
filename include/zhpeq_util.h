@@ -86,7 +86,7 @@ _EXTERN_C_BEG
 
 #define TO_PTR(_int)    (void *)(uintptr_t)(_int)
 
-#define FREE(_ptr,_free)                                        \
+#define FREE_IF(_ptr,_free)                                     \
 do {                                                            \
     if (_ptr) {                                                 \
         _free(_ptr);                                            \
@@ -131,6 +131,78 @@ union sockaddr_in46 {
     struct sockaddr_in6 addr6;
     struct sockaddr_zhpe zhpe;
 };
+
+#define likely(_x)      __builtin_expect(!!(_x), 1)
+#define unlikely(_x)    __builtin_expect(!!(_x), 0)
+
+int _zhpeu_posix_memalign(void **memptr, size_t alignment, size_t size,
+                          const char *callf, uint line);
+
+#define posix_memalign(...) \
+    _zhpeu_posix_memalign(__VA_ARGS__, __func__, __LINE__)
+
+void *_zhpeu_malloc(size_t size, const char *callf, uint line);
+
+#define malloc(...) \
+    _zhpeu_malloc(__VA_ARGS__, __func__, __LINE__)
+
+void *_zhpeu_realloc(void *ptr, size_t size, const char *callf, uint line);
+
+#define realloc(...) \
+    _zhpeu_realloc(__VA_ARGS__, __func__, __LINE__)
+
+void *_zhpeu_calloc(size_t nmemb, size_t size, const char *callf, uint line);
+
+#define calloc(...) \
+    _zhpeu_calloc(__VA_ARGS__, __func__, __LINE__)
+
+void *zhpeu_calloc_aligned(size_t alignment, size_t nmemb, size_t size,
+                           const char *callf, uint line);
+
+#define calloc_aligned(...) \
+    _zhpeu_calloc_aligned(__VA_ARGS__, __func__, __LINE__)
+
+void _zhpeu_free(void *ptr, const char *callf, uint line);
+
+#define free(...) \
+    _zhpeu_free(__VA_ARGS__, __func__, __LINE__)
+
+#ifdef _BARRIER_DEFINED
+#warning _BARRIER_DEFINED already defined
+#undef _BARRIER_DEFINED
+#endif
+
+#if defined(__x86_32__) || defined( __x86_64__)
+
+#define _BARRIER_DEFINED
+
+static inline void smp_mb(void)
+{
+    asm volatile("mfence":::"memory");
+}
+
+static inline void smp_rmb(void)
+{
+    asm volatile("lfence":::"memory");
+}
+
+static inline void smp_wmb(void)
+{
+    asm volatile("sfence":::"memory");
+}
+
+#define L1_CACHE_BYTES  (64U)
+
+#endif
+
+#ifndef _BARRIER_DEFINED
+#error No barrier support for this architecture
+#endif
+
+#undef _BARRIED_DEFINED
+
+#define barrier()       __compiler_barrier()
+#define CACHE_ALIGNED    __attribute__ ((aligned (L1_CACHE_BYTES)))
 
 static inline size_t sockaddr_len(const void *addr)
 {
@@ -415,7 +487,7 @@ static inline void abort_if_minus1(int ret, const char *callf, uint line)
 }
 
 #define clock_gettime(...) \
-    abort_if_minus1(clock_gettime(__VA_ARGS__), __FUNCTION__, __LINE__)
+    abort_if_minus1(clock_gettime(__VA_ARGS__), __func__, __LINE__)
 
 #define clock_gettime_monotonic(...) \
     clock_gettime(CLOCK_MONOTONIC, __VA_ARGS__)
@@ -462,72 +534,52 @@ uint random_range(uint start, uint end);
 
 uint *random_array(uint *array, uint entries);
 
-void *_do_malloc(const char *callf, uint line, size_t size);
-
-#define do_malloc(...) \
-    _do_malloc(__FUNCTION__, __LINE__, __VA_ARGS__)
-
-void *_do_realloc(const char *callf, uint line, void *ptr, size_t size);
-
-#define do_realloc(...) \
-    _do_realloc(__FUNCTION__, __LINE__, __VA_ARGS__)
-
-void *_do_calloc(const char *callf, uint line, size_t nmemb, size_t size);
-
-#define do_calloc(...) \
-    _do_calloc(__FUNCTION__, __LINE__, __VA_ARGS__)
-
-void _do_free(const char *callf, uint line, void *ptr);
-
-#define do_free(...) \
-    _do_free(__FUNCTION__, __LINE__, __VA_ARGS__)
-
 bool _expected_saw(const char *callf, uint line,
                    const char *label, uintptr_t expected, uintptr_t saw);
 
 #define expected_saw(...) \
-    _expected_saw(__FUNCTION__, __LINE__, __VA_ARGS__)
+    _expected_saw(__func__, __LINE__, __VA_ARGS__)
 
 char *_sockaddr_port_str(const char *callf, uint line, const void *addr);
 
 #define sockaddr_port_str(...) \
-    _sockaddr_port_str(__FUNCTION__, __LINE__, __VA_ARGS__)
+    _sockaddr_port_str(__func__, __LINE__, __VA_ARGS__)
 
 char *_sockaddr_str(const char *callf, uint line, const void *addr);
 
 #define sockaddr_str(...) \
-    _sockaddr_str(__FUNCTION__, __LINE__, __VA_ARGS__)
+    _sockaddr_str(__func__, __LINE__, __VA_ARGS__)
 
 int _do_getsockname(const char *callf, uint line,
                     int fd, union sockaddr_in46 *sa);
 
 #define do_getsockname(...) \
-    _do_getsockname(__FUNCTION__, __LINE__, __VA_ARGS__)
+    _do_getsockname(__func__, __LINE__, __VA_ARGS__)
 
 int _do_getpeername(const char *callf, uint line,
                     int fd, union sockaddr_in46 *da);
 
 #define do_getpeername(...) \
-    _do_getpeername(__FUNCTION__, __LINE__, __VA_ARGS__)
+    _do_getpeername(__func__, __LINE__, __VA_ARGS__)
 
 int _sock_send_blob(const char *callf, uint line, int fd,
                     const void *blob, size_t blob_len);
 
 #define sock_send_blob(...) \
-    _sock_send_blob(__FUNCTION__, __LINE__, __VA_ARGS__)
+    _sock_send_blob(__func__, __LINE__, __VA_ARGS__)
 
 int _sock_recv_fixed_blob(const char *callf, uint line,
                           int fd, void *blob, size_t blob_len);
 
 #define sock_recv_fixed_blob(...) \
-    _sock_recv_fixed_blob(__FUNCTION__, __LINE__, __VA_ARGS__)
+    _sock_recv_fixed_blob(__func__, __LINE__, __VA_ARGS__)
 
 int _sock_recv_var_blob(const char *callf, uint line,
                         int fd, size_t extra_len,
                         void **blob, size_t *blob_len);
 
 #define sock_recv_var_blob(...) \
-    _sock_recv_var_blob(__FUNCTION__, __LINE__, __VA_ARGS__)
+    _sock_recv_var_blob(__func__, __LINE__, __VA_ARGS__)
 
 static inline int sock_send_string(int fd, const char *s)
 {
@@ -558,10 +610,10 @@ static inline char *_strdup_or_null(const char *callf, uint line,
 }
 
 #define strdup_or_null(...) \
-    _strdup_or_null(__FUNCTION__, __LINE__, __VA_ARGS__)
+    _strdup_or_null(__func__, __LINE__, __VA_ARGS__)
 
 #define fab_cq_read(...) \
-    _fab_cq_read(__FUNCTION__, __LINE__, __VA_ARGS__)
+    _fab_cq_read(__func__, __LINE__, __VA_ARGS__)
 
 static void inline abort_if_nonzero(int ret, const char *callf, uint line)
 {
@@ -572,78 +624,46 @@ static void inline abort_if_nonzero(int ret, const char *callf, uint line)
 }
 
 #define cond_init(...) \
-    abort_if_nonzero(pthread_cond_init(__VA_ARGS__), __FUNCTION__, __LINE__)
+    abort_if_nonzero(pthread_cond_init(__VA_ARGS__), __func__, __LINE__)
 
 #define cond_destroy(...) \
-    abort_if_nonzero(pthread_cond_destroy(__VA_ARGS__), __FUNCTION__, __LINE__)
+    abort_if_nonzero(pthread_cond_destroy(__VA_ARGS__), __func__, __LINE__)
 
 #define cond_signal(...) \
-    abort_if_nonzero(pthread_cond_signal(__VA_ARGS__), __FUNCTION__, __LINE__)
+    abort_if_nonzero(pthread_cond_signal(__VA_ARGS__), __func__, __LINE__)
 
 #define cond_broadcast(...) \
     abort_if_nonzero(pthread_cond_broadcast(__VA_ARGS__), \
-                     __FUNCTION__, __LINE__)
+                     __func__, __LINE__)
 
 #define cond_wait(...) \
-    abort_if_nonzero(pthread_cond_wait(__VA_ARGS__), __FUNCTION__, __LINE__)
+    abort_if_nonzero(pthread_cond_wait(__VA_ARGS__), __func__, __LINE__)
 
 #define mutex_init(...) \
-    abort_if_nonzero(pthread_mutex_init(__VA_ARGS__), __FUNCTION__, __LINE__)
+    abort_if_nonzero(pthread_mutex_init(__VA_ARGS__), __func__, __LINE__)
 
 #define mutex_destroy(...) \
     abort_if_nonzero(pthread_mutex_destroy(__VA_ARGS__), \
-                     __FUNCTION__, __LINE__)
+                     __func__, __LINE__)
 
 #define mutex_lock(...) \
-    abort_if_nonzero(pthread_mutex_lock(__VA_ARGS__), __FUNCTION__, __LINE__)
+    abort_if_nonzero(pthread_mutex_lock(__VA_ARGS__), __func__, __LINE__)
 
 #define mutex_unlock(...) \
-    abort_if_nonzero(pthread_mutex_unlock(__VA_ARGS__), __FUNCTION__, __LINE__)
+    abort_if_nonzero(pthread_mutex_unlock(__VA_ARGS__), __func__, __LINE__)
 
 #define spin_init(...) \
-    abort_if_nonzero(pthread_spin_init(__VA_ARGS__), __FUNCTION__, __LINE__)
+    abort_if_nonzero(pthread_spin_init(__VA_ARGS__), __func__, __LINE__)
 
 #define spin_destroy(...) \
-    abort_if_nonzero(pthread_spin_destroy(__VA_ARGS__), __FUNCTION__, __LINE__)
+    abort_if_nonzero(pthread_spin_destroy(__VA_ARGS__), __func__, __LINE__)
 
 #define spin_lock(...) \
-    abort_if_nonzero(pthread_spin_lock(__VA_ARGS__), __FUNCTION__, __LINE__)
+    abort_if_nonzero(pthread_spin_lock(__VA_ARGS__), __func__, __LINE__)
 
 #define spin_unlock(...) \
-    abort_if_nonzero(pthread_spin_unlock(__VA_ARGS__), __FUNCTION__, __LINE__)
+    abort_if_nonzero(pthread_spin_unlock(__VA_ARGS__), __func__, __LINE__)
 
-
-#ifdef _BARRIER_DEFINED
-#warning _BARRIER_DEFINED already defined
-#undef _BARRIER_DEFINED
-#endif
-
-#if defined(__x86_32__) || defined( __x86_64__)
-
-#define _BARRIER_DEFINED
-
-static inline void smp_mb(void)
-{
-    asm volatile("mfence":::"memory");
-}
-
-static inline void smp_rmb(void)
-{
-    asm volatile("lfence":::"memory");
-}
-
-static inline void smp_wmb(void)
-{
-    asm volatile("sfence":::"memory");
-}
-
-#endif
-
-#ifndef _BARRIER_DEFINED
-#error No barrier support for this architecture
-#endif
-
-#undef _BARRIED_DEFINED
 
 static inline int _do_munmap(const char *callf, uint line,
                              void *addr, size_t length)
@@ -662,7 +682,7 @@ static inline int _do_munmap(const char *callf, uint line,
 }
 
 #define do_munmap(...) \
-    _do_munmap(__FUNCTION__, __LINE__, __VA_ARGS__)
+    _do_munmap(__func__, __LINE__, __VA_ARGS__)
 
 static inline void *_do_mmap(const char *callf, uint line,
                              void *addr, size_t length, int prot, int flags,
@@ -684,7 +704,7 @@ static inline void *_do_mmap(const char *callf, uint line,
 }
 
 #define do_mmap(...) \
-    _do_mmap(__FUNCTION__, __LINE__, __VA_ARGS__)
+    _do_mmap(__func__, __LINE__, __VA_ARGS__)
 
 static inline int fls64(uint64_t v)
 {

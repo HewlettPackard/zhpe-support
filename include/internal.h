@@ -64,8 +64,6 @@ _EXTERN_C_BEG
 
 #define DEV_NAME        "/dev/"DRIVER_NAME
 
-#define CACHE_ALIGNED    __attribute__ ((aligned (64)))
-
 struct backend_ops {
     int                 (*lib_init)(struct zhpeq_attr *attr);
     int                 (*domain)(struct zhpeq_dom *zdom);
@@ -141,9 +139,6 @@ static inline uint8_t cq_valid(uint32_t idx, uint32_t qmask)
 {
     return ((idx & (qmask + 1)) ? 0 : ZHPE_HW_CQ_VALID);
 }
-
-#define likely(x)		__builtin_expect((x), 1)
-#define unlikely(x)		__builtin_expect((x), 0)
 
 static inline uint64_t ioread64(const volatile void *addr)
 {

@@ -942,7 +942,7 @@ int _zhpeu_posix_memalign(void **memptr, size_t alignment, size_t size,
 {
     int                 ret = posix_memalign(memptr, alignment, size);
 
-    if (unlikely(!ret)) {
+    if (unlikely(ret > 0)) {
         *memptr = NULL;
         print_func_errn(callf, line, "posix_memalign", size, false, ret);
     }

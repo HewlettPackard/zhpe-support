@@ -8,9 +8,10 @@ APPDIR=$(cd $(dirname $0); pwd)
 usage () {
     cat <<EOF >&2
 Usage:
-$APPNAME [-f <path>] [-o <options>] <insdir>
+$APPNAME [-f <path>] [-o <options>] -d <driverdir> <insdir>
 Do CMake configuration.
 <insdir> : installation directory
+ -d <path> : Path to zhpe-driver repo (defaults to ../zhpe-driver)
  -f <path> : Path to libfabric install (or where it will be installed)
  -o <options> : add C compiler options (defines or optimization)
 EOF
@@ -18,13 +19,16 @@ EOF
 }
 
 COPT=""
-DRVR_ONLY="no"
+DRVR=../zhpe-driver
 LIBF=""
 MPID=""
 VERBOSE=""
 
-while getopts 'f:o:' OPT; do
+while getopts 'd:f:o:' OPT; do
     case $OPT in
+    d)
+	DRVR="$OPTARG"
+	;;
     f)
 	LIBF="$OPTARG"
 	;;
@@ -40,6 +44,8 @@ done
 shift $((( OPTIND - 1 )))
 (( $# == 1 )) || usage
 
+DRVR=$(cd $DRVR ; pwd)
+
 if ! echo $COPT | grep -qe "[[:space:]]*-O"; then
     COPT="-O2 $COPT"
 fi
@@ -49,6 +55,8 @@ INSD=$1
 
 (
     cd $APPDIR
+    rm -f asic
+    ln -sf $DRVR asic
     B=build
     rm -rf $B
     mkdir -p $B/include

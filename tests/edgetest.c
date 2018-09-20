@@ -163,7 +163,7 @@ static int do_mem_setup(struct stuff *conn)
     ret = zhpeq_mr_reg(conn->zdom, buf, req,
                        (ZHPEQ_MR_GET | ZHPEQ_MR_PUT |
                         ZHPEQ_MR_GET_REMOTE | ZHPEQ_MR_PUT_REMOTE),
-                       0, &conn->lcl_kdata);
+                       &conn->lcl_kdata);
     if (ret < 0) {
         print_func_err(__FUNCTION__, __LINE__, "zhpeq_mr_reg", "", ret);
         goto done;
@@ -181,10 +181,11 @@ static int do_mem_setup(struct stuff *conn)
 static int do_mem_xchg(struct stuff *conn)
 {
     int                 ret;
-    void                *blob = NULL;
+    char                blob[ZHPEQ_KEY_BLOB_MAX];
     size_t              blob_len;
 
-    ret = zhpeq_zmmu_export(conn->zdom, conn->lcl_kdata, &blob, &blob_len);
+    blob_len = sizeof(blob);
+    ret = zhpeq_zmmu_export(conn->zdom, conn->lcl_kdata, blob, &blob_len);
     if (ret < 0) {
         print_func_err(__FUNCTION__, __LINE__, "zhpeq_zmmu_export", "", ret);
         goto done;
@@ -207,7 +208,6 @@ static int do_mem_xchg(struct stuff *conn)
         zhpeq_print_qkdata(__FUNCTION__, __LINE__, conn->zdom, conn->rem_kdata);
 
  done:
-    free(blob);
 
     return ret;
 }

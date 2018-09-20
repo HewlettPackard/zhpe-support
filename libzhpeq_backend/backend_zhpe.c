@@ -321,7 +321,6 @@ static int zhpe_mr_reg(struct zhpeq_dom *zdom,
     desc->qkdata.z.len = len;
     desc->qkdata.z.zaddr = rsp->mr_reg.rsp_zaddr;
     desc->qkdata.z.access = access;
-    desc->qkdata.z.key = 0;
     *qkdata_out = &desc->qkdata;
 
     ret = 0;
@@ -441,30 +440,15 @@ static int zhpe_zmmu_free(struct zhpeq_dom *zdom, struct zhpeq_key_data *qkdata)
 
 static int zhpe_zmmu_export(struct zhpeq_dom *zdom,
                             const struct zhpeq_key_data *qkdata,
-                            void **blob_out, size_t *blob_len)
+                            void *blob, size_t *blob_len)
 {
-    int                 ret = -EINVAL;
-    struct zhpeq_mr_desc_v1 *desc = container_of(qkdata,
-                                                 struct zhpeq_mr_desc_v1,
-                                                 qkdata);
-    struct key_data_packed *blob = NULL;
+    if (*blob_len < sizeof(struct key_data_packed))
+        return -EINVAL;
 
-    if (desc->hdr.magic != ZHPE_MAGIC || desc->hdr.version != ZHPEQ_MR_V1)
-        goto done;
-
-    ret = -ENOMEM;
-    *blob_len = sizeof(*blob);
-    blob = do_malloc(*blob_len);
-    if (!blob)
-        goto done;
-
+    *blob_len = sizeof(struct key_data_packed);
     pack_kdata(qkdata, blob, qkdata->z.zaddr);
-    *blob_out = blob;
 
-    ret = 0;
-
- done:
-    return ret;
+    return 0;
 }
 
 static void zhpe_print_info(struct zhpeq *zq)

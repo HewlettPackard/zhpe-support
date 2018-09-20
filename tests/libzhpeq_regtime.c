@@ -168,7 +168,7 @@ int main(int argc, char **argv)
                               (ZHPEQ_MR_GET | ZHPEQ_MR_PUT |
                                ZHPEQ_MR_SEND | ZHPEQ_MR_RECV |
                                ZHPEQ_MR_GET_REMOTE | ZHPEQ_MR_PUT_REMOTE),
-                              0, &kdata);
+                              &kdata);
             if (rc < 0) {
                 print_func_err(__FUNCTION__, __LINE__, "zhpeq_mr_reg", "", rc);
                 goto done;

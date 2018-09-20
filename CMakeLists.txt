@@ -17,7 +17,7 @@ include_directories(include asic/include)
 
 # Libraries/tests
 if (LIBF)
-  include_directories(BEFORE ${LIBF}/include)
+  include_directories(AFTER ${LIBF}/include)
   link_directories(${LIBF}/lib)
 endif (LIBF)
 add_subdirectory(libzhpeq)

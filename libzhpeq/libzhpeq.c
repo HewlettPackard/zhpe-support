@@ -808,8 +808,7 @@ int zhpeq_atomic(struct zhpeq *zq, uint32_t qindex, bool fence, bool retval,
 }
 
 int zhpeq_mr_reg(struct zhpeq_dom *zdom, const void *buf, size_t len,
-                 uint32_t access, uint64_t requested_key,
-                 struct zhpeq_key_data **qkdata_out)
+                 uint32_t access, struct zhpeq_key_data **qkdata_out)
 {
     int                 ret = -EINVAL;
 
@@ -820,8 +819,6 @@ int zhpeq_mr_reg(struct zhpeq_dom *zdom, const void *buf, size_t len,
          goto done;
 
     ret = b_ops->mr_reg(zdom, buf, len, access, qkdata_out);
-    if (ret >= 0 && (access & ZHPEQ_MR_KEY_VALID))
-        (*qkdata_out)->z.key = requested_key;
 #if QKDATA_DUMP
     if (ret >= 0)
         zhpeq_print_qkdata(__FUNCTION__, __LINE__, zdom, *qkdata_out);
@@ -875,20 +872,21 @@ int zhpeq_zmmu_import(struct zhpeq_dom *zdom, int open_idx, const void *blob,
 
 int zhpeq_zmmu_export(struct zhpeq_dom *zdom,
                       const struct zhpeq_key_data *qkdata,
-                      void **blob_out, size_t *blob_len)
+                      void *blob, size_t *blob_len)
 {
     int                 ret = -EINVAL;
+    struct zhpeq_mr_desc_v1 *desc = container_of(qkdata,
+                                                 struct zhpeq_mr_desc_v1,
+                                                 qkdata);
 
-    if (!blob_out)
-        goto done;
-    *blob_out = NULL;
-    if (!zdom || !qkdata || !blob_len)
+    if (!zdom || !qkdata || !blob || !blob_len ||
+        desc->hdr.magic != ZHPE_MAGIC || desc->hdr.version != ZHPEQ_MR_V1)
         goto done;
 
 #if QKDATA_DUMP
     zhpeq_print_qkdata(__FUNCTION__, __LINE__, zdom, qkdata);
 #endif
-    ret = b_ops->zmmu_export(zdom, qkdata, blob_out, blob_len);
+    ret = b_ops->zmmu_export(zdom, qkdata, blob, blob_len);
 
  done:
     return ret;
@@ -1030,9 +1028,8 @@ void zhpeq_print_qkdata(const char *func, uint line, struct zhpeq_dom *zdom,
     printf("%s,%u:v/z/l 0x%Lx 0x%Lx 0x%Lx\n", func, line,
            (ullong)qkdata->z.vaddr, (ullong)qkdata->z.zaddr,
            (ullong)qkdata->z.len);
-    printf("%s,%u:k/a/l 0x%Lx 0x%Lx 0x%Lx\n", func, line,
-           (ullong)qkdata->z.key, (ullong)qkdata->z.access,
-           (ullong)qkdata->laddr);
+    printf("%s,%u:a/l 0x%Lx 0x%Lx\n", func, line,
+           (ullong)qkdata->z.access, (ullong)qkdata->laddr);
 }
 
 static void print_qcm1(const char *func, uint line, const volatile void *qcm,

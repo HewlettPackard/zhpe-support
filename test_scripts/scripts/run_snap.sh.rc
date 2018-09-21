@@ -1,0 +1,18 @@
+TESTNAME="SNAP"
+
+# let zhpe_test_params to call getopt
+
+. ${COMMONDIR}/zhpe_test_params.rc
+
+# snap output file must be accessible from all nodes
+SNAP_TESTOUT_DIR="${HOME}/tmp/SNAP-${NOW}/"
+if [[ -d ${SNAP_TESTOUT_DIR} ]]
+then
+  echo "WARNING: ${SNAP_TESTOUT_DIR} exists.  Deleting it."
+  docmd /bin/rm -rf ${SNAP_TESTOUT_DIR}
+fi
+
+docmd mkdir -p ${SNAP_TESTOUT_DIR}
+
+TIMEOUT_PERIOD=120
+MPIRUN_ARGS="${MPIRUN_ARGS} -H ${HOST1},${HOST2},${HOST3},${HOST4}"

@@ -1,0 +1,5 @@
+# let zhpe_test_params to call getopt
+
+. ${COMMONDIR}/zhpe_test_params.rc
+
+

@@ -1,0 +1,48 @@
+# common_master.rc sources the following, in order:
+#    * common_functions.rc -- defines common functions
+#    * ${TEST_SCRIPT_NAME}.rc -- defines test-specific variables and functions.rc 
+#      and runs getopt to parse runtime parameters.
+#    * optionally, if the user has specified an additional RC file (see below), 
+#    * common_master.rc will call ${MY_RC_FILE} last.
+#
+# Each ${TEST_SCRIPT_NAME}.rc is responsible for running getopt and also for 
+# setting PATH, LD_LIBRARY_PATH, and ZHPE_BACKEND_LIBFABRIC_PROV
+
+ME=`whoami`
+
+TODAY=`date +"%m-%d-%Y"`
+NOW=`date +"%Y-%m-%d-%H-%M-%S"`
+SERVERNAME=`hostname -s` 
+
+DEBUGNAME="debug"
+OPTNAME="opt"
+
+MY_RC_FILE=""
+
+SKIP_GETOPTS=0
+MY_HOSTFILE=""
+MY_HOSTFILE_ARGS=""
+
+if [[ -f ${COMMONDIR}/common_functions.rc ]]
+then
+    . ${COMMONDIR}/common_functions.rc
+else
+   echo "MAJOR FAILURE: ${COMMONDIR}/common_functions.rc not found"
+   exit -1
+fi
+
+# ${SCRIPTDIR}/${SCRIPTNAME}.rc provides getopt
+. ${SCRIPTDIR}/${SCRIPTNAME}.rc
+
+# source ${MY_RC_FILE} then reset it to null
+if [[ "${MY_RC_FILE}XXX" != "XXX" ]] && [[ -f "${MY_RC_FILE}" ]]
+then
+    . ${MY_RC_FILE}      
+    MY_RC_FILE=""
+fi
+
+verify_set TEST_DIR
+
+export PATH=${TEST_DIR}/bin:/usr/bin:/sbin:/bin
+export LD_LIBRARY_PATH=${TEST_DIR}/lib:/usr/lib
+

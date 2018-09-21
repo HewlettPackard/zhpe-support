@@ -1,0 +1,5 @@
+export TEST_DIR=MYINSTALLDIR
+export PATH=${TEST_DIR}/tests/fabtests/bin:${TEST_DIR}/bin:${PATH}
+export LD_LIBRARY_PATH=${TEST_DIR}/lib
+export ZHPE_BACKEND_LIBFABRIC_PROV=sockets
+# alias mpirun="${TEST_DIR}/bin/mpirun --am ${TEST_DIR}/zhpe.conf "

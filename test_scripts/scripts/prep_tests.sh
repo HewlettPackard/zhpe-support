@@ -45,12 +45,13 @@ MY_HOSTFILE="${HOME}/hostfile"
 
 # versions
 REQUIRED_OMPI_REPO="github.com/open-mpi/ompi"
-REQUIRED_OMPI_BRANCH="v4.0.x"
+REQUIRED_OMPI_VERSION="v4.0.0rc1"
 
 REQUIRED_ZHPE_LIBFABRIC_REPO="github.com/HewlettPackard/zhpe-libfabric"
 REQUIRED_ZHPE_LIBFABRIC_BRANCH="zhpe"
 REQUIRED_ZHPE_SUPPORT_REPO="github.com/HewlettPackard/zhpe-support"
 REQUIRED_ZHPE_SUPPORT_BRANCH="master"
+REQUIRED_FABTESTS_REPO="github.com/ofiwg/fabtests"
 REQUIRED_FABTESTS_VERSION="v1.6.1"
 REQUIRED_OSU_MICRO_BENCHMARKS_VERSION="5.4.3"
 
@@ -114,7 +115,6 @@ function verify_git_repo_branch ()
   return 0
 }
   
-# verify_git_repo_commit
 function verify_git_repo_commit ()
 {
   local FULLREPO=${1}
@@ -132,23 +132,37 @@ function verify_git_repo_commit ()
   return 0
 }
   
-# verify_git_repo_commit
 function verify_git_repo_detach ()
 {
   local FULLREPO=${1}
-  local DESIRED_COMMIT="${2}"
+  local DESIRED_REPO="${2}"
+  local DESIRED_COMMIT="${3}"
   local REPO=`basename ${FULLREPO}`
+  printtitle "Verifying git repo ${REPO} is detached at ${DESIRED_COMMIT}" 4 
+
+  local count=`(\cd ${FULLREPO}/; git remote -v | grep "${DESIRED_REPO}" | wc -l)`
+  if [[ ${count} -eq 0 ]]
+  then
+     echo "ERROR:  ${FULLREPO} not from expected repository: ${DESIRED_REPO}"
+     echo ""
+     exit 1
+  else
+     echo "${FULLREPO} is cloned from ${DESIRED_REPO} as expected" 
+  fi
+
   local REPO_COMMIT=`(\cd ${FULLREPO}/; git status | grep detached | head -1 | awk '{print $NF}')`
   printtitle "Verifying git repo ${REPO} is detached at expected commit" 4 
   if [[ "${REPO_COMMIT}XX" != "${DESIRED_COMMIT}XX" ]]
   then
-     echo "WARNING: ${FULLREPO} ${REPO_COMMIT}  (expected ${DESIRED_COMMIT})"
+     echo "ERROR: ${FULLREPO} is detached at ${REPO_COMMIT}  (expected ${DESIRED_COMMIT})"
      exit 1
   else
      echo "${FULLREPO} ${REPO_COMMIT} as expected" 
   fi
+
   return 0
 }
+  
   
 # end of functions
 
@@ -227,13 +241,14 @@ verify_or_exit $? "Failed to mpirun -H ${HOST1},${HOST2},${HOST3},${HOST4}"
   
 
 printtitle "Verifying that installed packages have expected versions" 2
+
 # verify versions
-vverify_dir_exists ${TEST_DIR}/src/ompi verify_git_repo_branch ${TEST_DIR}/src/ompi ${REQUIRED_OMPI_NAME} ${REQUIRED_OMPI_REPO} ${REQUIRED_OMPI_BRANCH}
+verify_git_repo_detach ${TEST_DIR}/src/ompi ${REQUIRED_OMPI_REPO} ${REQUIRED_OMPI_VERSION}
 
 verify_git_repo_branch ${TEST_DIR}/src/zhpe-libfabric ${REQUIRED_ZHPE_LIBFABRIC_REPO} ${REQUIRED_ZHPE_LIBFABRIC_BRANCH}
 verify_git_repo_branch ${TEST_DIR}/src/zhpe-support ${REQUIRED_ZHPE_SUPPORT_REPO} ${REQUIRED_ZHPE_SUPPORT_BRANCH}
 
-verify_git_repo_detach ${TEST_DIR}/tests/fabtests ${REQUIRED_FABTESTS_VERSION}
+verify_git_repo_detach ${TEST_DIR}/tests/fabtests ${REQUIRED_FABTESTS_REPO} ${REQUIRED_FABTESTS_VERSION}
 
 if [[ ${CHECK_ONLY} -eq 1 ]]
 then

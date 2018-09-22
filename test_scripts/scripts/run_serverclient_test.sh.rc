@@ -36,6 +36,21 @@ TEST_SPECIFIED=0
 
 #################
 
+# print usage
+usage ()  
+{
+    cat <<EOF >&2 
+USAGE:
+${SCRIPTNAME} [-h <host file>] [-p <test directory prefix>] -t [edgetest,getttest,ringpong,xingpong] 
+
+  -h <host file> :  file specifying hosts to run tests on (default ${MY_HOSTFILE})
+  -p <test directory prefix> : installation directory to be tested (default current directory ${TEST_DIR})
+  -t [edgetest,gettest,ringpong,xingpong] : which test to run 
+  -z <zhpe_backend_libfabric_prov> : backend provider for zhpe provider for libfabric (e.g., sockets, verbs)
+EOF
+    exit 1
+}
+
 
 # parse command line arguments
 while getopts 'h:p:t:z:s' OPT 
@@ -94,19 +109,4 @@ RINGPONG_CLIENT_CMD_2_PARAMS="64 1k 1m"
 
 XINGPONG_CLIENT_CMD_1_PARAMS="1 1 1k"
 XINGPONG_CLIENT_CMD_2_PARAMS="64 1k 1m"
-
-# print usage
-usage ()  
-{
-    cat <<EOF >&2 
-USAGE:
-${SCRIPTNAME} [-h <host file>] [-p <test directory prefix>] -t [edgetest,getttest,ringpong,xingpong] 
-
-  -h <host file> :  file specifying hosts to run tests on (default ${MY_HOSTFILE})
-  -p <test directory prefix> : installation directory to be tested (default current directory ${TEST_DIR})
-  -t [edgetest,gettest,ringpong,xingpong] : which test to run 
-  -z <zhpe_backend_libfabric_prov> : backend provider for zhpe provider for libfabric (e.g., sockets, verbs)
-EOF
-    exit 1
-}
 

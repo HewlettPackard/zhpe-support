@@ -85,8 +85,9 @@ Make sure the new version of libtoolize is first in your PATH.
 	$ git clone https://github.com/HewlettPackard/zhpe-driver.git
 	$ git clone https://github.com/HewlettPackard/zhpe-support.git
 	$ git clone -b zhpe https://github.com/HewlettPackard/zhpe-libfabric.git
-	$ git clone -b v4.0.x https://github.com/open-mpi/ompi.git
-(Open MPI version 3.1.1 has also been tested, but we are focused on v4.0.x at this point.)
+	$ git clone https://github.com/open-mpi/ompi.git
+	$ (cd ompi; git checkout v4.0.0rc1)
+(Open MPI version 3.1.1 has also been tested, but we are focused on v4.0.0rc1 at this point because for atomic support we depend upon the btl/ofi module that is present in rc1 but was dropped from the v4.0.0x release due to some issues involving the OminPath provider. The btl/ofi module will be brought back in a later release.)
 
 ### 2. Build and install zhpe library
 	$ cd ${SRC_DIR}/zhpe-support

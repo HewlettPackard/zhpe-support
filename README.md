@@ -86,9 +86,8 @@ Make sure the new version of libtoolize is first in your PATH.
 	$ git clone https://github.com/HewlettPackard/zhpe-support.git
 	$ git clone -b zhpe https://github.com/HewlettPackard/zhpe-libfabric.git
 	$ git clone https://github.com/open-mpi/ompi.git
-	$ cd ompi
-	$ git checkout v4.0.x
-Version 3.1.1 has also been tested, but we are focused on v4.0.x at this point.
+	$ (cd ompi; git checkout v4.0.0rc1)
+(Open MPI version 3.1.1 has also been tested, but we are focused on v4.0.0rc1 at this point because for atomic support we depend upon the btl/ofi module that is present in rc1 but was dropped from the v4.0.0x release due to some issues involving the OminPath provider. The btl/ofi module will be brought back in a later release.)
 
 ### 2. Build and install zhpe library
 	$ cd ${SRC_DIR}/zhpe-support
@@ -98,7 +97,7 @@ Version 3.1.1 has also been tested, but we are focused on v4.0.x at this point.
 ### 3. Build and install zhpe provider with zhpe support
 	$ cd ${SRC_DIR}/zhpe-libfabric
 	$ ./autogen.sh
-	$ ./configure --prefix=${TEST_DIR} --enable-zhpe=${TEST_DIR}
+	$ LD_LIBRARY_PATH=${TEST_DIR}/lib ./configure --prefix=${TEST_DIR} --enable-zhpe=${TEST_DIR}
 	... clipped ...
 	***
 	*** Built-in providers:	zhpe shm rxd rxm tcp udp verbs sockets 
@@ -148,9 +147,10 @@ Version 3.1.1 has also been tested, but we are focused on v4.0.x at this point.
 The sockets provider is tried last and will be used if no others can be found. If you wish to force a specific provider
 that supports RDM endpoints (e.g., verbs), you may specify this by exporting  
 ZHPE_BACKEND_LIBFABRIC_PROV=**provider** for both the client and server. A specific domain may be
-specified by exporting ZHPE_BACKEND_LIBFABRIC_PROV=**domain**
+specified by exporting ZHPE_BACKEND_LIBFABRIC_PROV=**domain** , in which case the hostname or IP address specified for by the client to point at the server must support the specified domain.
 
-#### 1. Start the server on the hostname1 (running the server in the backgroun)
+
+#### 1. Start the server on the hostname1 (running the server in the background)
 	$ ${TEST_DIR}/libexec/xingpong 2222  &
     
 #### 2. Start a client and point it at the server (hostname1 in the example below):
@@ -160,7 +160,7 @@ specified by exporting ZHPE_BACKEND_LIBFABRIC_PROV=**domain**
 ## Test libfabric RDMA APIs:  ringpong
 ringpong is very similar to xingpong, except that it uses the libfabric APIs
 instead of the libzhpeq APIs to do the data transfers. Replace the command
-in above example with "ringpong" and use "-r -p zhpe" to exercise the libfabric
+in above example with "ringpong" and for the client use "-r -p zhpe" to exercise the libfabric
 zhpe provider.
 
 ## Running OpenMPI over zhpe-libfabric (Using the right options.)

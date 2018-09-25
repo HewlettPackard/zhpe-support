@@ -1,0 +1,336 @@
+#####################
+# common functions
+#####################
+
+# Copyright (C) 2018 Hewlett Packard Enterprise Development LP.
+# All rights reserved.
+#
+# This software is available to you under a choice of one of two
+# licenses.  You may choose to be licensed under the terms of the GNU
+# General Public License (GPL) Version 2, available from the file
+# COPYING in the main directory of this source tree, or the
+# BSD license below:
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions
+# are met:
+#
+#   * Redistributions of source code must retain the above copyright
+#     notice, this list of conditions and the following disclaimer.
+#
+#   * Redistributions in binary form must reproduce the above
+#     copyright notice, this list of conditions and the following
+#     disclaimer in the documentation and/or other materials provided
+#     with the distribution.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+# "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+# LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+# FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+# COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+# INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+# BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+# LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+# LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+# ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+# POSSIBILITY OF SUCH DAMAGE.
+
+#-------------------
+# verification functions
+#-------------------
+
+# verify previous command succeeded or else exit with message
+verify_or_exit ()  
+{
+  local code=${1}
+  local msg=${2}
+  if [[ ! ${code} -eq 0 ]]
+  then
+    echo "FAILED: \"${msg}\" returned ${code}"
+    exit 1
+  fi  
+}
+
+# verify variable is set 
+vverify_set ()  
+{
+  local varname=${1}
+  printtitle "Verifying that \$${varname} is set." 4
+  if [[ "${!varname}XXXX" = "XXXX" ]]
+  then
+    echo "ERROR: ${varname} is not set"
+    exit 1
+  else
+    echo "${varname} is set to ${!varname}"
+  fi
+}
+
+# verify file exists
+vverify_file_exists ()  
+{
+  local fname=${1}
+  printtitle "Verifying that ${fname} exists." 4
+  if [[ ! -f ${fname} ]]
+  then
+    echo "ERROR: file ${fname} does not exist"
+    exit 1
+  else
+    echo "file ${fname} does exist"
+  fi
+}
+
+# verify dir exists
+vverify_dir_exists ()  
+{
+  local dname=${1}
+  printtitle "Verifying that directory ${dname} exists." 4
+  if [[ ! -d ${dname} ]]
+  then
+    echo "ERROR: directory ${dname} does not exist"
+    exit 1
+  else
+    echo "directory ${dname} does exist"
+  fi
+}
+
+
+# verify variable is set 
+verify_set ()  
+{
+  local varname=${1}
+  if [[ "${!varname}XXXX" = "XXXX" ]]
+  then
+    echo "ERROR: ${varname} is not set"
+    exit 1
+  fi
+}
+
+# verify file exists
+verify_file_exists ()  
+{
+  local fname=${1}
+  if [[ ! -f ${fname} ]]
+  then
+    echo "ERROR: file ${fname} does not exist"
+    exit 1
+  fi
+}
+
+# verify dir exists
+verify_dir_exists ()  
+{
+  local dname=${1}
+  if [[ ! -d ${dname} ]]
+  then
+    echo "ERROR: directory ${dname} does not exist"
+    exit 1
+  fi
+}
+
+# check a code and don't exit with message if code != 0
+check_for_timeout ()
+{
+  local code=${1}
+  local timeout=${2}
+  local status_varname=${3}
+  if [[ ${code} -ne 0 ]]
+  then
+      export ${status_varname}=${code} 
+      if [[ ${code} -eq 124 ]]
+      then
+         echo "TIMEOUT: time out at ${timeout} seconds."
+      else
+         echo "FAILURE: exited with code ${code}"
+      fi
+  else
+      echo "SUCCESS: exit with code ${code}"
+  fi
+}
+
+report_status ()
+{
+  code=${1}
+  msg=${2}
+  if [[ ! ${code} -eq 0 ]]
+  then
+    echo "FAILURE: ${msg}"
+  else
+    echo "SUCCESS: ${msg}"
+  fi
+}
+
+
+#-------------------
+# command wrappers
+#-------------------
+
+# array_cmd takes an argument array 
+# first argument is timeout value
+# second argument is base output file name
+# if the last argument is an ampersand, then sleep
+# the rest of the parameters are the actual command to be run 
+# checks for both abort and timeout
+function arraycmd()
+{
+   local myarray=("$@")
+
+   local rlen=${#myarray[*]}
+
+   local timeout_val=${myarray[0]}
+
+   local really_my_outfile=${myarray[1]}
+
+   local cmd=""
+   local myparam=""
+   local my_result=-1
+   local FOUND=0
+   if [[ $rlen -gt 2 ]]
+   then
+       for i in `seq 2 $(( rlen - 2 ))` 
+       do
+           myparam=${myarray[${i}]}
+           cmd="${cmd}${myparam} "
+       done
+       i=$(( rlen - 1 ))
+       myparam=${myarray[${i}]}
+       if [[ "XX${myparam}" = 'XX&' ]]
+       then
+           echo "(time timeout ${timeout_val} ${cmd}  >& ${really_my_outfile} )&"
+           (time timeout ${timeout_val} ${cmd}  >& ${really_my_outfile} )&
+       else
+           cmd="${cmd}${myparam} "
+           echo "time timeout ${timeout_val} ${cmd}  >& ${really_my_outfile} "
+           time timeout ${timeout_val} ${cmd}  >& ${really_my_outfile} 
+           my_result=$?
+           echo "Exit code: ${my_result}"
+       fi
+
+       FOUND=`grep -i 'abort\|core dumped\|error\|fail\|-nan\|refused\|Segmentation\|No such file or directory\|usage' ${really_my_outfile}  | grep -vi "No errors" | grep -v "There were 0 transfer errors" | wc -l `
+   fi  
+
+   if [[ ${FOUND} -gt 0 ]] || [[ ${my_result} -gt 0 ]]
+   then
+      echo "FAILURE: ${cmd}"
+      if [[ ${my_result} -eq 0 ]]
+      then
+         my_result2=${FOUND} 
+         echo "exit code 0 but ${really_my_outfile} contains: abort, error, fail, -nan, refused, segmentation, or usage"
+         return 1
+      fi
+   fi  
+
+   if [[ ${my_result} -eq 124 ]]
+   then
+          echo "TIMEOUT at ${timeout_val} seconds."
+   else
+          echo "Exit code: ${my_result}"
+   fi  
+
+   return ${my_result}
+}
+
+
+# run a command and check for timeout
+tocmd () 
+{
+  local to_val=$1
+  echo "time timeout $@"
+  echo ""
+  time timeout $@
+  local result=$?
+  check_for_timeout $result ${to_val} "CLIENT_STATUS"
+  return $result
+}
+
+# echo and run command. Do not verify.
+justcmd () 
+{
+  echo $@ ; $@
+}
+
+# run command and then verify or exit
+docmd () 
+{
+  local CMD=`echo $@ | sed -e "s/\"/\\"/g"`
+  echo "$@"
+  $@
+  verify_or_exit $? "${CMD}"
+}
+
+# run MPI command and then verify or exit
+dompi () 
+{
+  local CMD=`echo $@ | sed -e "s/\"/\\"/g"`
+  echo "---------------------"
+  echo "mpirun command:"
+  echo "---------------------"
+  echo $@ 
+  echo ""
+
+  echo "---------------------"
+  echo "mpirun result:"
+  echo "---------------------"
+  $@
+  echo ""
+
+  verify_or_exit $? "${CMD}"
+}
+
+#-------------------
+# aesthetics
+#-------------------
+
+FULLBAR="==================================================="
+ONEBAR="---------------------------------------------------"
+SHORTBAR="-------------"
+
+# usage: printtitle [text] [level]
+printtitle ()
+{
+  local text=""
+  local level=1
+  local mybar="${FULLBAR}"
+
+  if [[ $# -ge 1 ]]
+  then
+     text=${1}
+  fi
+  
+  if [[ $# -ge 2 ]]
+  then
+      level=${2}
+  fi
+  
+  case ${level} in
+   1)
+       mybar="${FULLBAR}"
+       echo "${mybar}"
+       echo "    ${text}"
+       echo ""
+       echo "${mybar}"
+       ;;
+   2)
+       echo ""
+       mybar="${ONEBAR}"
+       echo "${mybar}"
+       echo "    ${text}"
+       echo "${mybar}"
+       ;;
+   3)
+       echo ""
+       mybar="${SHORTBAR}"
+       echo " ${text}"
+       echo "${mybar}"
+       ;;
+   4)
+       echo ""
+       mybar="${SHORTBAR}"
+       echo "${mybar}"
+       echo " ${text}"
+       ;;
+   *) 
+       ;;
+  esac
+
+}

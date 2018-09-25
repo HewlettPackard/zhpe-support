@@ -1,0 +1,12 @@
+# variables that can be overwritten
+OMPI_TUNE_CONF_FILE_DIR=${SCRIPTDIR_PARENTDIR}/ompi_tune_conf_files
+
+OFI_VERBS_CONF_FILE="${OMPI_TUNE_CONF_FILE_DIR}/ompi-ofi-verbs-params.conf"
+ZHPE_CONF_FILE="${OMPI_TUNE_CONF_FILE_DIR}/ompi-zhpe-params.conf"
+OFI_CONF_FILE="${OMPI_TUNE_CONF_FILE_DIR}/ompi-ofi-params.conf"
+OMPI_MIN_PARAM_CONF_FILE="${OMPI_TUNE_CONF_FILE_DIR}/ompi-min-params.conf"
+
+MPI_NUMACTL="${SCRIPTDIR}/mpi_numactl.sh"
+
+TIMEOUT_BIN="timeout"
+TIMEOUT_PERIOD=20

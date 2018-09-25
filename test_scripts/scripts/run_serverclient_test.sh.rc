@@ -1,0 +1,112 @@
+MY_HOSTFILE=${HOME}/hostfile
+
+
+GENERIC_SETUP_RC="${COMMONDIR}/generic_test_params.rc"
+export PROVNAME="zhpe"
+
+. ${GENERIC_SETUP_RC} 
+
+WITH_ZHPE=1
+WITH_LIBFABRIC=1
+
+MPIRUN_ARGS=""
+MPIRUN_ARGS="${MPIRUN_ARGS} --tune ${ZHPE_CONF_FILE}"
+MPIRUN_ARGS="${MPIRUN_ARGS} --map-by ppr:1:node --bind-to none"
+
+MPIRUN_ARGS_SINGLE_NODE=""
+MPIRUN_ARGS_SINGLE_NODE="${MPIRUN_ARGS_SINGLE_NODE} -np 2 --tune ${ZHPE_CONF_FILE} --bind-to none"
+
+MPI_NUMACTL="${SCRIPTDIR}/mpi_numactl.sh"
+
+
+EDGE_PORTNUM=2222
+GETTEST_PORTNUM=2223
+RINGPONG_PORTNUM=2224
+XINGPONG_PORTNUM=2225
+
+PROVNAME="zhpe"
+
+GETTEST_TIMEOUT=90
+RINGPONG_TIMEOUT=180
+XINGPONG_TIMEOUT=180
+EDGETEST_TIMEOUT=240
+EDGETEST_SERVER_TIMEOUT=600
+CLIENT_STATUS=0
+TEST_SPECIFIED=0
+
+#################
+
+# print usage
+usage ()  
+{
+    cat <<EOF >&2 
+USAGE:
+${SCRIPTNAME} [-h <host file>] [-p <test directory prefix>] -t [edgetest,getttest,ringpong,xingpong] 
+
+  -h <host file> :  file specifying hosts to run tests on (default ${MY_HOSTFILE})
+  -p <test directory prefix> : installation directory to be tested (default current directory ${TEST_DIR})
+  -t [edgetest,gettest,ringpong,xingpong] : which test to run 
+  -z <zhpe_backend_libfabric_prov> : backend provider for zhpe provider for libfabric (e.g., sockets, verbs)
+EOF
+    exit 1
+}
+
+
+# parse command line arguments
+while getopts 'h:p:t:z:s' OPT 
+do
+   case ${OPT} in
+   h)  
+       MY_HOSTFILE="${OPTARG}"
+       ;;  
+   p)  
+       TEST_DIR="${OPTARG}"
+       ;;  
+   t)  
+       MY_TEST="${OPTARG}"
+       TEST_SPECIFIED=1
+       ;;  
+   z)  
+       ZHPE_BACKEND_LIBFABRIC_PROV="${OPTARG}" 
+       ;;  
+   *)  
+       usage
+       ;;  
+   esac
+done
+
+if [[ `${TEST_DIR}/bin/fi_info | grep -w "${ZHPE_BACKEND_LIBFABRIC_PROV}" | wc -l` -lt 1 ]]
+then
+  echo "ZHPE_BACKEND_LIBFABRIC_PROV ${ZHPE_BACKEND_LIBFABRIC_PROV} does not seem to be supported"
+  echo "Here are supported options:"
+  ${TEST_DIR}/bin/fi_info | grep provider:
+  exit -1
+fi
+
+
+
+#############################
+
+
+# set up SERVERNAME and CLIENTNAME
+if [[ ! -f ${MY_HOSTFILE} ]]
+then
+  verify_or_exit -1 "Hostfile ${MY_HOSTFILE} does not exist."
+fi
+
+SERVERNAME=`awk '{print $1}' ${MY_HOSTFILE} | sed -e "1q;d"`
+CLIENTNAME=`awk '{print $1}' ${MY_HOSTFILE} | sed -e "2q;d"`
+
+EDGETEST_CLIENT_CMD_1_PARAMS="8K 0x40 0x1000 0x0 0x1 0xFE0 0x0"
+
+EDGETEST_CLIENT_CMD_2_PARAMS="8K 0x20 0x1000 0x0 0x1 0xFE0 0x0"
+
+GETTEST_CLIENT_CMD_1_PARAMS="1 1 1k"
+GETTEST_CLIENT_CMD_2_PARAMS="64 1k 1m"
+
+RINGPONG_CLIENT_CMD_1_PARAMS="1 1 1k"
+RINGPONG_CLIENT_CMD_2_PARAMS="64 1k 1m"
+
+XINGPONG_CLIENT_CMD_1_PARAMS="1 1 1k"
+XINGPONG_CLIENT_CMD_2_PARAMS="64 1k 1m"
+

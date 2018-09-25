@@ -1,0 +1,91 @@
+name:   fi_getinfo_test -s ... -p "zhpe"  result: Pass
+name:   fi_av_test -g ... -p "zhpe"  result: Pass
+name:   fi_dom_test -n 2 -p "zhpe"  result: Pass
+name:   fi_eq_test -p "zhpe"  result: Pass
+name:   fi_cq_test -p "zhpe"  result: Pass
+name:   fi_mr_test -p "zhpe"  result: Pass
+name:   fi_cntr_test -p "zhpe"  result: Pass
+name:   fi_dgram g00n13s -p "zhpe"  result: Pass
+name:   fi_rdm g00n13s -p "zhpe"  result: Pass
+name:   fi_msg g00n13s -p "zhpe"  result: Pass
+name:   fi_av_xfer -e rdm -p "zhpe"  result: Pass
+name:   fi_av_xfer -e dgram -p "zhpe"  result: Notrun
+name:   fi_cm_data -p "zhpe"  result: Notrun
+name:   fi_cq_data -e msg -p "zhpe"  result: Notrun
+name:   fi_cq_data -e rdm -p "zhpe"  result: Pass
+name:   fi_cq_data -e dgram -p "zhpe"  result: Notrun
+name:   fi_dgram -p "zhpe"  result: Notrun
+name:   fi_dgram_waitset -p "zhpe"  result: Notrun
+name:   fi_msg -p "zhpe"  result: Notrun
+name:   fi_msg_epoll -p "zhpe"  result: Notrun
+name:   fi_msg_sockets -p "zhpe"  result: Notrun
+name:   fi_poll -t queue -p "zhpe"  result: Pass
+name:   fi_poll -t counter -p "zhpe"  result: Pass
+name:   fi_rdm -p "zhpe"  result: Pass
+name:   fi_rdm_rma_simple -p "zhpe"  result: Pass
+name:   fi_rdm_rma_trigger -p "zhpe"  result: Pass
+name:   fi_shared_ctx -p "zhpe"  result: Notrun
+name:   fi_shared_ctx --no-tx-shared-ctx -p "zhpe"  result: Notrun
+name:   fi_shared_ctx --no-rx-shared-ctx -p "zhpe"  result: Notrun
+name:   fi_shared_ctx -e msg -p "zhpe"  result: Notrun
+name:   fi_shared_ctx -e msg --no-tx-shared-ctx -p "zhpe"  result: Notrun
+name:   fi_shared_ctx -e msg --no-rx-shared-ctx -p "zhpe"  result: Notrun
+name:   fi_shared_ctx -e dgram -p "zhpe"  result: Notrun
+name:   fi_shared_ctx -e dgram --no-tx-shared-ctx -p "zhpe"  result: Notrun
+name:   fi_shared_ctx -e dgram --no-rx-shared-ctx -p "zhpe"  result: Notrun
+name:   fi_rdm_tagged_peek -p "zhpe"  result: Pass
+name:   fi_scalable_ep -p "zhpe"  result: Notrun
+name:   fi_cmatose -p "zhpe"  result: Notrun
+name:   fi_rdm_shared_av -p "zhpe"  result: Pass
+name:   fi_multi_mr -e msg -V -p "zhpe"  result: Notrun
+name:   fi_multi_mr -e rdm -V -p "zhpe"  result: Notrun
+name:   fi_recv_cancel -e rdm -V -p "zhpe"  result: Pass
+name:   fi_unexpected_msg -e msg -i 10 -p "zhpe"  result: Notrun
+name:   fi_unexpected_msg -e rdm -i 10 -p "zhpe"  result: Pass
+name:   fi_unexpected_msg -e msg -S -i 10 -p "zhpe"  result: Notrun
+name:   fi_unexpected_msg -e rdm -S -i 10 -p "zhpe"  result: Pass
+name:   fi_inj_complete -e msg -p "zhpe"  result: Notrun
+name:   fi_inj_complete -e rdm -p "zhpe"  result: Pass
+name:   fi_inj_complete -e dgram -p "zhpe"  result: Notrun
+name:   fi_inj_complete -e msg -SR -p "zhpe"  result: Notrun
+name:   fi_inj_complete -e rdm -SR -p "zhpe"  result: Pass
+name:   fi_inj_complete -e dgram -SR -p "zhpe"  result: Notrun
+name:   fi_msg_pingpong -p "zhpe"  result: Notrun
+name:   fi_msg_pingpong -v -p "zhpe"  result: Notrun
+name:   fi_msg_pingpong -k -p "zhpe"  result: Notrun
+name:   fi_msg_pingpong -k -v -p "zhpe"  result: Notrun
+name:   fi_msg_bw -p "zhpe"  result: Notrun
+name:   fi_msg_bw -v -p "zhpe"  result: Notrun
+name:   fi_rma_bw -e msg -o write -p "zhpe"  result: Notrun
+name:   fi_rma_bw -e msg -o read -p "zhpe"  result: Notrun
+name:   fi_rma_bw -e msg -o writedata -p "zhpe"  result: Notrun
+name:   fi_rma_bw -e rdm -o write -p "zhpe"  result: Pass
+name:   fi_rma_bw -e rdm -o read -p "zhpe"  result: Pass
+name:   fi_rma_bw -e rdm -o writedata -p "zhpe"  result: Pass
+name:   fi_msg_rma -o write -p "zhpe"  result: Notrun
+name:   fi_msg_rma -o read -p "zhpe"  result: Notrun
+name:   fi_msg_rma -o writedata -p "zhpe"  result: Notrun
+name:   fi_msg_stream -p "zhpe"  result: Notrun
+name:   fi_rdm_atomic -o all -I 1000 -p "zhpe"  result: Pass
+name:   fi_rdm_cntr_pingpong -p "zhpe"  result: Pass
+name:   fi_rdm_multi_recv -p "zhpe"  result: Pass
+name:   fi_rdm_pingpong -p "zhpe"  result: Pass
+name:   fi_rdm_pingpong -v -p "zhpe"  result: Pass
+name:   fi_rdm_pingpong -k -p "zhpe"  result: Notrun
+name:   fi_rdm_pingpong -k -v -p "zhpe"  result: Notrun
+name:   fi_rdm_rma -o write -p "zhpe"  result: Pass
+name:   fi_rdm_rma -o read -p "zhpe"  result: Pass
+name:   fi_rdm_rma -o writedata -p "zhpe"  result: Pass
+name:   fi_rdm_tagged_pingpong -p "zhpe"  result: Pass
+name:   fi_rdm_tagged_pingpong -v -p "zhpe"  result: Pass
+name:   fi_rdm_tagged_bw -p "zhpe"  result: Pass
+name:   fi_rdm_tagged_bw -v -p "zhpe"  result: Pass
+name:   fi_dgram_pingpong -p "zhpe"  result: Notrun
+name:   fi_dgram_pingpong -k -p "zhpe"  result: Notrun
+name:   fi_rc_pingpong -p "zhpe"  result: Notrun
+# ------------------------------------------------------------------------------
+# Total Pass                                                39
+# Total Notrun/Excluded                                     47
+# Total Fail                                                 0
+# Percentage of Pass                                       100
+# ------------------------------------------------------------------------------

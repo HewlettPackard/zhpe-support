@@ -1,0 +1,57 @@
+#!/bin/bash -e
+
+S=/usr/bin/ssh
+
+COPYARGS=("$@")
+
+NUMARGS=$#
+
+FULLPATH=`which ssh`
+PARENTDIR=`dirname ${FULLPATH}`
+
+aliases="${PARENTDIR}/aliases"
+ALIASCMD=""
+if [[ -f ${aliases} ]]
+then
+  ALIASCMD="source ${aliases};"
+else
+  echo "${aliases} not found."
+  exit -1
+fi
+
+SAVED=""
+
+SKIP=0
+for i in `seq 0 ${NUMARGS}`
+do 
+  SAVED="${SAVED} ${COPYARGS[$(( i ))]}"
+
+   if [[ ${SKIP} -eq 0 ]]
+   then 
+      case ${COPYARGS[$i]} in
+         -[bcDEeFIiLlmOopQRSWw])
+             SKIP=1
+	     ;;
+         -[1246AaCfGgKkMNnqsTtVvXxYy]*)
+	     ;;
+         *)
+             break
+	    ;;
+        esac
+   else
+      SKIP=0
+   fi
+done
+
+shift ${i} 
+shift 1
+
+NEWARGS=$@
+
+if [[ $# -gt 0 ]]
+then
+   exec $S ${SAVED} "(${ALIASCMD} ${NEWARGS} )"
+else
+   echo "WARNING: ssh is ${0} and is not intended for interactive shells"
+   exit -1
+fi

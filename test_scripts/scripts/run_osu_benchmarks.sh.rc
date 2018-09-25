@@ -1,0 +1,21 @@
+TESTNAME="osu-micro-benchmarks-5.4.3"
+OSU_TIMEOUT=1000
+WITH_ZHPE=1
+WITH_LIBFABRIC=1
+
+RUN_COLLECTIVES=1
+
+. ${COMMONDIR}/zhpe_test_params.rc
+
+# set up TESTOUT_DIR
+TEST_SYSTEM_NICKNAME=`basename ${TEST_DIR}`
+TESTOUT_DIR=/tmp/${ME}/${TEST_SYSTEM_NICKNAME}-${NOW}/${TESTNAME}
+
+if [[ `${TEST_DIR}/bin/ompi_info --V | head -1 | sed -e "s/.*v//" | awk -F\. '{print $1}'` -ge 4 ]]
+then
+    RUN_OSC=1
+else
+    RUN_OSC=0
+fi
+
+TMPOUTNAME="osu_tmpout"

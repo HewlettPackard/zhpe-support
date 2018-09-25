@@ -1,0 +1,104 @@
+# command rc file for zhpe tests
+
+GENERIC_SETUP_RC="${COMMONDIR}/generic_test_params.rc"
+
+export ZHPE_BACKEND_LIBFABRIC_PROV=""
+export PROVNAME="zhpe"
+
+. ${GENERIC_SETUP_RC} 
+
+usage() {
+   cat <<EOF >&2 
+Usage:
+${SCRIPTNAME} -p <test directory prefix> [-f <config file>] [-h <hostfile>] [-t <test output dir>]
+
+  -f <alternative rc file> : rf file to be sourced (default ${SCRIPTDIR}/${SCRIPTNAME}.rc)
+  -h <host file> : host file containing test machines
+  -p <test directory prefix> : installation directory to be tested (default current directory ${TEST_DIR})
+  -t <test output directory prefix> : directory prefix for output
+  -z <zhpe_backend_libfabric_prov> : backend provider for zhpe provider for libfabric (e.g., sockets, verbs)
+EOF
+    exit 1
+}
+
+# default no debug
+TESTOUT_PREFIX=""
+CONFIG_OPT="" 
+MY_HOSTFILE=${HOME}/hostfile
+MY_EXTRA_RC_FILE=""
+
+while getopts 'f:h:p:t:z:' OPT
+do
+        case ${OPT} in
+        f)     
+           MY_EXTRA_RC_FILE=${OPTARG}
+           ;;  
+        h)     
+           MY_HOSTFILE=${OPTARG}
+           MY_HOSTFILE_ARGS=${OPTARG}
+           ;;  
+        p)  
+           TEST_DIR=${OPTARG}
+           echo "testing ${TEST_DIR}"
+           ;;  
+        t)  
+           TESTOUT_PREFIX="${OPTARG}"
+           ;;  
+        z)  
+           ZHPE_BACKEND_LIBFABRIC_PROV="${OPTARG}"
+           ;;  
+        *)     
+           usage
+           ;;  
+        esac   
+done
+
+if [[ "${ZHPE_BACKEND_LIBFABRIC_PROV}xxx" = "xxx" ]]
+then
+    echo "ZHPE_BACKEND_LIBFABRIC_PROV not set."
+    echo "Defaulting to sockets."
+    ZHPE_BACKEND_LIBFABRIC_PROV="sockets"
+fi
+
+TEST_SYSTEM_NICKNAME=`basename ${TEST_DIR}`
+
+if [[ "${TESTOUT_PREFIX}X" = "X" ]]
+then
+        TESTOUT_DIR="/tmp/${ME}/${TESTNAME}/${TEST_SYSTEM_NICKNAME}-${NOW}"
+fi
+
+WITH_ZHPE=1
+WITH_LIBFABRIC=1
+
+MPIRUN_ARGS=""
+MPIRUN_ARGS="${MPIRUN_ARGS} --tune ${ZHPE_CONF_FILE}"
+MPIRUN_ARGS="${MPIRUN_ARGS} --map-by ppr:1:node --bind-to none"
+
+MPIRUN_ARGS_SINGLE_NODE=""
+MPIRUN_ARGS_SINGLE_NODE="${MPIRUN_ARGS_SINGLE_NODE} -np 2 --tune ${ZHPE_CONF_FILE} --bind-to none"
+
+MPI_NUMACTL="${SCRIPTDIR}/mpi_numactl.sh"
+
+TIMEOUT_BIN="timeout"
+TIMEOUT_PERIOD=20
+
+EXTRA_SCRIPT_ARGS="-z ${ZHPE_BACKEND_LIBFABRIC_PROV}"
+if [[ -f ${MY_EXTRA_RC_FILE} ]]
+then
+  . ${MY_EXTRA_RC_FILE}
+  EXTRA_SCRIPT_ARGS="${EXTRA_SCRIPT_ARGS} -f ${MY_EXTRA_RC_FILE}"
+  echo "PROVNAME is now ${PROVNAME}"
+fi
+
+verify_set TEST_DIR
+export PATH=${TEST_DIR}/bin:/usr/bin:/sbin:/bin
+export LD_LIBRARY_PATH=${TEST_DIR}/lib
+
+# set up hosts
+verify_file_exists ${MY_HOSTFILE}
+
+HOST1=`grep -v \# ${MY_HOSTFILE} | awk '{print $1}' | sed -e "1q;d"`
+HOST2=`grep -v \# ${MY_HOSTFILE} | awk '{print $1}' | sed -e "2q;d"`
+HOST3=`grep -v \# ${MY_HOSTFILE} | awk '{print $1}' | sed -e "3q;d"`
+HOST4=`grep -v \# ${MY_HOSTFILE} | awk '{print $1}' | sed -e "4q;d"`
+

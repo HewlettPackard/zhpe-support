@@ -1,0 +1,21 @@
+TESTNAME="fabtests"
+PROVNAME=zhpe
+
+. ${COMMONDIR}/zhpe_test_params.rc
+
+vverify_set ZHPE_BACKEND_LIBFABRIC_PROV
+
+TESTOUT_DIR=/tmp/${ME}/${TEST_SYSTEM_NICKNAME}-${NOW}/${TESTNAME}
+
+docmd mkdir -p ${TESTOUT_DIR}
+
+FABTESTS_OUTFILE="${TESTOUT_DIR}/fabtests-summary.out"
+FABTESTS_DETAILED_OUTFILE="${TESTOUT_DIR}/fabtests-detailed.out"
+FABTESTS_GOOD_OUTFILE="${SCRIPTDIR}/fabtest-good-summary"
+
+HOST1=`awk '{print $1}' ${MY_HOSTFILE} | sed -e "1q;d"`
+HOST2=`awk '{print $1}' ${MY_HOSTFILE} | sed -e "2q;d"`
+
+GOOD_IP=`ssh -A -Y ${HOST1} ifconfig | grep "inet addr:" | head -1 | awk '{print $2}' | awk -F: '{print $2}'`
+
+

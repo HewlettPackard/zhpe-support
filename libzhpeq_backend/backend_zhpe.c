@@ -40,7 +40,8 @@
 
 static int              dev_fd = -1;
 
-static struct zhpe_shared_data *shared_data;
+static struct zhpe_global_shared_data *shared_global;
+static struct zhpe_local_shared_data *shared_local;
 
 struct zdom_data {
     pthread_mutex_t     node_mutex;
@@ -101,8 +102,6 @@ static int zhpe_lib_init(struct zhpeq_attr *attr)
     union zhpe_op       op;
     union zhpe_req      *req = &op.req;
     union zhpe_rsp      *rsp = &op.rsp;
-    ulong               check_val;
-    ulong               check_off;
 
     dev_fd = open(DEV_NAME, O_RDWR);
     if (dev_fd == -1) {
@@ -116,27 +115,31 @@ static int zhpe_lib_init(struct zhpeq_attr *attr)
     if (ret < 0)
         goto done;
 
-    shared_data = do_mmap(NULL, rsp->init.shared_size, PROT_READ, MAP_SHARED,
-                          dev_fd, rsp->init.shared_offset, &ret);
-    if (!shared_data)
+    shared_global = do_mmap(NULL, rsp->init.global_shared_size, PROT_READ,
+                            MAP_SHARED, dev_fd, rsp->init.global_shared_offset,
+                            &ret);
+    if (!shared_global)
+        goto done;
+    shared_local = do_mmap(NULL, rsp->init.local_shared_size, PROT_READ,
+                           MAP_SHARED, dev_fd, rsp->init.local_shared_offset,
+                           &ret);
+    if (!shared_local)
         goto done;
     ret = -EINVAL;
-    if (!expected_saw("shared_magic", ZHPE_MAGIC, shared_data->magic))
+    if (!expected_saw("global_magic", ZHPE_MAGIC, shared_global->magic))
         goto done;
-    if (!expected_saw("shared_version", ZHPE_SHARED_VERSION,
-                      shared_data->version))
+    if (!expected_saw("global_version", ZHPE_GLOBAL_SHARED_VERSION,
+                      shared_global->version))
+        goto done;
+    if (!expected_saw("local_magic", ZHPE_MAGIC, shared_local->magic))
+        goto done;
+    if (!expected_saw("local_version", ZHPE_LOCAL_SHARED_VERSION,
+                      shared_local->version))
         goto done;
     memcpy(zhpeq_uuid, rsp->init.uuid, sizeof(zhpeq_uuid));
 
-    check_off = rsp->init.shared_size - sizeof(ulong);
-    if (check_off >= sizeof(*shared_data)) {
-        check_off += rsp->init.shared_offset;
-        check_val = *(ulong *)((void *)shared_data + check_off);
-        if (!expected_saw("shared_check_last", check_off, check_val))
-            goto done;
-    }
     attr->backend = ZHPEQ_BACKEND_ZHPE;
-    attr->z = shared_data->default_attr;
+    attr->z = shared_global->default_attr;
 
     ret = 0;
  done:

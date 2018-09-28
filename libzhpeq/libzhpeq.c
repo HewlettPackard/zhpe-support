@@ -934,7 +934,7 @@ ssize_t zhpeq_cq_read(struct zhpeq *zq, struct zhpeq_cq_entry *entries,
     for (i = 0; i < n_entries;) {
         idx = ((zq->q_head + i) & qmask);
         cqe = zq->cq + idx;
-        validp = &cqe->entry.valid;
+        validp = (void *)cqe;
         if ((*validp & ZHPE_HW_CQ_VALID) != cq_valid(zq->q_head + i, qmask)) {
             if (i > 0 || !b_ops->cq_poll || polled)
                 break;

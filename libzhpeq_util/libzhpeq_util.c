@@ -685,7 +685,7 @@ char *_sockaddr_str(const char *callf, uint line, const void *addr)
     const size_t        ipv6_dual_pre_len = sizeof(ipv6_dual_pre) - 1;
     size_t              ret_len;
 
-    ret = _zhpeu_malloc(INET6_ADDRSTRLEN, callf, line);
+    ret = zhpeu_malloc(INET6_ADDRSTRLEN, callf, line);
     if (!ret)
         goto done;
     if (!sockaddr_ntop(addr, ret, INET6_ADDRSTRLEN)) {
@@ -816,7 +816,7 @@ int _sock_recv_var_blob(const char *callf, uint line,
     if (req == UINT32_MAX)
         goto done;
     *blob_len = req;
-    *blob = _zhpeu_malloc(req + extra_len, callf, line);
+    *blob = zhpeu_malloc(req + extra_len, callf, line);
     if (!*blob) {
         ret = -errno;
         goto done;
@@ -937,12 +937,12 @@ int sockaddr_cmpx(const union sockaddr_in46 *sa1,
 
 #undef posix_memalign
 
-int _zhpeu_posix_memalign(void **memptr, size_t alignment, size_t size,
-                          const char *callf, uint line)
+int zhpeu_posix_memalign(void **memptr, size_t alignment, size_t size,
+                         const char *callf, uint line)
 {
     int                 ret = posix_memalign(memptr, alignment, size);
 
-    if (unlikely(ret > 0)) {
+    if (unlikely(ret)) {
         *memptr = NULL;
         print_func_errn(callf, line, "posix_memalign", size, false, ret);
     }
@@ -952,7 +952,7 @@ int _zhpeu_posix_memalign(void **memptr, size_t alignment, size_t size,
 
 #undef malloc
 
-void *_zhpeu_malloc(size_t size, const char *callf, uint line)
+void *zhpeu_malloc(size_t size, const char *callf, uint line)
 {
     void                *ret = malloc(size);
     int                 save_err;
@@ -968,7 +968,7 @@ void *_zhpeu_malloc(size_t size, const char *callf, uint line)
 
 #undef realloc
 
-void *_zhpeu_realloc(void *ptr, size_t size, const char *callf, uint line)
+void *zhpeu_realloc(void *ptr, size_t size, const char *callf, uint line)
 {
     void                *ret = realloc(ptr, size);
     int                 save_err;
@@ -984,7 +984,7 @@ void *_zhpeu_realloc(void *ptr, size_t size, const char *callf, uint line)
 
 #undef calloc
 
-void *_zhpeu_calloc(size_t nmemb, size_t size, const char *callf, uint line)
+void *zhpeu_calloc(size_t nmemb, size_t size, const char *callf, uint line)
 {
     void                *ret = calloc(nmemb, size);
     int                 save_err;
@@ -1000,21 +1000,30 @@ void *_zhpeu_calloc(size_t nmemb, size_t size, const char *callf, uint line)
 
 #undef free
 
-void _zhpeu_free(void *ptr, const char *callf, uint line)
+void zhpeu_free(void *ptr, const char *callf, uint line)
 {
     /* XXX:Implement alloc/free tracking? */
     free(ptr);
 }
 
-void *_zhpeu_calloc_aligned(size_t alignment, size_t nmemb, size_t size,
-                            const char *callf, uint line)
+void *zhpeu_malloc_aligned(size_t alignment, size_t size,
+                           const char *callf, uint line)
 {
     void                *ret;
-    int                 rc;
+
+    (void)zhpeu_posix_memalign(&ret, alignment, size, callf, line);
+
+    return ret;
+}
+
+void *zhpeu_calloc_aligned(size_t alignment, size_t nmemb, size_t size,
+                           const char *callf, uint line)
+{
+    void                *ret;
 
     size *= nmemb;
-    rc = _zhpeu_posix_memalign(&ret, alignment, size, callf, line);
-    if (likely(!rc))
+    (void)zhpeu_posix_memalign(&ret, alignment, size, callf, line);
+    if (likely(ret))
         memset(ret, 0, size);
 
     return ret;

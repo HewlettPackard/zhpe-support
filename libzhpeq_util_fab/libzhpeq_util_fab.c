@@ -34,9 +34,11 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <zhpeq_util_fab.h>
+#define _GNU_SOURCE
+#include <search.h>
+#undef _GNU_SOUCE
 
-#include <assert.h>
+#include <zhpeq_util_fab.h>
 
 void fab_dom_init(struct fab_dom *dom)
 {
@@ -45,12 +47,25 @@ void fab_dom_init(struct fab_dom *dom)
     atomic_fetch_add(&dom->use_count, 1);
 }
 
-struct fab_dom *_fab_dom_alloc(const char *callf, uint line)
+static void onfree_dom(struct fab_dom *dom, void *data)
 {
-    struct fab_dom      *ret = _zhpeu_malloc(sizeof(*ret), callf, line);
+    free(dom);
+}
 
-    if (ret)
-        ret->allocated = true;
+struct fab_dom *_fab_dom_alloc(void (*onfree)(struct fab_dom *dom, void *data),
+                               void *data, const char *callf, uint line)
+{
+    struct fab_dom      *ret;
+
+    ret = zhpeu_malloc_aligned(L1_CACHE_BYTES, sizeof(*ret), callf, line);
+    if (ret) {
+        fab_dom_init(ret);
+        if (onfree) {
+            ret->onfree = onfree;
+            ret->onfree_data = data;
+        } else
+            ret->onfree = onfree_dom;
+    }
 
     return ret;
 }
@@ -60,19 +75,36 @@ void fab_conn_init(struct fab_dom *dom, struct fab_conn *conn)
     memset(conn, 0, sizeof(*conn));
     conn->dom = dom;
     atomic_fetch_add(&dom->use_count, 1);
+    atomic_fetch_add(&conn->use_count, 1);
 }
 
-struct fab_conn *_fab_conn_alloc(const char *callf, uint line,
-                                 struct fab_dom *dom)
+static void onfree_conn(struct fab_conn *conn, void *data)
 {
-    struct fab_conn     *ret = _zhpeu_malloc(sizeof(*ret), callf, line);
+    free(conn);
+}
 
+struct fab_conn *_fab_conn_alloc(struct fab_dom *dom,
+                                 void (*onfree)(struct fab_conn *conn,
+                                                void *data),
+                                 void *data, const char *callf, uint line)
+{
+    struct fab_conn     *ret;
+
+    ret = zhpeu_malloc_aligned(L1_CACHE_BYTES, sizeof(*ret), callf, line);
     if (ret) {
-        ret->allocated = true;
         fab_conn_init(dom, ret);
+        if (onfree) {
+            ret->onfree = onfree;
+            ret->onfree_data = data;
+        } else
+            ret->onfree = onfree_conn;
     }
 
     return ret;
+}
+
+static void dummy_free(void *key)
+{
 }
 
 void fab_finfo_free(struct fab_info *finfo)
@@ -83,49 +115,71 @@ void fab_finfo_free(struct fab_info *finfo)
     free(finfo->node);
 }
 
-void fab_dom_free(struct fab_dom *dom)
+int fab_dom_free(struct fab_dom *dom)
 {
+    int                 ret = 0;
     int32_t             use_count;
-    struct fab_av_use   *use;
-    struct fab_av_use   *next;
+    int                 rc;
 
     if (!dom)
-        return;
+        return 0;
 
     use_count = atomic_fetch_sub(&dom->use_count, 1);
     assert(use_count > 0);
     if (use_count > 1)
-        return;
+        return 1;
 
     fab_finfo_free(&dom->finfo);
-    FI_CLOSE(dom->av);
-    FI_CLOSE(dom->domain);
-    FI_CLOSE(dom->fabric);
+    rc = FI_CLOSE(dom->av);
+    ret = (ret >= 0 ? rc : ret);
+    rc = FI_CLOSE(dom->domain);
+    ret = (ret >= 0 ? rc : ret);
+    rc = FI_CLOSE(dom->fabric);
+    ret = (ret >= 0 ? rc : ret);
 
-    for (use = dom->av_head; use; use = next) {
-        next = use->next;
-        free(use);
-    }
-    if (dom->allocated)
-        free(dom);
+    tdestroy(dom->av_fi_tree, dummy_free);
+    tdestroy(dom->av_sa_tree, free);
+
+    if (dom->onfree)
+        dom->onfree(dom, dom->onfree_data);
+
+    return (ret > 0 ? 0 : ret);
 }
 
-void fab_conn_free(struct fab_conn *conn)
+int fab_conn_free(struct fab_conn *conn)
 {
+    int                 ret = 0;
+    int32_t             use_count;
+    int                 rc;
+
     if (!conn)
-        return;
+        return 0;
 
-    fab_mrmem_free(&conn->mrmem);
-    FI_CLOSE(conn->ep);
-    FI_CLOSE(conn->pep);
-    FI_CLOSE(conn->rx_cq);
-    FI_CLOSE(conn->tx_cq);
-    FI_CLOSE(conn->eq);
+    use_count = atomic_fetch_sub(&conn->use_count, 1);
+    assert(use_count > 0);
+    if (use_count > 1)
+        return 1;
+
+    rc = fab_mrmem_free(&conn->mrmem);
+    ret = (ret >= 0 ? rc : ret);
+    rc = FI_CLOSE(conn->ep);
+    ret = (ret >= 0 ? rc : ret);
+    rc = FI_CLOSE(conn->pep);
+    ret = (ret >= 0 ? rc : ret);
+    rc = FI_CLOSE(conn->rx_cq);
+    ret = (ret >= 0 ? rc : ret);
+    rc = FI_CLOSE(conn->tx_cq);
+    ret = (ret >= 0 ? rc : ret);
+    rc = FI_CLOSE(conn->eq);
+    ret = (ret >= 0 ? rc : ret);
     fab_finfo_free(&conn->finfo);
-    fab_dom_free(conn->dom);
+    rc = fab_dom_free(conn->dom);
+    ret = (ret >= 0 ? rc : ret);
 
-    if (conn->allocated)
-        free(conn);
+    if (conn->onfree)
+        conn->onfree(conn, conn->onfree_data);
+
+    return (ret > 0 ? 0 : ret);
 }
 
 static int finfo_init(const char *callf, uint line,
@@ -158,7 +212,7 @@ static int finfo_init(const char *callf, uint line,
      */
     finfo->hints = fi_dupinfo(hints);
     if (!finfo->hints) {
-            print_func_err(callf, line, "fi_dupinfo", "", ret);
+            print_func_fi_err(callf, line, "fi_dupinfo", "", ret);
             goto done;
     }
     /* Provider, domain, and ep_type ignored if hints specified. */
@@ -269,12 +323,6 @@ int _fab_dom_setup(const char *callf, uint line,
             print_func_fi_err(callf, line, "fi_av_open", "", ret);
             goto done;
         }
-        dom->av_head = dom->av_tail = _zhpeu_calloc(1, sizeof(*dom->av_head),
-                                                    callf, line);
-        if (!dom->av_head) {
-            ret = -FI_ENOMEM;
-            goto done;
-        }
     }
 
  done:
@@ -331,7 +379,7 @@ int _fab_listener_setup(const char *callf, uint line, int backlog,
     }
     ret = fi_listen(listener->pep);
     if (ret < 0) {
-	print_func_fi_err(__FUNCTION__, __LINE__, "fi_listen", "", ret);
+	print_func_fi_err(__func__, __LINE__, "fi_listen", "", ret);
 	goto done;
     }
 
@@ -392,7 +440,7 @@ int _fab_connect(const char *callf, uint line, int timeout,
         goto done;
     ret = fi_connect(conn->ep, info->dest_addr, NULL, 0);
     if (ret) {
-	print_func_fi_err(__FUNCTION__, __LINE__, "fi_connect", "", ret);
+	print_func_fi_err(__func__, __LINE__, "fi_connect", "", ret);
 	goto done;
     }
     /* Wait to be fully connected. */
@@ -503,7 +551,7 @@ int _fab_eq_cm_event(const char *callf, uint line,
                 goto done;
             }
             ret = -fi_eq_err.err;
-            print_func_fi_err(callf, line, __FUNCTION__, "", ret);
+            print_func_fi_err(callf, line, __func__, "", ret);
             goto done;
         }
 	print_func_fi_err(callf, line, "fi_eq_sread", "", ret);
@@ -546,13 +594,18 @@ int _fab_mrmem_alloc(const char *callf, uint line,
     return ret;
 }
 
-void fab_mrmem_free(struct fab_mrmem *mrmem)
+int fab_mrmem_free(struct fab_mrmem *mrmem)
 {
-    if (!mrmem)
-        return;
+    int                 ret = 0;
 
-    FI_CLOSE(mrmem->mr);
+    if (!mrmem)
+        goto done;
+
+    ret = FI_CLOSE(mrmem->mr);
     free(mrmem->mem);
+
+ done:
+    return ret;
 }
 
 ssize_t _fab_completions(const char *callf, uint line,
@@ -617,7 +670,7 @@ void fab_print_info(struct fab_conn *conn)
     if (conn)
         info = fab_conn_info(conn);
     else {
-        rc = finfo_getinfo(__FUNCTION__, __LINE__, &finfo);
+        rc = finfo_getinfo(__func__, __LINE__, &finfo);
         if (rc < 0)
             goto done;
         info = finfo.info;
@@ -828,13 +881,64 @@ int _fab_av_xchg(const char *callf, uint line, struct fab_conn *conn,
     return ret;
 }
 
+struct av_tree_entry {
+    union sockaddr_in46 sa;
+    fi_addr_t           fi_addr;
+    int32_t             use_count;
+};
+
+static int compare_sa(const void *key1, const void *key2)
+{
+    return sockaddr_cmp(key1, key2, false);
+}
+
+static int compare_fi(const void *key1, const void *key2)
+{
+    fi_addr_t           fi_addr1 = *(const fi_addr_t *)key1;
+    fi_addr_t           fi_addr2 = *(const fi_addr_t *)key2;
+
+    if (fi_addr1 < fi_addr2)
+        return -1;
+    if (fi_addr1 > fi_addr2)
+        return 1;
+
+    return 0;
+}
+
 int _fab_av_insert(const char *callf, uint line, struct fab_dom *dom,
                    union sockaddr_in46 *saddr, fi_addr_t *fi_addr)
 {
     int                 ret;
-    struct fab_av_use   *use;
+    struct av_tree_entry *ave = NULL;
+    void                **tval;
 
     mutex_lock(&dom->av_mutex);
+    if (!sockaddr_len(saddr)) {
+        ret = -FI_EINVAL;
+        goto done;
+    }
+    tval = tsearch(saddr, &dom->av_sa_tree, compare_sa);
+    if (!tval) {
+        ret = -FI_ENOMEM;
+        print_func_fi_err(callf, line, "tsearch", "", ret);
+        goto done;
+    }
+    ave = *tval;
+    if (ave != (void *)saddr) {
+        ret = 1;
+        *fi_addr = ave->fi_addr;
+        ave->use_count++;
+        goto done;
+    } else {
+        ave = *tval = zhpeu_malloc(sizeof(*ave), callf, line);
+        if (!ave) {
+            ret = -FI_ENOMEM;
+            goto done;
+        }
+        sockaddr_cpy(&ave->sa, saddr);
+        ave->fi_addr = FI_ADDR_UNSPEC;
+        ave->use_count = 1;
+    }
     ret = fi_av_insert(dom->av, saddr, 1,  fi_addr, 0, NULL);
     if (ret < 0) {
 	print_func_fi_err(callf, line, "fi_av_insert", "", ret);
@@ -843,26 +947,28 @@ int _fab_av_insert(const char *callf, uint line, struct fab_dom *dom,
         ret = -FI_EINVAL;
         goto done;
     }
-    /* We really never expect more than one. */
-    for (use = dom->av_tail;
-         *fi_addr  > use->base + sizeof(use->use_count);
-         use = use->next) {
-        if (use->next)
-            continue;
-        use->next = _zhpeu_calloc( 1, sizeof(*use), callf, line);
-        if (!use->next) {
-            ret = -FI_ENOMEM;
-            goto done;
-        }
-        dom->av_tail = use->next;
-        use->next->base = use->base + sizeof(use->use_count);
+    ave->fi_addr = *fi_addr;
+    /* Going to use a tree, since it will be more general and
+     * we don't really just don't want o(n) in the worst case.
+     */
+    tval = tsearch(&ave->fi_addr, &dom->av_fi_tree, compare_fi);
+    if (!tval) {
+        ret = -FI_ENOMEM;
+        print_func_fi_err(callf, line, "tsearch", "", ret);
+        goto done;
     }
-    use->use_count[*fi_addr - use->base]++;
+    assert(*tval == &ave->fi_addr);
+    ret = 0;
 
  done:
-    mutex_unlock(&dom->av_mutex);
-    if (ret < 0)
+    if (ret < 0) {
+        if (ave) {
+            (void)tdelete(ave, &dom->av_sa_tree, compare_sa);
+            free(ave);
+        }
         *fi_addr = FI_ADDR_UNSPEC;
+    }
+    mutex_unlock(&dom->av_mutex);
 
     return ret;
 }
@@ -870,25 +976,33 @@ int _fab_av_insert(const char *callf, uint line, struct fab_dom *dom,
 int _fab_av_remove(const char *callf, uint line, struct fab_dom *dom,
                    fi_addr_t fi_addr)
 {
-    int                 ret = -FI_EINVAL;
-    struct fab_av_use   *use;
+    int                 ret;
+    struct av_tree_entry *ave;
+    void                **tval;
 
     mutex_lock(&dom->av_mutex);
-    for (use = dom->av_head;
-         use && fi_addr > use->base + sizeof(use->use_count);
-         use = use->next);
-    if (!use || use->use_count[fi_addr - use->base] <= 0)
+    tval = tfind(&fi_addr, &dom->av_fi_tree, compare_fi);
+    if (!tval) {
+        ret = -FI_ENOENT;
         goto done;
-    if (--(use->use_count[fi_addr - use->base]) > 0) {
+    }
+    assert(*tval != &fi_addr);
+    ave = container_of((fi_addr_t *)*tval, struct av_tree_entry, fi_addr);
+    if (--(ave->use_count)) {
         ret = 0;
         goto done;
     }
+    (void)tdelete(&fi_addr, &dom->av_fi_tree, compare_fi);
+    (void)tdelete(ave, &dom->av_sa_tree, compare_sa);
+    free(ave);
+
     ret = fi_av_remove(dom->av, &fi_addr, 1, 0);
     if (ret < 0)
 	print_func_fi_err(callf, line, "fi_av_remove", "", ret);
 
  done:
     mutex_unlock(&dom->av_mutex);
+
     return ret;
 }
 

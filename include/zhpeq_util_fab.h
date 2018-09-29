@@ -71,12 +71,6 @@ struct fab_mrmem {
     void                *mem;
 };
 
-struct fab_av_use {
-    struct fab_av_use   *next;
-    fi_addr_t           base;
-    int32_t             use_count[64];
-};
-
 struct fab_info {
     char                *node;
     char                *service;
@@ -90,11 +84,12 @@ struct fab_dom {
     struct fid_fabric   *fabric;
     struct fid_domain   *domain;
     struct fid_av       *av;
-    struct fab_av_use   *av_head;
-    struct fab_av_use   *av_tail;
+    void                *av_sa_tree;
+    void                *av_fi_tree;
     pthread_mutex_t     av_mutex;
+    void                (*onfree)(struct fab_dom *dom, void *data);
+    void                *onfree_data;
     int32_t             use_count;
-    bool                allocated;
 };
 
 struct fab_conn {
@@ -106,7 +101,9 @@ struct fab_conn {
     struct fid_ep       *ep;
     struct fid_pep      *pep;
     struct fab_mrmem    mrmem;
-    bool                allocated;
+    void                (*onfree)(struct fab_conn *conn, void *data);
+    void                *onfree_data;
+    int32_t             use_count;
 };
 
 static inline void print_func_fi_err(const char *callf, uint line,
@@ -124,17 +121,18 @@ static inline void print_func_fi_err(const char *callf, uint line,
 }
 
 #define FI_CLOSE(_ptr)                                          \
-do {                                                            \
-    int _rc;                                                    \
+({                                                              \
+    int __ret = 0;                                              \
+    typeof(_ptr) __ptr = (_ptr);                                \
                                                                 \
-    if (_ptr) {                                                 \
-        _rc = fi_close(&(_ptr)->fid);                           \
-        if (_rc < 0)                                            \
-            print_func_fi_err(__FUNCTION__, __LINE__,           \
-                              "fi_close", #_ptr, _rc);          \
-        (_ptr) = NULL;                                          \
+    if (__ptr) {                                                \
+        __ret = fi_close(&(__ptr)->fid);                        \
+        if (__ret < 0)                                          \
+            print_func_fi_err(__func__, __LINE__,               \
+                              "fi_close", #_ptr, __ret);        \
     }                                                           \
-} while (0)
+    __ret;                                                      \
+})
 
 static inline void print_func_fi_errn(const char *callf, uint line,
                                       const char *errf, llong arg,
@@ -153,19 +151,22 @@ static inline void print_func_fi_errn(const char *callf, uint line,
 void fab_dom_init(struct fab_dom *dom);
 void fab_conn_init(struct fab_dom *dom, struct fab_conn *conn);
 
-struct fab_dom *_fab_dom_alloc(const char *callf, uint line);
+struct fab_dom *_fab_dom_alloc(void (*onfree)(struct fab_dom *dom, void *data),
+                               void *data, const char *callf, uint line);
 
 #define fab_dom_alloc(...) \
-    _fab_dom_alloc(__FUNCTION__, __LINE__, __VA_ARGS__)
+    _fab_dom_alloc(__VA_ARGS__, __func__, __LINE__)
 
-struct fab_conn *_fab_conn_alloc(const char *callf, uint line,
-                                 struct fab_dom *dom);
+struct fab_conn *_fab_conn_alloc(struct fab_dom *dom,
+                                 void (*onfree)(struct fab_conn *conn,
+                                                void *data),
+                                 void *data, const char *callf, uint line);
 
 #define fab_conn_alloc(...) \
-    _fab_conn_alloc(__FUNCTION__, __LINE__, __VA_ARGS__)
+    _fab_conn_alloc(__VA_ARGS__, __func__, __LINE__)
 
-void fab_dom_free(struct fab_dom *dom);
-void fab_conn_free(struct fab_conn *conn);
+int fab_dom_free(struct fab_dom *dom);
+int fab_conn_free(struct fab_conn *conn);
 
 int _fab_dom_setup(const char *callf, uint line,
                    const char *service, const char *node, bool passive,
@@ -173,20 +174,20 @@ int _fab_dom_setup(const char *callf, uint line,
                    enum fi_ep_type ep_type, struct fab_dom *dom);
 
 #define fab_dom_setup(...) \
-    _fab_dom_setup(__FUNCTION__, __LINE__, __VA_ARGS__)
+    _fab_dom_setup(__func__, __LINE__, __VA_ARGS__)
 
 int _fab_dom_getinfo(const char *callf, uint line,
                      const char *service, const char *node, bool passive,
                      struct fab_dom *dom, struct fab_info *finfo);
 
 #define fab_dom_getinfo(...) \
-    _fab_dom_getinfo(__FUNCTION__, __LINE__, __VA_ARGS__)
+    _fab_dom_getinfo(__func__, __LINE__, __VA_ARGS__)
 
 int _fab_listener_setup(const char *callf, uint line, int backlog,
                         struct fab_conn *listener);
 
 #define fab_listener_setup(...) \
-    _fab_listener_setup(__FUNCTION__, __LINE__, __VA_ARGS__)
+    _fab_listener_setup(__func__, __LINE__, __VA_ARGS__)
 
 int _fab_listener_wait_and_accept(const char *callf, uint line,
                                   struct fab_conn *listener, int timeout,
@@ -194,84 +195,84 @@ int _fab_listener_wait_and_accept(const char *callf, uint line,
                                   struct fab_conn *conn);
 
 #define fab_listener_wait_and_accept(...) \
-    _fab_listener_wait_and_accept(__FUNCTION__, __LINE__, __VA_ARGS__)
+    _fab_listener_wait_and_accept(__func__, __LINE__, __VA_ARGS__)
 
 int _fab_connect(const char *callf, uint line, int timeout,
                  size_t tx_size, size_t rx_size, struct fab_conn *conn);
 
 #define fab_connect(...) \
-    _fab_connect(__FUNCTION__, __LINE__, __VA_ARGS__)
+    _fab_connect(__func__, __LINE__, __VA_ARGS__)
 
 int _fab_av_ep(const char *callf, uint line, struct fab_conn *conn,
                size_t tx_size, size_t rx_size);
 
 #define fab_av_ep(...) \
-    _fab_av_ep(__FUNCTION__, __LINE__, __VA_ARGS__)
+    _fab_av_ep(__func__, __LINE__, __VA_ARGS__)
 
 int _fab_av_xchg_addr(const char *callf, uint line, struct fab_conn *conn,
                  int sock_fd, union sockaddr_in46 *ep_addr);
 
 #define fab_av_xchg_addr(...) \
-    _fab_av_xchg_addr(__FUNCTION__, __LINE__, __VA_ARGS__)
+    _fab_av_xchg_addr(__func__, __LINE__, __VA_ARGS__)
 
 int _fab_av_xchg(const char *callf, uint line, struct fab_conn *conn,
                  int sock_fd, int timeout, fi_addr_t *fi_addr);
 
 #define fab_av_xchg(...) \
-    _fab_av_xchg(__FUNCTION__, __LINE__, __VA_ARGS__)
+    _fab_av_xchg(__func__, __LINE__, __VA_ARGS__)
 
 int _fab_av_insert(const char *callf, uint line, struct fab_dom *dom,
                    union sockaddr_in46 *saddr, fi_addr_t *fi_addr);
 
 #define fab_av_insert(...) \
-    _fab_av_insert(__FUNCTION__, __LINE__, __VA_ARGS__)
+    _fab_av_insert(__func__, __LINE__, __VA_ARGS__)
 
 int _fab_av_remove(const char *callf, uint line, struct fab_dom *dom,
                    fi_addr_t fi_addr);
 
 #define fab_av_remove(...) \
-    _fab_av_remove(__FUNCTION__, __LINE__, __VA_ARGS__)
+    _fab_av_remove(__func__, __LINE__, __VA_ARGS__)
 
 int _fab_av_wait_send(const char *callf, uint line, struct fab_conn *conn,
                       fi_addr_t fi_addr,
                       int (*retry)(void *retry_arg), void *retry_arg);
 
 #define fab_av_wait_send(...) \
-    _fab_av_wait_send(__FUNCTION__, __LINE__, __VA_ARGS__)
+    _fab_av_wait_send(__func__, __LINE__, __VA_ARGS__)
 
 int _fab_av_wait_recv(const char *callf, uint line, struct fab_conn *conn,
                       fi_addr_t fi_addr,
                       int (*retry)(void *retry_arg), void *retry_arg);
 
 #define fab_av_wait_recv(...) \
-    _fab_av_wait_recv(__FUNCTION__, __LINE__, __VA_ARGS__)
+    _fab_av_wait_recv(__func__, __LINE__, __VA_ARGS__)
 
 int _fab_listener_setup(const char *callf, uint line, int backlog,
                         struct fab_conn *listener);
 #define fab_listener_setup(...) \
-    _fab_listener_setup(__FUNCTION__, __LINE__, __VA_ARGS__)
+    _fab_listener_setup(__func__, __LINE__, __VA_ARGS__)
 
 int _fab_ep_setup(const char *callf, uint line,
                   struct fab_conn *conn, struct fid_eq *eq,
                   size_t tx_size, size_t rx_size);
 
 #define fab_ep_setup(...) \
-    _fab_ep_setup(__FUNCTION__, __LINE__, __VA_ARGS__)
+    _fab_ep_setup(__func__, __LINE__, __VA_ARGS__)
 
 int _fab_eq_cm_event(const char *callf, uint line,
                      struct fab_conn *conn, int timeout, uint32_t expected,
                      struct fi_eq_cm_entry *entry);
 
 #define fab_eq_cm_event(...) \
-    _fab_eq_cm_event(__FUNCTION__, __LINE__, __VA_ARGS__)
+    _fab_eq_cm_event(__func__, __LINE__, __VA_ARGS__)
 
 int _fab_mrmem_alloc(const char *callf, uint line, struct fab_conn *conn,
                      struct fab_mrmem *mrmem, size_t len, uint64_t access);
 
 #define fab_mrmem_alloc(...) \
-    _fab_mrmem_alloc(__FUNCTION__, __LINE__, __VA_ARGS__)
+    _fab_mrmem_alloc(__func__, __LINE__, __VA_ARGS__)
 
-void fab_mrmem_free(struct fab_mrmem *mrmem);
+int fab_mrmem_free(struct fab_mrmem *mrmem);
 
 ssize_t _fab_completions(const char *callf, uint line,
                          struct fid_cq *cq, size_t count,
@@ -279,7 +280,7 @@ ssize_t _fab_completions(const char *callf, uint line,
                          void *arg);
 
 #define fab_completions(...) \
-    _fab_completions(__FUNCTION__, __LINE__, __VA_ARGS__)
+    _fab_completions(__func__, __LINE__, __VA_ARGS__)
 
 void fab_print_info(struct fab_conn *conn);
 
@@ -289,7 +290,7 @@ int _fab_cq_sread(const char *callf, uint line,
                   struct fi_cq_err_entry *fi_cqerr);
 
 #define fab_cq_sread(...) \
-    _fab_cq_sread(__FUNCTION__, __LINE__, __VA_ARGS__)
+    _fab_cq_sread(__func__, __LINE__, __VA_ARGS__)
 
 int _fab_cq_read(const char *callf, uint line,
                  struct fid_cq *cq, struct fi_cq_tagged_entry *fi_cqe,

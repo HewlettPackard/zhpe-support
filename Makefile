@@ -5,6 +5,7 @@ BUILD := $(MAKEFILE_PATH)/build
 TARGETS = \
 	libzhpeq \
 	libzhpeq_backend \
+	libzhpeq_lf \
 	libzhpeq_util \
 	libzhpeq_util_fab \
 	mpi_tests \
@@ -23,6 +24,9 @@ libzhpeq: libzhpeq_util
 	make -C $(BUILD)/$@ VERBOSE=$(VERBOSE) install
 
 libzhpeq_backend:
+	make -C $(BUILD)/$@ VERBOSE=$(VERBOSE) install
+
+libzhpeq_lf:
 	make -C $(BUILD)/$@ VERBOSE=$(VERBOSE) install
 
 libzhpeq_util:

@@ -274,7 +274,7 @@ static void __attribute__((constructor)) lib_init(void)
     void                *dlhandle = dlopen(BACKNAME, RTLD_NOW);
 
     if (!dlhandle) {
-        print_err("Failed to load %s\n", BACKNAME);
+        print_err("Failed to load %s:%s\n", BACKNAME, dlerror());
         abort();
     }
 }

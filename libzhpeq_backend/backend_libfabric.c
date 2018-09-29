@@ -397,14 +397,14 @@ static int stuff_free(struct stuff *stuff)
         lfab_work_destroy(&work);
         ret = data.status;
     }
-    do_free(stuff->context);
+    free(stuff->context);
     if (stuff->results_mr)
         fi_close(&stuff->results_mr->fid);
-    do_free(stuff->results);
+    free(stuff->results);
     fab_conn_free(&stuff->fab_conn);
 
     if (stuff->allocated)
-        do_free(stuff);
+        free(stuff);
 
  done:
     return ret;
@@ -418,10 +418,10 @@ static int lfab_domain_free(struct zhpeq_dom *zdom)
     if (!bdom)
         goto done;
 
-    do_free(bdom->lcl_mr);
-    do_free(bdom->rkey);
+    free(bdom->lcl_mr);
+    free(bdom->rkey);
     fab_dom_free(&bdom->fab_dom);
-    do_free(bdom);
+    free(bdom);
     zdom->backend_data = NULL;
 
  done:
@@ -434,18 +434,18 @@ static int lfab_domain(struct zhpeq_dom *zdom)
     struct zdom_data    *bdom;
     size_t              i;
 
-    bdom = zdom->backend_data = do_calloc(1, sizeof(*bdom));
+    bdom = zdom->backend_data = calloc(1, sizeof(*bdom));
     if (!bdom)
         goto done;
     fab_dom_init(&bdom->fab_dom);
-    bdom->lcl_mr = do_calloc(KEYTAB_SIZE, sizeof(*bdom->lcl_mr));
+    bdom->lcl_mr = calloc(KEYTAB_SIZE, sizeof(*bdom->lcl_mr));
     if (!bdom->lcl_mr)
         goto done;
     bdom->lcl_mr_free.index = 1;
     for (i = 0; i < KEYTAB_SIZE - 1; i++)
         bdom->lcl_mr[i] = TO_PTR(((i + 1) << 1) | 1);
     bdom->lcl_mr[i] = TO_PTR(-1);
-    bdom->rkey = do_calloc(KEYTAB_SIZE, sizeof(*bdom->rkey));
+    bdom->rkey = calloc(KEYTAB_SIZE, sizeof(*bdom->rkey));
     if (!bdom->rkey)
         goto done;
     bdom->rkey_free.index = 0;
@@ -466,7 +466,7 @@ static struct stuff *stuff_alloc(struct fab_dom *dom)
     struct stuff        *ret = NULL;
     int                 err = 0;
 
-    ret = do_calloc(1, sizeof(*ret));
+    ret = calloc(1, sizeof(*ret));
     if (!ret)
         goto done;
     ret->allocated = true;
@@ -548,7 +548,7 @@ static int lfab_qalloc_post(struct zhpeq *zq)
     /* FIXME: Looks like per-AV limit of 7. Need to handle this. */
     req = 7;
 #endif
-    conn->context = do_malloc(req * sizeof(*conn->context));
+    conn->context = malloc(req * sizeof(*conn->context));
     if (!conn->context)
         goto done;
     while (req > 0) {
@@ -557,7 +557,7 @@ static int lfab_qalloc_post(struct zhpeq *zq)
         conn->context_free = &conn->context[req];
     }
     req = zq->xqinfo.cmplq.ent * sizeof(*conn->results);
-    conn->results = do_malloc(req);
+    conn->results = malloc(req);
     if (!conn->results)
         goto done;
     ret = fi_mr_reg(fab_conn->dom->domain, conn->results, req,
@@ -1119,7 +1119,7 @@ static int lfab_mr_reg(struct zhpeq_dom *zdom,
     union free_index    new;
     uint32_t            index;
 
-    desc = do_malloc(sizeof(*desc));
+    desc = malloc(sizeof(*desc));
     if (!desc)
         goto done;
     if (access & ZHPEQ_MR_GET)
@@ -1165,7 +1165,7 @@ static int lfab_mr_reg(struct zhpeq_dom *zdom,
     if (ret < 0) {
         if (mr)
             fi_close(&mr->fid);
-        do_free(desc);
+        free(desc);
     }
 
     return ret;
@@ -1185,7 +1185,7 @@ static int lfab_mr_free(struct zhpeq_dom *zdom, struct zhpeq_key_data *qkdata)
 
     ret = fi_close(&bdom->lcl_mr[index]->fid);
     free_lcl_mr(bdom, index);
-    do_free(desc);
+    free(desc);
 
  done:
     return ret;
@@ -1224,7 +1224,7 @@ static int lfab_zmmu_import(struct zhpeq_dom *zdom, int open_idx,
         goto done;
 
     ret = -ENOMEM;
-    desc = do_malloc(sizeof(*desc));
+    desc = malloc(sizeof(*desc));
     if (!desc)
         goto done;
     desc->hdr.magic = ZHPE_MAGIC;
@@ -1253,7 +1253,7 @@ static int lfab_zmmu_import(struct zhpeq_dom *zdom, int open_idx,
 
  done:
     if (ret < 0)
-        do_free(desc);
+        free(desc);
 
     return ret;
 }
@@ -1272,7 +1272,7 @@ static int lfab_zmmu_free(struct zhpeq_dom *zdom, struct zhpeq_key_data *qkdata)
         goto done;
 
     free_rkey(bdom, index);
-    do_free(desc);
+    free(desc);
     ret = 0;
 
  done:

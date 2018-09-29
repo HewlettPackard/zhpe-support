@@ -155,14 +155,14 @@ static void stuff_free(struct stuff *stuff)
     fab_conn_free(&stuff->fab_listener);
     fab_dom_free(&stuff->fab_dom);
 
-    do_free(stuff->rx_rcv);
-    do_free(stuff->ring_timestamps);
-    do_free(stuff->ctx);
+    free(stuff->rx_rcv);
+    free(stuff->ring_timestamps);
+    free(stuff->ctx);
 
     FD_CLOSE(stuff->sock_fd);
 
     if (stuff->allocated)
-        do_free(stuff);
+        free(stuff);
 }
 
 static int do_mem_setup(struct stuff *conn)

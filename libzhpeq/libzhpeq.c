@@ -367,7 +367,7 @@ int zhpeq_domain_alloc(struct zhpeq_dom **zdom_out)
     *zdom_out = NULL;
 
     ret = -ENOMEM;
-    zdom = do_calloc(1, sizeof(*zdom));
+    zdom = calloc(1, sizeof(*zdom));
     if (!zdom)
         goto done;
 
@@ -422,8 +422,8 @@ int zhpeq_free(struct zhpeq *zq)
     if (zq->tail_lock_init)
         spin_destroy(&zq->tail_lock);
     /* Free queue memory. */
-    do_free(zq->context);
-    do_free(zq);
+    free(zq->context);
+    free(zq);
 
  done:
     return ret;
@@ -452,7 +452,7 @@ int zhpeq_alloc(struct zhpeq_dom *zdom, int cmd_qlen, int cmp_qlen,
         goto done;
 
     ret = -ENOMEM;
-    zq = do_calloc(1, sizeof(*zq));
+    zq = calloc(1, sizeof(*zq));
     if (!zq)
         goto done;
     zq->zdom = zdom;

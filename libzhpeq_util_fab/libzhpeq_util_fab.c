@@ -47,7 +47,7 @@ void fab_dom_init(struct fab_dom *dom)
 
 struct fab_dom *_fab_dom_alloc(const char *callf, uint line)
 {
-    struct fab_dom      *ret = _do_malloc(callf, line, sizeof(*ret));
+    struct fab_dom      *ret = _zhpeu_malloc(sizeof(*ret), callf, line);
 
     if (ret)
         ret->allocated = true;
@@ -65,7 +65,7 @@ void fab_conn_init(struct fab_dom *dom, struct fab_conn *conn)
 struct fab_conn *_fab_conn_alloc(const char *callf, uint line,
                                  struct fab_dom *dom)
 {
-    struct fab_conn     *ret = _do_malloc(callf, line, sizeof(*ret));
+    struct fab_conn     *ret = _zhpeu_malloc(sizeof(*ret), callf, line);
 
     if (ret) {
         ret->allocated = true;
@@ -77,10 +77,10 @@ struct fab_conn *_fab_conn_alloc(const char *callf, uint line,
 
 void fab_finfo_free(struct fab_info *finfo)
 {
-    FREE(finfo->info, fi_freeinfo);
-    FREE(finfo->hints, fi_freeinfo);
-    FREE(finfo->service, free);
-    FREE(finfo->node, free);
+    FREE_IF(finfo->info, fi_freeinfo);
+    FREE_IF(finfo->hints, fi_freeinfo);
+    free(finfo->service);
+    free(finfo->node);
 }
 
 void fab_dom_free(struct fab_dom *dom)
@@ -269,8 +269,8 @@ int _fab_dom_setup(const char *callf, uint line,
             print_func_fi_err(callf, line, "fi_av_open", "", ret);
             goto done;
         }
-        dom->av_head = dom->av_tail = _do_calloc(callf, line, 1,
-                                                 sizeof(*dom->av_head));
+        dom->av_head = dom->av_tail = _zhpeu_calloc(1, sizeof(*dom->av_head),
+                                                    callf, line);
         if (!dom->av_head) {
             ret = -FI_ENOMEM;
             goto done;
@@ -849,7 +849,7 @@ int _fab_av_insert(const char *callf, uint line, struct fab_dom *dom,
          use = use->next) {
         if (use->next)
             continue;
-        use->next = _do_calloc(callf, line, 1, sizeof(*use));
+        use->next = _zhpeu_calloc( 1, sizeof(*use), callf, line);
         if (!use->next) {
             ret = -FI_ENOMEM;
             goto done;

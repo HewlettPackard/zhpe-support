@@ -265,7 +265,7 @@ static uint64_t __get_tsc_freq(void)
     fname = fname_info;
     fp = fopen(fname, "r");
     if (!fp) {
-        print_func_err(__FUNCTION__, __LINE__, "fopen", fname, errno);
+        print_func_err(__func__, __LINE__, "fopen", fname, errno);
         goto done;
     }
     /* We only handle Intel, for now */
@@ -288,7 +288,7 @@ static uint64_t __get_tsc_freq(void)
             break;
     }
     if (!tok) {
-        print_err("%s:CPU missing constant_tsc/nonstop_tsc", __FUNCTION__);
+        print_err("%s:CPU missing constant_tsc/nonstop_tsc", __func__);
         goto done;
     }
 
@@ -352,7 +352,7 @@ static uint64_t __get_tsc_freq(void)
         ret = val1;
     } else if (!fp) {
         if (errno != ENOENT) {
-            print_func_err(__FUNCTION__, __LINE__, "fopen", fname, errno);
+            print_func_err(__func__, __LINE__, "fopen", fname, errno);
             goto done;
         }
     }
@@ -361,7 +361,7 @@ done:
     if (fp) {
         if (ferror(fp)) {
             print_err("%s,%u:Error reading %s\n",
-                      __FUNCTION__, __LINE__, fname);
+                      __func__, __LINE__, fname);
             ret = 0;
         }
         fclose(fp);
@@ -378,7 +378,7 @@ uint64_t get_tsc_freq(void)
         freq = __get_tsc_freq();
         if (!freq) {
             print_err("%s,%u:Failed to determine cycle frequency",
-                      __FUNCTION__, __LINE__);
+                      __func__, __LINE__);
             abort();
         }
     }
@@ -572,7 +572,7 @@ int do_getaddrinfo(const char *node, const char *service,
     if (ret < 0)
         print_err("%s,%u:getaddrinfo(%s,%s) returned gai %d:%s,\n"
                   "    errno %d:%s\n",
-                  __FUNCTION__, __LINE__, node ?: "", service ?: "",
+                  __func__, __LINE__, node ?: "", service ?: "",
                   rc, gai_strerror(rc), -ret, (ret < 0 ? strerror(-ret) : ""));
 
     if (ret < 0)
@@ -592,12 +592,12 @@ int connect_sock(const char *node, const char *service)
     ret = socket(resp->ai_family, resp->ai_socktype, resp->ai_protocol);
     if (ret == -1) {
         ret = -errno;
-        print_func_err(__FUNCTION__, __LINE__, "socket", "", ret);
+        print_func_err(__func__, __LINE__, "socket", "", ret);
         goto done;
     }
     if (connect(ret, resp->ai_addr, resp->ai_addrlen) == -1) {
         ret = -errno;
-        print_func_err(__FUNCTION__, __LINE__, "connect", "", ret);
+        print_func_err(__func__, __LINE__, "connect", "", ret);
         goto done;
     }
 
@@ -647,57 +647,6 @@ uint *random_array(uint *array, uint entries)
     return ret;
 }
 
-void *_do_malloc(const char *callf, uint line, size_t size)
-{
-    void                *ret = malloc(size);
-    int                 save_err;
-
-    if (!ret) {
-        save_err = errno;
-        print_err("%s,%u:Failed to allocate %Lu bytes\n",
-                  callf, line, (ullong)size);
-        errno = save_err;
-    }
-
-    return ret;
-}
-
-void *_do_realloc(const char *callf, uint line, void *ptr, size_t size)
-{
-    void                *ret = realloc(ptr, size);
-    int                 save_err;
-
-    if (!ret) {
-        save_err = errno;
-        print_err("%s,%u:Failed to allocate %Lu bytes\n",
-                  callf, line, (ullong)size);
-        errno = save_err;
-    }
-
-    return ret;
-}
-
-void *_do_calloc(const char *callf, uint line, size_t nmemb, size_t size)
-{
-    void                *ret = calloc(nmemb, size);
-    int                 save_err;
-
-    if (!ret) {
-        save_err = errno;
-        print_err("%s,%u:Failed to allocate %Lu bytes\n",
-                  callf, line, (ullong)(nmemb * size));
-        errno = save_err;
-    }
-
-    return ret;
-}
-
-void _do_free(const char *callf, uint line, void *ptr)
-{
-    /* XXX:Implement alloc/free tracking? */
-    free(ptr);
-}
-
 bool _expected_saw(const char *callf, uint line,
                    const char *label, uintptr_t expected, uintptr_t saw)
 {
@@ -736,7 +685,7 @@ char *_sockaddr_str(const char *callf, uint line, const void *addr)
     const size_t        ipv6_dual_pre_len = sizeof(ipv6_dual_pre) - 1;
     size_t              ret_len;
 
-    ret = do_malloc(INET6_ADDRSTRLEN);
+    ret = _zhpeu_malloc(INET6_ADDRSTRLEN, callf, line);
     if (!ret)
         goto done;
     if (!sockaddr_ntop(addr, ret, INET6_ADDRSTRLEN)) {
@@ -867,7 +816,7 @@ int _sock_recv_var_blob(const char *callf, uint line,
     if (req == UINT32_MAX)
         goto done;
     *blob_len = req;
-    *blob = _do_malloc(callf, line, req + extra_len);
+    *blob = _zhpeu_malloc(req + extra_len, callf, line);
     if (!*blob) {
         ret = -errno;
         goto done;
@@ -982,6 +931,91 @@ int sockaddr_cmpx(const union sockaddr_in46 *sa1,
     ret = memcmp(&local1.sin_port, &local2.sin_port, sizeof(local1.sin_port));
 
  done:
+
+    return ret;
+}
+
+#undef posix_memalign
+
+int _zhpeu_posix_memalign(void **memptr, size_t alignment, size_t size,
+                          const char *callf, uint line)
+{
+    int                 ret = posix_memalign(memptr, alignment, size);
+
+    if (unlikely(ret > 0)) {
+        *memptr = NULL;
+        print_func_errn(callf, line, "posix_memalign", size, false, ret);
+    }
+
+    return ret;
+}
+
+#undef malloc
+
+void *_zhpeu_malloc(size_t size, const char *callf, uint line)
+{
+    void                *ret = malloc(size);
+    int                 save_err;
+
+    if (unlikely(!ret)) {
+        save_err = errno;
+        print_func_errn(callf, line, "malloc", size, false, errno);
+        errno = save_err;
+    }
+
+    return ret;
+}
+
+#undef realloc
+
+void *_zhpeu_realloc(void *ptr, size_t size, const char *callf, uint line)
+{
+    void                *ret = realloc(ptr, size);
+    int                 save_err;
+
+    if (unlikely(!ret)) {
+        save_err = errno;
+        print_func_errn(callf, line, "realloc", size, false, errno);
+        errno = save_err;
+    }
+
+    return ret;
+}
+
+#undef calloc
+
+void *_zhpeu_calloc(size_t nmemb, size_t size, const char *callf, uint line)
+{
+    void                *ret = calloc(nmemb, size);
+    int                 save_err;
+
+    if (unlikely(!ret)) {
+        save_err = errno;
+        print_func_errn(callf, line, "calloc", size, false, errno);
+        errno = save_err;
+    }
+
+    return ret;
+}
+
+#undef free
+
+void _zhpeu_free(void *ptr, const char *callf, uint line)
+{
+    /* XXX:Implement alloc/free tracking? */
+    free(ptr);
+}
+
+void *_zhpeu_calloc_aligned(size_t alignment, size_t nmemb, size_t size,
+                            const char *callf, uint line)
+{
+    void                *ret;
+    int                 rc;
+
+    size *= nmemb;
+    rc = _zhpeu_posix_memalign(&ret, alignment, size, callf, line);
+    if (likely(!rc))
+        memset(ret, 0, size);
 
     return ret;
 }

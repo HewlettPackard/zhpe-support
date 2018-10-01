@@ -579,7 +579,8 @@ static bool worker_qalloc_post(struct zhpeu_work_head *head,
         req = zq->xqinfo.cmdq.ent;
     conn->context_entries = req;
 
-    conn->results = malloc_cachealigned(req * sizeof(*conn->results));
+    req = conn->context_entries * sizeof(*conn->results);
+    conn->results = malloc_cachealigned(req);
     if (!conn->results)
         goto done;
     ret = fi_mr_reg(fab_conn->dom->domain, conn->results, req,
@@ -591,10 +592,11 @@ static bool worker_qalloc_post(struct zhpeu_work_head *head,
     }
     conn->results_desc = fi_mr_desc(conn->results_mr);
 
-    conn->context = malloc_cachealigned(req * sizeof(*conn->context));
+    req = conn->context_entries * sizeof(*conn->context);
+    conn->context = malloc_cachealigned(req);
     if (!conn->context)
         goto done;
-    while (req > 0) {
+    for (req = conn->context_entries; req > 0;) {
         req--;
         context = &conn->context[req];
         context->zq = zq;

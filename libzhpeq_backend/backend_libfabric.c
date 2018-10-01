@@ -85,43 +85,11 @@ struct context {
     struct fi_context2  opaque;
     struct zhpeq        *zq;
     struct zhpe_result  *result;
-    ZHPEQ_TIMING_CODE(struct zhpe_timing_stamp timestamp);
     uint16_t            cmp_index;
     uint8_t             result_len;
 };
 
 static inline void cq_write(void *vcontext, int status);
-
-#ifdef ZHPEQ_TIMING
-
-#define lfabt_cmdpost(_data, _wqe, _ctxt)                               \
-do {                                                                    \
-    zhpeq_timing_update(&zhpeq_timing_tx_cmdnew, &lfabt_new,            \
-                        &(_wqe)->_data.timestamp, 0);                   \
-    zhpeq_timing_update_stamp(&(_ctxt)->timestamp);                     \
-    (_ctxt)->timestamp.time = (_wqe)->_data.timestamp.time;             \
-    zhpeq_timing_tx_ibv_post_send_stamp.time =                          \
-        (_wqe)->_data.timestamp.time;                                   \
-    zhpeq_timing_tx_ibv_post_send_stamp.cpu = (_ctxt)->timestamp.cpu;   \
-} while (0)
-
-#define lfabt_cmddone(_ctxt, _cqe)                                      \
-do {                                                                    \
-    zhpeq_timing_update_stamp(&(_cqe)->entry.timestamp);                \
-    zhpeq_timing_update(&zhpeq_timing_tx_cmddone,                       \
-                        &(_cqe)->entry.timestamp,                       \
-                        &(_ctxt)->timestamp, 0);                        \
-} while (0)
-
-#else
-
-#define lfabt_cmdpost(_data, _wqe, _ctxt)       \
-    do {} while (0)
-
-#define lfabt_cmddone(_ctxt, _cqe)              \
-    do {} while (0)
-
-#endif
 
 STAILQ_HEAD(stailq_head, stailq_entry);
 
@@ -681,7 +649,6 @@ static inline void cq_write(void *vcontext, int status)
     cqe = zq->cq + (conn->cq_tail & qmask);
 
     conn->tx_completed++;
-    lfabt_cmddone(context, cqe);
 
     cqe->entry.index = context->cmp_index;
     cqe->entry.status = (status < 0 ? ZHPEQ_CQ_STATUS_FABRIC_UNRECOVERABLE :
@@ -746,16 +713,12 @@ static bool lfab_zq(struct stuff *conn)
     uint64_t            flags;
     struct context      *context;
     char                *sendbuf;
-    ZHPEQ_TIMING_CODE(struct zhpe_timing_stamp lfabt_new);
 
     wq_head = ioread64(zq->qcm + ZHPE_XDM_QCM_CMD_QUEUE_HEAD_OFFSET) & qmask;
     smp_rmb();
     wq_tail = ioread64(zq->qcm + ZHPE_XDM_QCM_CMD_QUEUE_TAIL_OFFSET) & qmask;
     for (; (context = conn->context_free) && wq_head != wq_tail;
          wq_head = (wq_head + 1) & qmask) {
-
-        /* We never expect to timestamp a fence. */
-        ZHPEQ_TIMING_UPDATE_STAMP(&lfabt_new);
 
         wqe = zq->wq + wq_head;
 
@@ -788,7 +751,6 @@ static bool lfab_zq(struct stuff *conn)
         switch (wqe->hdr.opcode & ~ZHPE_HW_OPCODE_FENCE) {
 
         case ZHPE_HW_OPCODE_NOP:
-            lfabt_cmdpost(nop, wqe, context);
             cq_write(context, 0);
             break;
 
@@ -809,7 +771,6 @@ static bool lfab_zq(struct stuff *conn)
             conn->rma_iov.addr = TO_ADDR(raddr);
             conn->rma_iov.key = bdom->rkey[TO_KEYIDX(raddr)].rkey;
             conn->msg.addr = bdom->rkey[TO_KEYIDX(raddr)].av_idx;
-            lfabt_cmdpost(dma, wqe, context);
             rc = fi_writemsg(fab_conn->ep, &conn->msg, flags);
             if (rc < 0) {
                 if (rc == -FI_EAGAIN) {
@@ -840,7 +801,6 @@ static bool lfab_zq(struct stuff *conn)
             conn->rma_iov.addr = TO_ADDR(raddr);
             conn->rma_iov.key = bdom->rkey[TO_KEYIDX(raddr)].rkey;
             conn->msg.addr = bdom->rkey[TO_KEYIDX(raddr)].av_idx;
-            lfabt_cmdpost(dma, wqe, context);
             rc = fi_readmsg(fab_conn->ep, &conn->msg, flags);
             if (rc < 0) {
                 if (rc == -FI_EAGAIN) {
@@ -868,7 +828,6 @@ static bool lfab_zq(struct stuff *conn)
             conn->rma_iov.addr = TO_ADDR(raddr);
             conn->rma_iov.key = bdom->rkey[TO_KEYIDX(raddr)].rkey;
             conn->msg.addr = bdom->rkey[TO_KEYIDX(raddr)].av_idx;
-            lfabt_cmdpost(imm, wqe, context);
             rc = fi_writemsg(fab_conn->ep, &conn->msg, flags);
             if (rc < 0) {
                 if (rc == -FI_EAGAIN) {
@@ -895,7 +854,6 @@ static bool lfab_zq(struct stuff *conn)
             conn->rma_iov.addr = TO_ADDR(raddr);
             conn->rma_iov.key = bdom->rkey[TO_KEYIDX(raddr)].rkey;
             conn->msg.addr = bdom->rkey[TO_KEYIDX(raddr)].av_idx;
-            lfabt_cmdpost(imm, wqe, context);
             rc = fi_readmsg(fab_conn->ep, &conn->msg, flags);
             if (rc < 0) {
                 if (rc == -FI_EAGAIN) {
@@ -935,7 +893,6 @@ static bool lfab_zq(struct stuff *conn)
             conn->atm_rma_ioc.addr = TO_ADDR(raddr);
             conn->atm_rma_ioc.key = bdom->rkey[TO_KEYIDX(raddr)].rkey;
             conn->atm_msg.addr = bdom->rkey[TO_KEYIDX(raddr)].av_idx;
-            lfabt_cmdpost(atm, wqe, context);
             if ((wqe->hdr.opcode & ~ZHPE_HW_OPCODE_FENCE) !=
                 ZHPE_HW_OPCODE_ATM_ADD) {
                 conn->atm_msg.op = FI_CSWAP;
@@ -992,7 +949,6 @@ static void *lfab_eng_thread(void *veng)
     struct stuff        *conn;
     bool                queued;
     bool                outstanding;
-    int                 rc;
 
     for (;;) {
         queued = false;
@@ -1024,12 +980,10 @@ static void *lfab_eng_thread(void *veng)
         if (!zhpeu_thr_wait_sleep_fast(&eng->work_head.thr_wait))
             continue;
         /* Time to sleep. */
-        rc = zhpeu_thr_wait_sleep_slow(&eng->work_head.thr_wait, -1,
-                                       true, false);
+        (void)zhpeu_thr_wait_sleep_slow(&eng->work_head.thr_wait, -1,
+                                        true, false);
         assert(pthread_mutex_trylock(&eng->work_head.thr_wait.mutex) == EBUSY);
         locked = true;
-        if (rc <= 0)
-            ZHPEQ_TIMING_UPDATE_COUNT(&zhpeq_timing_tx_sleep);
         /* Reset the sleep clock. */
         clock_gettime_monotonic(&ts_beg);
     }

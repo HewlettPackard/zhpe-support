@@ -37,9 +37,6 @@
 #include <zhpeq.h>
 #include <zhpeq_util.h>
 
-/* Need internal.h for backend timing stuff. */
-#include <internal.h>
-
 #define BACKLOG         (10)
 #ifdef DEBUG
 #define TIMEOUT         (-1)

@@ -39,9 +39,6 @@
 
 #include <sys/queue.h>
 
-/* Need internal.h for backend timing stuff. */
-#include <internal.h>
-
 #define BACKLOG         (10)
 #ifdef DEBUG
 #define TIMEOUT         (-1)
@@ -491,7 +488,6 @@ static int do_client_pong(struct stuff *conn)
     uint64_t            now;
     uint64_t            zq_tx_addr;
     uint64_t            zq_rx_addr;
-    void                *timing_saved;
 
     start = get_cycles(NULL);
     for (tx_count = rx_count = warmup_count = 0;
@@ -557,7 +553,6 @@ static int do_client_pong(struct stuff *conn)
                 lat_comp = 0;
                 lat_write = 0;
                 q_max1 = 0;
-                zhpeq_timing_reset_all();
                 /* FALLTHROUGH */
 
             case TX_RUNNING:
@@ -612,9 +607,6 @@ static int do_client_pong(struct stuff *conn)
     printf("%s:lat comp/write %.3lf/%.3lf qmax %lu\n",  appname,
            cycles_to_usec(lat_comp, op_count),
            cycles_to_usec(lat_write, op_count), q_max1);
-    timing_saved = zhpeq_timing_reset_all();
-    zhpeq_timing_print_all(timing_saved);
-    free(timing_saved);
 
  done:
     return ret;

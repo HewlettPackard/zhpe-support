@@ -1042,15 +1042,12 @@ static void free_lcl_mr(struct zdom_data *bdom, uint32_t index)
     union free_index    old;
     union free_index    new;
 
-    for (old.blob = bdom->lcl_mr_free.blob;;) {
+    for (old.blob = atm_load_rlx(&bdom->lcl_mr_free.blob);;) {
         bdom->lcl_mr[index] = TO_PTR(old.index);
         new.index = (index << 1) | 1;
         new.seq = old.seq + 1;
-        new.blob = __sync_val_compare_and_swap(&bdom->lcl_mr_free.blob,
-                                               old.blob, new.blob);
-        if (old.blob == new.blob)
+        if (atm_cmpxchg(&bdom->lcl_mr_free.blob, &old.blob, new.blob))
             break;
-        old.blob = new.blob;
     }
 }
 
@@ -1112,17 +1109,14 @@ static int lfab_mr_reg(struct zhpeq_dom *zdom,
         goto done;
 
     ret = -ENOSPC;
-    for (old.blob = bdom->lcl_mr_free.blob;;) {
+    for (old.blob = atm_load_rlx(&bdom->lcl_mr_free.blob);;) {
         if (old.index == FREE_END)
             goto done;
         index = old.index >> 1;
         new.index = (uintptr_t)bdom->lcl_mr[index];
         new.seq = old.seq + 1;
-        new.blob = __sync_val_compare_and_swap(&bdom->lcl_mr_free.blob,
-                                               old.blob, new.blob);
-        if (old.blob == new.blob)
+        if (atm_cmpxchg(&bdom->lcl_mr_free.blob, &old.blob, new.blob))
             break;
-        old.blob = new.blob;
     }
     bdom->lcl_mr[index] = mr;
     desc->hdr.magic = ZHPE_MAGIC;
@@ -1172,15 +1166,12 @@ static void free_rkey(struct zdom_data *bdom, uint32_t index)
     union free_index    old;
     union free_index    new;
 
-    for (old.blob = bdom->rkey_free.blob;;) {
+    for (old.blob = atm_load_rlx(&bdom->rkey_free.blob);;) {
         bdom->rkey[index].rkey = old.index;
         new.index = index;
         new.seq = old.seq + 1;
-        new.blob = __sync_val_compare_and_swap(&bdom->rkey_free.blob, old.blob,
-                                               new.blob);
-        if (old.blob == new.blob)
+        if (atm_cmpxchg(&bdom->rkey_free.blob, &old.blob, new.blob))
             break;
-        old.blob = new.blob;
     }
 }
 
@@ -1208,16 +1199,13 @@ static int lfab_zmmu_import(struct zhpeq_dom *zdom, int open_idx,
     unpack_kdata(pdata, &desc->qkdata);
 
     ret = -ENOSPC;
-    for (old.blob = bdom->rkey_free.blob;;) {
+    for (old.blob = atm_load_rlx(&bdom->rkey_free.blob);;) {
         if (old.index == FREE_END)
             goto done;
         new.index = bdom->rkey[old.index].rkey;
         new.seq = old.seq + 1;
-        new.blob = __sync_val_compare_and_swap(&bdom->rkey_free.blob, old.blob,
-                                               new.blob);
-        if (old.blob == new.blob)
+        if (atm_cmpxchg(&bdom->rkey_free.blob, &old.blob, new.blob))
             break;
-        old.blob = new.blob;
     }
     bdom->rkey[old.index].rkey = desc->qkdata.z.zaddr;
     bdom->rkey[old.index].av_idx = open_idx;

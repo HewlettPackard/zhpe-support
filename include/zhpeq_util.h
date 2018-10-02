@@ -88,8 +88,6 @@ _EXTERN_C_BEG
     ((_type *)((char *)(_ptr) - offsetof(_type, _field)))
 #endif
 
-#define NOOPTIMIZE      asm volatile("")
-
 #define ARRAY_SIZE(_x)  (sizeof(_x) / sizeof(_x[0]))
 
 #define TO_PTR(_int)    (void *)(uintptr_t)(_int)
@@ -184,6 +182,22 @@ void zhpeu_free(void *ptr, const char *callf, uint line);
 #define free(...) \
     zhpeu_free(__VA_ARGS__, __func__, __LINE__)
 
+/* Trying to rely on stdatomic.h with less verbosity. */
+
+#define atm_load_rlx(_p) \
+    atomic_load_explicit(_p, memory_order_relaxed)
+#define atm_store_rlx(_p, _v) \
+    atomic_store_explicit(_p, _v, memory_order_relaxed)
+#define atm_fetch_add_rlx(_p, _v) \
+    atomic_fetch_add_explicit(_p, _v, memory_order_relaxed)
+#define atm_fetch_add(_p, _v) \
+    atomic_fetch_add_explicit(_p, _v, memory_order_acq_rel)
+#define atm_fetch_sub(_p, _v) \
+    atomic_fetch_sub_explicit(_p, _v, memory_order_acq_rel)
+#define atm_cmpxchg(_p, _oldp, _new) \
+    atomic_compare_exchange_strong_explicit( \
+        _p, _oldp, _new, memory_order_acq_rel, memory_order_relaxed)
+
 #ifdef _BARRIER_DEFINED
 #warning _BARRIER_DEFINED already defined
 #undef _BARRIER_DEFINED
@@ -192,6 +206,10 @@ void zhpeu_free(void *ptr, const char *callf, uint line);
 #if defined(__x86_32__) || defined( __x86_64__)
 
 #define _BARRIER_DEFINED
+
+/* But atomic_thread_fence() didn't generate the fences I wanted when I
+ * tested it.
+ */
 
 static inline void smp_mb(void)
 {
@@ -206,6 +224,12 @@ static inline void smp_rmb(void)
 static inline void smp_wmb(void)
 {
     asm volatile("sfence":::"memory");
+}
+
+static inline void wmb(void)
+{
+    /* I hope the compiler barriers work. */
+    atomic_signal_fence(memory_order_release);
 }
 
 #define L1_CACHE_BYTES  (64U)

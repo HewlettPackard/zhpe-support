@@ -247,7 +247,7 @@ static bool worker_qfree_pre(struct zhpeu_work_head *head,
                              struct zhpeu_work *work)
 {
     struct lfab_work_qfree_pre *data = work->data;
-    struct stuff        *conn = work->data;
+    struct stuff        *conn = data->conn;
     struct engine       *eng = container_of(head, struct engine, work_head);
     struct timespec     ts_now;
     struct context      *context;
@@ -1055,10 +1055,12 @@ static int lfab_lib_init(struct zhpeq_attr *attr)
 static int lfab_qfree_pre(struct zhpeq *zq)
 {
     int                 ret = 0;
-    struct stuff        *conn = zq->backend_data;
+    struct lfab_work_qfree_pre data = {
+        .conn           = zq->backend_data,
+    };
 
-    if (conn)
-        ret = lfab_eng_work_queue(&eng, worker_qfree_pre, conn);
+    if (data.conn)
+        ret = lfab_eng_work_queue(&eng, worker_qfree_pre, &data);
     zq->backend_data = NULL;
 
     return ret;

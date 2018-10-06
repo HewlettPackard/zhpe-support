@@ -127,12 +127,10 @@ struct zhpeq {
     void                **context;
     void                *backend_data;
     int                 fd;
-    pthread_spinlock_t  tail_lock CACHE_ALIGNED;
-    /* Shadow for wq and cq, q_head may be updated in progress thread. */
+    /* q_head may be updated in progress thread. */
     uint32_t            q_head CACHE_ALIGNED;
     uint32_t            tail_reserved CACHE_ALIGNED;
     uint32_t            tail_commit;
-    bool                tail_lock_init;
 };
 
 static inline uint8_t cq_valid(uint32_t idx, uint32_t qmask)

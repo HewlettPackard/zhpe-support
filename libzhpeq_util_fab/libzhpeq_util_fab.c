@@ -635,7 +635,8 @@ ssize_t _fab_completions(const char *callf, uint line,
             if (len > rc)
                 rc = len;
         }
-        rc = fab_cq_read(cq, fi_cqe, len, (cq_update ? &fi_cqerr : NULL));
+        rc = _fab_cq_read(callf, line, cq, fi_cqe, len,
+                          (cq_update ? &fi_cqerr : NULL));
         if (!rc)
             break;
         if (rc >= 0) {

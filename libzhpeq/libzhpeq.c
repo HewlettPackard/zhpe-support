@@ -150,7 +150,7 @@ int zhpeq_domain_alloc(struct zhpeq_dom **zdom_out)
     *zdom_out = NULL;
 
     ret = -ENOMEM;
-    zdom = calloc(1, sizeof(*zdom));
+    zdom = calloc_cachealigned(1, sizeof(*zdom));
     if (!zdom)
         goto done;
 
@@ -202,8 +202,6 @@ int zhpeq_free(struct zhpeq *zq)
     rc = b_ops->qfree(zq);
     if (ret >= 0 && rc < 0)
         ret = rc;
-    if (zq->tail_lock_init)
-        spin_destroy(&zq->tail_lock);
     /* Free queue memory. */
     free(zq->context);
     free(zq);
@@ -235,15 +233,10 @@ int zhpeq_alloc(struct zhpeq_dom *zdom, int cmd_qlen, int cmp_qlen,
         goto done;
 
     ret = -ENOMEM;
-    zq = calloc(1, sizeof(*zq));
+    zq = calloc_cachealigned(1, sizeof(*zq));
     if (!zq)
         goto done;
     zq->zdom = zdom;
-    spin_init(&zq->tail_lock, PTHREAD_PROCESS_PRIVATE);
-    zq->tail_lock_init = true;
-
-    if (cmd_qlen < cmp_qlen)
-        cmd_qlen = cmp_qlen;
 
     cmd_qlen = roundup_pow_of_2(cmd_qlen);
     cmp_qlen = roundup_pow_of_2(cmp_qlen);
@@ -253,7 +246,8 @@ int zhpeq_alloc(struct zhpeq_dom *zdom, int cmd_qlen, int cmp_qlen,
     if (ret < 0)
         goto done;
 
-    zq->context = calloc(zq->xqinfo.cmdq.ent, sizeof(*zq->context));
+    zq->context = calloc_cachealigned(zq->xqinfo.cmdq.ent,
+                                      sizeof(*zq->context));
     if (!zq->context)
         goto done;
 
@@ -342,14 +336,12 @@ int64_t zhpeq_reserve(struct zhpeq *zq, uint32_t n_entries)
      * for commit.
      */
     ret = 0;
-    spin_lock(&zq->tail_lock);
     avail = qmask - ((zq->tail_reserved - zq->q_head) & qmask);
     if (avail >= n_entries) {
         ret = zq->tail_reserved;
         zq->tail_reserved += n_entries;
     } else
         ret = -EAGAIN;
-    spin_unlock(&zq->tail_lock);
 
  done:
     return ret;
@@ -358,7 +350,6 @@ int64_t zhpeq_reserve(struct zhpeq *zq, uint32_t n_entries)
 int zhpeq_commit(struct zhpeq *zq, uint32_t qindex, uint32_t n_entries)
 {
     int                 ret = -EINVAL;
-    bool                set = false;
     uint32_t            qmask;
 
     if (!zq)
@@ -367,24 +358,15 @@ int zhpeq_commit(struct zhpeq *zq, uint32_t qindex, uint32_t n_entries)
     qmask = zq->xqinfo.cmdq.ent - 1;
     /* We need a lock to guarantee writes to tail register are ordered. */
     ret = 0;
-    for (;;) {
-        spin_lock(&zq->tail_lock);
-        if (qindex == zq->tail_commit) {
-            smp_wmb();
-            zq->tail_commit += n_entries;
-            iowrite64(zq->tail_commit & qmask,
-                      zq->qcm + ZHPE_XDM_QCM_CMD_QUEUE_TAIL_OFFSET);
-            set = true;
-        }
-        spin_unlock(&zq->tail_lock);
-        if (set) {
-            if (b_ops->wq_signal)
-                ret = b_ops->wq_signal(zq);
-            break;
-        }
-        /* FIXME: Yes? No? */
-        sched_yield();
-    }
+    if (qindex == zq->tail_commit) {
+        wmb();
+        zq->tail_commit += n_entries;
+        iowrite64(zq->tail_commit & qmask,
+                  zq->qcm + ZHPE_XDM_QCM_CMD_QUEUE_TAIL_OFFSET);
+        if (b_ops->wq_signal)
+            ret = b_ops->wq_signal(zq);
+    } else
+        ret = -EAGAIN;
 
  done:
     return ret;

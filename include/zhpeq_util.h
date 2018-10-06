@@ -77,6 +77,12 @@
 
 _EXTERN_C_BEG
 
+#ifndef likely
+#define likely(_x)      __builtin_expect(!!(_x), 1)
+#endif
+#ifndef unlikely
+#define unlikely(_x)    __builtin_expect(!!(_x), 0)
+#endif
 #ifndef container_of
 #define container_of(_ptr, _type, _field)                       \
     ((_type *)((char *)(_ptr) - offsetof(_type, _field)))
@@ -133,9 +139,6 @@ union sockaddr_in46 {
     struct sockaddr_in6 addr6;
     struct sockaddr_zhpe zhpe;
 };
-
-#define likely(_x)      __builtin_expect(!!(_x), 1)
-#define unlikely(_x)    __builtin_expect(!!(_x), 0)
 
 int zhpeu_posix_memalign(void **memptr, size_t alignment, size_t size,
                          const char *callf, uint line);

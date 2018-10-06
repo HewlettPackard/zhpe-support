@@ -98,41 +98,43 @@ static void *cli_func(void *vcli_thr)
     size_t              l;
     size_t              s;
     size_t              r;
+    size_t              rops;
+    size_t              wops;
 
-    for (l = 0; l < args->loops; l++) {
+    for (l = 0, rops = 0, wops = 0 ; l < args->loops; l++) {
         lstripe = lf_eps->mem + cli_thr->rank * lf_eps->per_thr_size;
         roff = (lf_data->rank * lf_eps->per_thr_size +
                 cli_thr->rank * args->stripes * per_node_size);
-        FI_ERRCHK(fi_cntr_set, (wcnt, 0));
-        for (s = 0 ; s < args->stripes; s++, roff += per_node_size) {
+        for (s = 0 ; s < args->stripes ; s++, roff += per_node_size) {
             for (r = 0 ; r < lf_eps->n_eps ; r++, lstripe += per_node_size) {
                 FI_EAGAINOK(fi_write,
                             (ep, lstripe, per_node_size,
                              fi_mr_desc(lf_data->mr), r_addr(r, lf_eps), roff,
                              ZHPEL_RKEY, NULL), wcnt);
+                wops++;
             }
-            FI_ERRCHK(fi_cntr_wait, (wcnt, lf_eps->n_eps, -1));
-       }
+            FI_ERRCHK(fi_cntr_wait, (wcnt, wops, -1));
+        }
         if (args->verbose)
             print_info("%s,%u:rank %ld thr %ld loop %ld, writes complete\n",
-                       __func__, __LINE__, lf_data->rank, cli_thr->rank, l);
+                       __func__, __LINE__, lf_data->rank, cli_thr->rank, l + 1);
 
         lstripe = lf_eps->mem + cli_thr->rank * lf_eps->per_thr_size;
         roff = (lf_data->rank * lf_eps->per_thr_size +
                 cli_thr->rank * args->stripes * per_node_size);
-        FI_ERRCHK(fi_cntr_set, (rcnt, 0));
-        for (s = 0 ; s < args->stripes; s++, roff += per_node_size) {
+        for (s = 0 ; s < args->stripes ; s++, roff += per_node_size) {
             for (r = 0 ; r < lf_eps->n_eps ; r++, lstripe += per_node_size) {
                 FI_EAGAINOK(fi_read,
                             (ep, lstripe, per_node_size,
                              fi_mr_desc(lf_data->mr), r_addr(r, lf_eps), roff,
                              ZHPEL_RKEY, NULL), rcnt);
+                rops++;
             }
-            FI_ERRCHK(fi_cntr_wait, (rcnt, lf_eps->n_eps, -1));
+            FI_ERRCHK(fi_cntr_wait, (rcnt, rops, -1));
         }
         if (args->verbose)
             print_info("%s,%u:rank %ld thr %ld loop %ld, reads complete\n",
-                       __func__, __LINE__, lf_data->rank, cli_thr->rank, l);
+                       __func__, __LINE__, lf_data->rank, cli_thr->rank, l + 1);
     }
 
     return NULL;
@@ -250,15 +252,16 @@ int main(int argc, char **argv)
     /* Server in main thread; wait for all events. */
     if (args.rma_events) {
         ops_per_loop = args.stripes * n_ranks * n_ranks;
-        for (l = 0, ops = 0; l < args.loops; l++, ops += ops_per_loop) {
+        for (l = 0, ops = 0; l < args.loops; l++) {
+            ops += ops_per_loop;
             FI_ERRCHK(fi_cntr_wait, (lf_data.svr.wcnts[0], ops, -1));
             if (args.verbose)
                 print_info("%s,%u:rank %ld loop %ld, writes complete\n",
-                           __func__, __LINE__, rank, l);
+                           __func__, __LINE__, rank, l + 1);
             FI_ERRCHK(fi_cntr_wait, (lf_data.svr.rcnts[0], ops, -1));
             if (args.verbose)
                 print_info("%s,%u:rank %ld loop %ld, reads complete\n",
-                           __func__, __LINE__, rank, l);
+                           __func__, __LINE__, rank, l + 1);
         }
     }
 

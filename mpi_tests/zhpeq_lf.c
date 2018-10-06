@@ -227,8 +227,11 @@ void zhpel_init(struct zhpel_data *lf_data, const char *provider,
         }
         ep = lf_data->cli.eps[r];
         rcnt = lf_data->cli.rcnts[r];
+        /* Read one byte to fully instantiate the connection and
+         * import the rkey data.
+         */
         FI_EAGAINOK(fi_read,
-                    (ep, NULL, 0, fi_mr_desc(lf_data->mr), r,
+                    (ep, lf_data->mem, 1, fi_mr_desc(lf_data->mr), r,
                      0, ZHPEL_RKEY, NULL), rcnt);
         FI_ERRCHK(fi_cntr_wait, (rcnt, 1, -1));
         FI_ERRCHK(fi_cntr_set, (rcnt, 0));

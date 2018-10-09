@@ -432,7 +432,7 @@ static bool worker_domain(struct zhpeu_work_head *head,
     bdom->rkey[i].rkey = FI_KEY_NOTAVAIL;
 
     if (one_dom) {
-        atomic_fetch_add(&one_dom->use_count, 1);
+        atm_inc(&one_dom->use_count);
         ret = 0;
     } else {
         one_dom = fab_dom_alloc(onfree_one_dom, &one_dom);
@@ -531,7 +531,7 @@ static bool worker_qalloc_post(struct zhpeu_work_head *head,
 
     if (one_conn) {
         conn->fab_conn = one_conn;
-        atomic_fetch_add(&one_conn->use_count, 1);
+        atm_inc(&one_conn->use_count);
     } else {
         one_conn = fab_conn_alloc(bdom->fab_dom, onfree_one_conn, &one_conn);
         ret = fab_ep_setup(one_conn, NULL, 0, 0);

@@ -184,19 +184,30 @@ void zhpeu_free(void *ptr, const char *callf, uint line);
 
 /* Trying to rely on stdatomic.h with less verbosity. */
 
+#define atm_load(_p) \
+    atomic_load_explicit(_p, memory_order_acquire)
 #define atm_load_rlx(_p) \
     atomic_load_explicit(_p, memory_order_relaxed)
+#define atm_store(_p, _v) \
+    atomic_store_explicit(_p, _v, memory_order_release)
 #define atm_store_rlx(_p, _v) \
     atomic_store_explicit(_p, _v, memory_order_relaxed)
 #define atm_fetch_add_rlx(_p, _v) \
     atomic_fetch_add_explicit(_p, _v, memory_order_relaxed)
 #define atm_fetch_add(_p, _v) \
     atomic_fetch_add_explicit(_p, _v, memory_order_acq_rel)
+#define atm_fetch_sub_rlx(_p, _v) \
+    atomic_fetch_sub_explicit(_p, _v, memory_order_relaxed)
 #define atm_fetch_sub(_p, _v) \
     atomic_fetch_sub_explicit(_p, _v, memory_order_acq_rel)
 #define atm_cmpxchg(_p, _oldp, _new) \
     atomic_compare_exchange_strong_explicit( \
         _p, _oldp, _new, memory_order_acq_rel, memory_order_relaxed)
+
+#define atm_inc_rlx(_p) atm_fetch_add_rlx(_p, 1)
+#define atm_inc(_p)     atm_fetch_add(_p, 1)
+#define atm_dec_rlx(_p) atm_fetch_sub_rlx(_p, 1)
+#define atm_dec(_p)     atm_fetch_sub(_p, 1)
 
 #ifdef _BARRIER_DEFINED
 #warning _BARRIER_DEFINED already defined
@@ -228,8 +239,7 @@ static inline void smp_wmb(void)
 
 static inline void wmb(void)
 {
-    /* I hope the compiler barriers work. */
-    atomic_signal_fence(memory_order_release);
+    asm volatile("sfence":::"memory");
 }
 
 #define L1_CACHE_BYTES  (64U)
@@ -297,15 +307,46 @@ static inline union sockaddr_in46 *sockaddr_dup(const void *addr)
 int sockaddr_cmpx(const union sockaddr_in46 *sa1,
                   const union sockaddr_in46 *sa2, bool noport);
 
-static inline int sockaddr_cmp(const void *addr1, const void *addr2,
-                               bool noport)
+static inline int sockaddr_portcmp(const void *addr1, const void *addr2)
+{
+    int                 ret;
+    const union sockaddr_in46 *sa1 = addr1;
+    const union sockaddr_in46 *sa2 = addr2;
+
+    assert(sa1->sa_family == sa2->sa_family);
+
+    /* Use memcmp everywhere for -1, 0, 1 behavior. */
+    switch (sa1->sa_family) {
+
+    case AF_INET:
+        ret = memcmp(&sa1->sin_port, &sa2->sin_port, sizeof(sa1->sin_port));
+        break;
+
+    case AF_INET6:
+        ret = memcmp(&sa1->sin_port, &sa2->sin_port, sizeof(sa1->sin_port));
+        break;
+
+    case AF_ZHPE:
+        ret = memcmp(&sa1->zhpe.sz_queue, &sa2->zhpe.sz_queue,
+                     sizeof(sa1->zhpe.sz_queue));
+        break;
+
+    default:
+        ret = -1;
+        break;
+    }
+
+    return ret;
+}
+
+static inline int sockaddr_cmp_noport(const void *addr1, const void *addr2)
 {
     int                 ret;
     const union sockaddr_in46 *sa1 = addr1;
     const union sockaddr_in46 *sa2 = addr2;
 
     if (sa1->sa_family != sa2->sa_family) {
-        ret = sockaddr_cmpx(sa1, sa2, noport);
+        ret = sockaddr_cmpx(sa1, sa2, true);
         goto done;
     }
 
@@ -315,32 +356,42 @@ static inline int sockaddr_cmp(const void *addr1, const void *addr2,
     case AF_INET:
         ret = memcmp(&sa1->addr4.sin_addr, &sa2->addr4.sin_addr,
                      sizeof(sa1->addr4.sin_addr));
-        if (ret || noport)
-            goto done;
-        ret = memcmp(&sa1->sin_port, &sa2->sin_port, sizeof(sa1->sin_port));
         break;
 
     case AF_INET6:
         ret = memcmp(&sa1->addr6.sin6_addr, &sa2->addr6.sin6_addr,
                      sizeof(sa1->addr6.sin6_addr));
-        if (ret || noport)
-            goto done;
-        ret = memcmp(&sa1->sin_port, &sa2->sin_port, sizeof(sa1->sin_port));
         break;
 
     case AF_ZHPE:
         ret = memcmp(&sa1->zhpe.sz_uuid, &sa2->zhpe.sz_uuid,
                      sizeof(sa1->zhpe.sz_uuid));
-        if (ret || noport)
-            goto done;
-        ret = memcmp(&sa1->zhpe.sz_queue, &sa2->zhpe.sz_queue,
-                     sizeof(sa1->zhpe.sz_queue));
         break;
 
     default:
         ret = -1;
         break;
     }
+
+ done:
+    return ret;
+}
+
+static inline int sockaddr_cmp(const void *addr1, const void *addr2)
+{
+    int                 ret;
+    const union sockaddr_in46 *sa1 = addr1;
+    const union sockaddr_in46 *sa2 = addr2;
+
+    if (sa1->sa_family != sa2->sa_family) {
+        ret = sockaddr_cmpx(sa1, sa2, false);
+        goto done;
+    }
+
+    ret = sockaddr_cmp_noport(sa1, sa2);
+    if (ret)
+        goto done;
+    ret = sockaddr_portcmp(sa1, sa2);
 
  done:
     return ret;
@@ -680,9 +731,6 @@ static inline char *_strdup_or_null(const char *callf, uint line,
 #define strdup_or_null(...) \
     _strdup_or_null(__func__, __LINE__, __VA_ARGS__)
 
-#define fab_cq_read(...) \
-    _fab_cq_read(__func__, __LINE__, __VA_ARGS__)
-
 #define cond_init(...) \
     abort_posix(pthread_cond_init, __VA_ARGS__)
 
@@ -700,6 +748,15 @@ static inline char *_strdup_or_null(const char *callf, uint line,
 
 #define cond_timedwait(...) \
     abort_posix_errorok(pthread_cond_timedwait, ETIMEDOUT, __VA_ARGS__)
+
+#define mutexattr_settype(...) \
+	abort_posix(pthread_mutexattr_settype, __VA_ARGS__)
+
+#define mutexattr_init(...) \
+	abort_posix(pthread_mutexattr_init, __VA_ARGS__)
+
+#define mutexattr_destroy(...) \
+	abort_posix(pthread_mutexattr_destroy, __VA_ARGS__)
 
 #define mutex_init(...) \
     abort_posix(pthread_mutex_init, __VA_ARGS__)
@@ -728,13 +785,12 @@ static inline char *_strdup_or_null(const char *callf, uint line,
 #define spin_unlock(...) \
     abort_posix(pthread_spin_unlock, __VA_ARGS__)
 
-
-static inline int _do_munmap(const char *callf, uint line,
-                             void *addr, size_t length)
+static inline int do_munmap(void *addr, size_t length,
+                            const char *callf, uint line)
 {
     int                 ret = 0;
 
-    if (!addr && !length)
+    if (!addr)
         return 0;
 
     if (munmap(addr, length) == -1) {
@@ -746,11 +802,11 @@ static inline int _do_munmap(const char *callf, uint line,
 }
 
 #define do_munmap(...) \
-    _do_munmap(__func__, __LINE__, __VA_ARGS__)
+    do_munmap(__VA_ARGS__, __func__, __LINE__)
 
-static inline void *_do_mmap(const char *callf, uint line,
-                             void *addr, size_t length, int prot, int flags,
-                             int fd, off_t offset, int *error)
+static inline void *do_mmap(void *addr, size_t length, int prot, int flags,
+                            int fd, off_t offset, int *error,
+                            const char *callf, uint line)
 {
     void                *ret;
     int                 err = 0;
@@ -768,7 +824,7 @@ static inline void *_do_mmap(const char *callf, uint line,
 }
 
 #define do_mmap(...) \
-    _do_mmap(__func__, __LINE__, __VA_ARGS__)
+    do_mmap(__VA_ARGS__, __func__, __LINE__)
 
 static inline int fls64(uint64_t v)
 {
@@ -813,8 +869,7 @@ static inline void zhpeu_thr_wait_init(struct zhpeu_thr_wait *thr_wait)
     memset(thr_wait, 0, sizeof(*thr_wait));
     mutex_init(&thr_wait->mutex, NULL);
     cond_init(&thr_wait->cond, NULL);
-    atomic_store_explicit(&thr_wait->state, ZHPEU_THR_WAIT_IDLE,
-                          memory_order_release);
+    atm_store(&thr_wait->state, ZHPEU_THR_WAIT_IDLE);
 }
 
 static inline void zhpeu_thr_wait_destroy(struct zhpeu_thr_wait *thr_wait)
@@ -829,10 +884,7 @@ static inline bool zhpeu_thr_wait_signal_fast(struct zhpeu_thr_wait *thr_wait)
     int32_t             new = ZHPEU_THR_WAIT_SIGNAL;
 
     /* One sleeper, many wakers. */
-    if (atomic_compare_exchange_strong_explicit(&thr_wait->state, &old, new,
-                                                memory_order_acq_rel,
-                                                memory_order_acquire) ||
-        old == new)
+    if (atm_cmpxchg(&thr_wait->state, &old, new) || old == new)
         /* Done! */
         return false;
 
@@ -854,9 +906,8 @@ static inline void zhpeu_thr_wait_signal_slow(struct zhpeu_thr_wait *thr_wait,
     if (lock)
             mutex_lock(&thr_wait->mutex);
     new = ZHPEU_THR_WAIT_IDLE;
-    (void)atomic_compare_exchange_strong_explicit(&thr_wait->state, &old, new,
-                                                  memory_order_relaxed,
-                                                  memory_order_relaxed);
+    atm_cmpxchg(&thr_wait->state, &old, new);
+
     cond_broadcast(&thr_wait->cond);
     if (unlock)
             mutex_unlock(&thr_wait->mutex);
@@ -868,18 +919,15 @@ static inline bool zhpeu_thr_wait_sleep_fast(struct zhpeu_thr_wait *thr_wait)
     int32_t             new = ZHPEU_THR_WAIT_SLEEP;
 
     /* One sleeper, many wakers. */
-    if (atomic_compare_exchange_strong_explicit(&thr_wait->state, &old, new,
-                                                memory_order_acq_rel,
-                                                memory_order_acquire))
+    if (atm_cmpxchg(&thr_wait->state, &old, new))
         /* Need to call slow. */
         return true;
 
     /* Reset SIGNAL to IDLE. */
     assert(old == ZHPEU_THR_WAIT_SIGNAL);
     new = ZHPEU_THR_WAIT_IDLE;
-    (void)atomic_compare_exchange_strong_explicit(&thr_wait->state, &old, new,
-                                                  memory_order_acq_rel,
-                                                  memory_order_acquire);
+    atm_cmpxchg(&thr_wait->state, &old, new);
+
     /* Fast path succeeded. */
     return false;
 }
@@ -895,8 +943,7 @@ zhpeu_thr_wait_sleep_slow(struct zhpeu_thr_wait *thr_wait, int64_t timeout_us,
     if (lock)
         mutex_lock(&thr_wait->mutex);
     if (timeout_us < 0) {
-        while (atomic_load_explicit(&thr_wait->state, memory_order_relaxed) ==
-               ZHPEU_THR_WAIT_SLEEP)
+        while (atm_load_rlx(&thr_wait->state) == ZHPEU_THR_WAIT_SLEEP)
             cond_wait(&thr_wait->cond, &thr_wait->mutex);
     } else {
         clock_gettime(CLOCK_REALTIME, &timeout);
@@ -905,8 +952,7 @@ zhpeu_thr_wait_sleep_slow(struct zhpeu_thr_wait *thr_wait, int64_t timeout_us,
             timeout.tv_sec += timeout.tv_nsec / NS_PER_SEC;
             timeout.tv_nsec = timeout.tv_nsec % NS_PER_SEC;
         }
-        while (atomic_load_explicit(&thr_wait->state, memory_order_relaxed) ==
-               ZHPEU_THR_WAIT_SLEEP) {
+        while (atm_load_rlx(&thr_wait->state) == ZHPEU_THR_WAIT_SLEEP) {
             ret = cond_timedwait(&thr_wait->cond, &thr_wait->mutex, &timeout);
             if (ret < 0)
                 break;

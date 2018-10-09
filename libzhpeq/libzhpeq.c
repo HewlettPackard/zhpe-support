@@ -39,6 +39,12 @@
 #include <dlfcn.h>
 #include <limits.h>
 
+
+static_assert(sizeof(union zhpe_hw_wq_entry) ==  ZHPE_ENTRY_LEN,
+              "zhpe_hw_wq_entry");
+static_assert(sizeof(union zhpe_hw_cq_entry) ==  ZHPE_ENTRY_LEN,
+              "zhpe_hw_cq_entry");
+
 /* Set to 1 to dump qkdata when registered/exported/imported/freed. */
 #define QKDATA_DUMP     (0)
 
@@ -90,12 +96,7 @@ int zhpeq_init(int api_version)
     if (init_status > 0) {
         if (!expected_saw("api_version", ZHPEQ_API_VERSION, api_version))
             goto done;
-        if (!expected_saw("sizeof(zhpe_hw_wq_entry)",
-                          ZHPE_ENTRY_LEN, sizeof(union zhpe_hw_wq_entry)))
-            goto done;
-        if (!expected_saw("sizeof(zhpeq_cq_entry)",
-                          ZHPE_ENTRY_LEN, sizeof(struct zhpeq_cq_entry)))
-        goto done;
+
         mutex_lock(&init_mutex);
         if (b_ops->lib_init)
             ret = b_ops->lib_init(&b_attr);

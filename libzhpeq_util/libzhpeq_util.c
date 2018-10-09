@@ -40,7 +40,7 @@
 
 #include <libgen.h>
 
-const char              *appname = "libzhpeq_util";
+const char              *appname;
 size_t                  page_size;
 
 static bool             log_syslog;

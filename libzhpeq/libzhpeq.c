@@ -338,8 +338,6 @@ int64_t zhpeq_reserve(struct zhpeq *zq, uint32_t n_entries)
     for (old = atm_load_rlx(&zq->head_tail) ;;) {
         avail = qmask - ((old.tail - old.head) & qmask);
         if (avail < n_entries) {
-            fprintf(stderr, "o n 0x%x/0x%x 0x%x/0x%x\n",
-                    old.head, old.tail, new.head, new.tail);
             ret = -EAGAIN;
             break;
         }

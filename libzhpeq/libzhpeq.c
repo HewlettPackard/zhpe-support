@@ -325,6 +325,8 @@ int64_t zhpeq_reserve(struct zhpeq *zq, uint32_t n_entries)
     int64_t             ret = -EINVAL;
     uint32_t            qmask;
     uint32_t            avail;
+    struct zhpeq_ht     old;
+    struct zhpeq_ht     new;
 
     if (!zq)
         goto done;
@@ -332,16 +334,21 @@ int64_t zhpeq_reserve(struct zhpeq *zq, uint32_t n_entries)
     if (!zq || n_entries < 1 || n_entries > qmask)
         goto done;
 
-    /* While I can use compare-and-swap for reserve, it won't work
-     * for commit.
-     */
     ret = 0;
-    avail = qmask - ((zq->tail_reserved - zq->q_head) & qmask);
-    if (avail >= n_entries) {
-        ret = zq->tail_reserved;
-        zq->tail_reserved += n_entries;
-    } else
-        ret = -EAGAIN;
+    for (old = atm_load_rlx(&zq->head_tail) ;;) {
+        avail = qmask - ((old.tail - old.head) & qmask);
+        if (avail < n_entries) {
+            fprintf(stderr, "o n 0x%x/0x%x 0x%x/0x%x\n",
+                    old.head, old.tail, new.head, new.tail);
+            ret = -EAGAIN;
+            break;
+        }
+        new.head = old.head;
+        ret = old.tail;
+        new.tail = old.tail + n_entries;
+        if (atm_cmpxchg(&zq->head_tail, &old, new))
+            break;
+    }
 
  done:
     return ret;
@@ -351,22 +358,25 @@ int zhpeq_commit(struct zhpeq *zq, uint32_t qindex, uint32_t n_entries)
 {
     int                 ret = -EINVAL;
     uint32_t            qmask;
+    uint32_t            old;
+    uint32_t            new;
 
     if (!zq)
         goto done;
 
     qmask = zq->xqinfo.cmdq.ent - 1;
-    /* We need a lock to guarantee writes to tail register are ordered. */
-    ret = 0;
-    if (qindex == zq->tail_commit) {
-        wmb();
-        zq->tail_commit += n_entries;
-        iowrite64(zq->tail_commit & qmask,
-                  zq->qcm + ZHPE_XDM_QCM_CMD_QUEUE_TAIL_OFFSET);
-        if (b_ops->wq_signal)
-            ret = b_ops->wq_signal(zq);
-    } else
+    old = atm_load_rlx(&zq->tail_commit);
+    if (old != qindex) {
         ret = -EAGAIN;
+        goto done;
+    }
+    new = old + n_entries;
+    io_wmb();
+    iowrite64(new & qmask,
+              zq->qcm + ZHPE_XDM_QCM_CMD_QUEUE_TAIL_OFFSET);
+    ret = b_ops->wq_signal(zq);
+    io_wmb();
+    atm_store_rlx(&zq->tail_commit, new);
 
  done:
     return ret;
@@ -671,26 +681,21 @@ ssize_t zhpeq_cq_read(struct zhpeq *zq, struct zhpeq_cq_entry *entries,
 {
     ssize_t             ret = -EINVAL;
     bool                polled = false;
-    uint16_t            qmask;
     union zhpe_hw_cq_entry *cqe;
-    volatile uint8_t    *validp;
     ssize_t             i;
-    uint32_t            idx;
+    uint32_t            qmask;
+    uint32_t            old;
+    uint32_t            new;
 
     if (!zq || !entries || n_entries > SSIZE_MAX)
         goto done;
 
-    /* This is currently not thread safe for multiple readers on a single zq;
-     * I don't see a use for it, at the moment.
-     */
     qmask = zq->xqinfo.cmplq.ent - 1;
 
-    /* Lets try to optimize our read-barriers. */
-    for (i = 0; i < n_entries;) {
-        idx = ((zq->q_head + i) & qmask);
-        cqe = zq->cq + idx;
-        validp = (void *)cqe;
-        if ((*validp & ZHPE_HW_CQ_VALID) != cq_valid(zq->q_head + i, qmask)) {
+    for (i = 0, old = atm_load_rlx(&zq->head_tail.head) ; i < n_entries ;) {
+        cqe = zq->cq + (old & qmask);
+        if ((atm_load_rlx((uint8_t *)cqe) & ZHPE_HW_CQ_VALID) !=
+             cq_valid(old, qmask)) {
             if (i > 0 || !b_ops->cq_poll || polled)
                 break;
             ret = b_ops->cq_poll(zq, n_entries);
@@ -699,21 +704,15 @@ ssize_t zhpeq_cq_read(struct zhpeq *zq, struct zhpeq_cq_entry *entries,
             polled = true;
             continue;
         }
+        entries[i].z = cqe->entry;
+        entries[i].z.context = zq->context[cqe->entry.index];
+        new = old + 1;
+        if (!atm_cmpxchg(&zq->head_tail.head, &old, new))
+            break;
+        old = new;
         i++;
     }
     ret = i;
-    /* Just the one. */
-    smp_rmb();
-    /* Transfer entries to the caller's buffer and reset valid.
-     */
-    for (i = 0; i < ret; i++) {
-        idx = ((zq->q_head + i) & qmask);
-        cqe = zq->cq + idx;
-        entries[i].z = cqe->entry;
-        entries[i].z.context = zq->context[cqe->entry.index];
-    }
-    smp_wmb();
-    zq->q_head += ret;
 
  done:
     return ret;

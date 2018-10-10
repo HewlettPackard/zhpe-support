@@ -44,7 +44,7 @@ void fab_dom_init(struct fab_dom *dom)
 {
     memset(dom, 0, sizeof(*dom));
     dom->av_mutex = (pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
-    atomic_fetch_add(&dom->use_count, 1);
+    atm_inc(&dom->use_count);
 }
 
 static void onfree_dom(struct fab_dom *dom, void *data)
@@ -74,8 +74,8 @@ void fab_conn_init(struct fab_dom *dom, struct fab_conn *conn)
 {
     memset(conn, 0, sizeof(*conn));
     conn->dom = dom;
-    atomic_fetch_add(&dom->use_count, 1);
-    atomic_fetch_add(&conn->use_count, 1);
+    atm_inc(&dom->use_count);
+    atm_inc(&conn->use_count);
 }
 
 static void onfree_conn(struct fab_conn *conn, void *data)
@@ -124,7 +124,7 @@ int fab_dom_free(struct fab_dom *dom)
     if (!dom)
         return 0;
 
-    use_count = atomic_fetch_sub(&dom->use_count, 1);
+    use_count = atm_dec(&dom->use_count);
     assert(use_count > 0);
     if (use_count > 1)
         return 1;
@@ -155,7 +155,7 @@ int fab_conn_free(struct fab_conn *conn)
     if (!conn)
         return 0;
 
-    use_count = atomic_fetch_sub(&conn->use_count, 1);
+    use_count = atm_dec(&conn->use_count);
     assert(use_count > 0);
     if (use_count > 1)
         return 1;

@@ -106,17 +106,19 @@ void zhpeq_backend_zhpe_init(int fd);
 
 #define FREE_END        (-1)
 
-union free_index {
-    struct {
-        int32_t         index;
-        uint32_t        seq;
-    };
-    uint64_t            blob;
-};
+struct free_index {
+    int32_t             index;
+    uint32_t            seq;
+} __attribute__ ((aligned (__alignof__(uint64_t))));
 
 struct zhpeq_dom {
     void                *backend_data;
 };
+
+struct zhpeq_ht {
+    uint32_t            head;
+    uint32_t            tail;
+} __attribute__ ((aligned (__alignof__(uint64_t))));
 
 struct zhpeq {
     struct zhpeq_dom    *zdom;
@@ -127,10 +129,8 @@ struct zhpeq {
     void                **context;
     void                *backend_data;
     int                 fd;
-    /* q_head may be updated in progress thread. */
-    uint32_t            q_head CACHE_ALIGNED;
-    uint32_t            tail_reserved CACHE_ALIGNED;
-    uint32_t            tail_commit;
+    struct zhpeq_ht     head_tail CACHE_ALIGNED;
+    uint32_t            tail_commit CACHE_ALIGNED;
 };
 
 static inline uint8_t cq_valid(uint32_t idx, uint32_t qmask)

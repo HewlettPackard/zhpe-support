@@ -182,7 +182,11 @@ void zhpeu_free(void *ptr, const char *callf, uint line);
 #define free(...) \
     zhpeu_free(__VA_ARGS__, __func__, __LINE__)
 
-/* Trying to rely on stdatomic.h with less verbosity. */
+/* Trying to rely on stdatomic.h with less verbosity.
+ * I'm not at all convinced they do the right thing with fences, in general,
+ * but on x86 atomic adds and cmpxchg are full barriers. So the only relaxed
+ * thing I use are loads/stores.
+ */
 
 #define atm_load(_p) \
     atomic_load_explicit(_p, memory_order_acquire)
@@ -192,8 +196,6 @@ void zhpeu_free(void *ptr, const char *callf, uint line);
     atomic_store_explicit(_p, _v, memory_order_release)
 #define atm_store_rlx(_p, _v) \
     atomic_store_explicit(_p, _v, memory_order_relaxed)
-#define atm_fetch_add_rlx(_p, _v) \
-    atomic_fetch_add_explicit(_p, _v, memory_order_relaxed)
 #define atm_fetch_add(_p, _v) \
     atomic_fetch_add_explicit(_p, _v, memory_order_acq_rel)
 #define atm_fetch_sub_rlx(_p, _v) \
@@ -202,7 +204,10 @@ void zhpeu_free(void *ptr, const char *callf, uint line);
     atomic_fetch_sub_explicit(_p, _v, memory_order_acq_rel)
 #define atm_cmpxchg(_p, _oldp, _new) \
     atomic_compare_exchange_strong_explicit( \
-        _p, _oldp, _new, memory_order_acq_rel, memory_order_relaxed)
+        _p, _oldp, _new, memory_order_acq_rel, memory_order_acquire)
+
+#define atm_inc(_p)     atm_fetch_add(_p, 1)
+#define atm_dec(_p)     atm_fetch_sub(_p, 1)
 
 #define atm_inc_rlx(_p) atm_fetch_add_rlx(_p, 1)
 #define atm_inc(_p)     atm_fetch_add(_p, 1)
@@ -237,7 +242,7 @@ static inline void smp_wmb(void)
     asm volatile("sfence":::"memory");
 }
 
-static inline void wmb(void)
+static inline void io_wmb(void)
 {
     asm volatile("sfence":::"memory");
 }
@@ -869,7 +874,7 @@ static inline void zhpeu_thr_wait_init(struct zhpeu_thr_wait *thr_wait)
     memset(thr_wait, 0, sizeof(*thr_wait));
     mutex_init(&thr_wait->mutex, NULL);
     cond_init(&thr_wait->cond, NULL);
-    atm_store(&thr_wait->state, ZHPEU_THR_WAIT_IDLE);
+    atm_store_rlx(&thr_wait->state, ZHPEU_THR_WAIT_IDLE);
 }
 
 static inline void zhpeu_thr_wait_destroy(struct zhpeu_thr_wait *thr_wait)
@@ -907,7 +912,6 @@ static inline void zhpeu_thr_wait_signal_slow(struct zhpeu_thr_wait *thr_wait,
             mutex_lock(&thr_wait->mutex);
     new = ZHPEU_THR_WAIT_IDLE;
     atm_cmpxchg(&thr_wait->state, &old, new);
-
     cond_broadcast(&thr_wait->cond);
     if (unlock)
             mutex_unlock(&thr_wait->mutex);

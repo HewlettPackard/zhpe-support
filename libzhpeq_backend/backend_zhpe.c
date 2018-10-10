@@ -295,6 +295,11 @@ static int zhpe_qfree(struct zhpeq *zq)
     return ret;
 }
 
+static int zhpe_wq_signal(struct zhpeq *zq)
+{
+    return 0;
+}
+
 static int zhpe_mr_reg(struct zhpeq_dom *zdom,
                        const void *buf, size_t len,
                        uint32_t access, struct zhpeq_key_data **qkdata_out)
@@ -497,6 +502,7 @@ struct backend_ops ops = {
     .qfree              = zhpe_qfree,
     .open               = zhpe_open,
     .close              = zhpe_close,
+    .wq_signal          = zhpe_wq_signal,
     .mr_reg             = zhpe_mr_reg,
     .mr_free            = zhpe_mr_free,
     .zmmu_import        = zhpe_zmmu_import,

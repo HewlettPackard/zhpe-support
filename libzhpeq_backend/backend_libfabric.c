@@ -66,9 +66,9 @@ struct rkey {
 struct zdom_data {
     struct fab_dom      *fab_dom;
     struct fid_mr       **lcl_mr;
-    union free_index    lcl_mr_free;
+    struct free_index   lcl_mr_free;
     struct rkey         *rkey;
-    union free_index    rkey_free;
+    struct free_index   rkey_free;
 };
 
 enum engine_state {
@@ -1039,14 +1039,14 @@ static ssize_t lfab_cq_poll(struct zhpeq *zq, size_t hint)
 
 static void free_lcl_mr(struct zdom_data *bdom, uint32_t index)
 {
-    union free_index    old;
-    union free_index    new;
+    struct free_index   old;
+    struct free_index   new;
 
-    for (old.blob = atm_load_rlx(&bdom->lcl_mr_free.blob);;) {
+    for (old = atm_load_rlx(&bdom->lcl_mr_free) ;;) {
         bdom->lcl_mr[index] = TO_PTR(old.index);
         new.index = (index << 1) | 1;
         new.seq = old.seq + 1;
-        if (atm_cmpxchg(&bdom->lcl_mr_free.blob, &old.blob, new.blob))
+        if (atm_cmpxchg(&bdom->lcl_mr_free, &old, new))
             break;
     }
 }
@@ -1089,8 +1089,8 @@ static int lfab_mr_reg(struct zhpeq_dom *zdom,
         .len            = len,
         .mr_out         = &mr,
     };
-    union free_index    old;
-    union free_index    new;
+    struct free_index   old;
+    struct free_index   new;
     uint32_t            index;
 
     desc = malloc(sizeof(*desc));
@@ -1109,13 +1109,13 @@ static int lfab_mr_reg(struct zhpeq_dom *zdom,
         goto done;
 
     ret = -ENOSPC;
-    for (old.blob = atm_load_rlx(&bdom->lcl_mr_free.blob);;) {
+    for (old = atm_load_rlx(&bdom->lcl_mr_free) ;;) {
         if (old.index == FREE_END)
             goto done;
         index = old.index >> 1;
         new.index = (uintptr_t)bdom->lcl_mr[index];
         new.seq = old.seq + 1;
-        if (atm_cmpxchg(&bdom->lcl_mr_free.blob, &old.blob, new.blob))
+        if (atm_cmpxchg(&bdom->lcl_mr_free, &old, new))
             break;
     }
     bdom->lcl_mr[index] = mr;
@@ -1163,14 +1163,14 @@ static int lfab_mr_free(struct zhpeq_dom *zdom, struct zhpeq_key_data *qkdata)
 
 static void free_rkey(struct zdom_data *bdom, uint32_t index)
 {
-    union free_index    old;
-    union free_index    new;
+    struct free_index   old;
+    struct free_index   new;
 
-    for (old.blob = atm_load_rlx(&bdom->rkey_free.blob);;) {
+    for (old = atm_load_rlx(&bdom->rkey_free) ;;) {
         bdom->rkey[index].rkey = old.index;
         new.index = index;
         new.seq = old.seq + 1;
-        if (atm_cmpxchg(&bdom->rkey_free.blob, &old.blob, new.blob))
+        if (atm_cmpxchg(&bdom->rkey_free, &old, new))
             break;
     }
 }
@@ -1184,8 +1184,8 @@ static int lfab_zmmu_import(struct zhpeq_dom *zdom, int open_idx,
     struct zdom_data    *bdom = zdom->backend_data;
     const struct key_data_packed *pdata = blob;
     struct zhpeq_mr_desc_v1 *desc = NULL;
-    union free_index    old;
-    union free_index    new;
+    struct free_index   old;
+    struct free_index   new;
 
     if (blob_len != sizeof(*pdata) || cpu_visible)
         goto done;
@@ -1199,12 +1199,12 @@ static int lfab_zmmu_import(struct zhpeq_dom *zdom, int open_idx,
     unpack_kdata(pdata, &desc->qkdata);
 
     ret = -ENOSPC;
-    for (old.blob = atm_load_rlx(&bdom->rkey_free.blob);;) {
+    for (old = atm_load_rlx(&bdom->rkey_free) ;;) {
         if (old.index == FREE_END)
             goto done;
         new.index = bdom->rkey[old.index].rkey;
         new.seq = old.seq + 1;
-        if (atm_cmpxchg(&bdom->rkey_free.blob, &old.blob, new.blob))
+        if (atm_cmpxchg(&bdom->rkey_free, &old, new))
             break;
     }
     bdom->rkey[old.index].rkey = desc->qkdata.z.zaddr;

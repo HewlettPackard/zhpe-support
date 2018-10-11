@@ -192,26 +192,32 @@ void zhpeu_free(void *ptr, const char *callf, uint line);
     atomic_load_explicit(_p, memory_order_acquire)
 #define atm_load_rlx(_p) \
     atomic_load_explicit(_p, memory_order_relaxed)
-#define atm_store(_p, _v) \
+
+#define atm_store(_p, _v)  \
     atomic_store_explicit(_p, _v, memory_order_release)
 #define atm_store_rlx(_p, _v) \
     atomic_store_explicit(_p, _v, memory_order_relaxed)
+
 #define atm_fetch_add(_p, _v) \
     atomic_fetch_add_explicit(_p, _v, memory_order_acq_rel)
-#define atm_fetch_sub_rlx(_p, _v) \
-    atomic_fetch_sub_explicit(_p, _v, memory_order_relaxed)
+
+#define atm_fetch_and(_p, _v) \
+    atomic_and_explicit(_p, _v, memory_order_acq_rel)
+
+#define atm_fetch_or(_p, _v) \
+    atomic_or_explicit(_p, _v, memory_order_acq_rel)
+
 #define atm_fetch_sub(_p, _v) \
     atomic_fetch_sub_explicit(_p, _v, memory_order_acq_rel)
+
+#define atm_fetch_xor(_p, _v) \
+    atomic_xor_explicit(_p, _v, memory_order_acq_rel)
+
 #define atm_cmpxchg(_p, _oldp, _new) \
     atomic_compare_exchange_strong_explicit( \
         _p, _oldp, _new, memory_order_acq_rel, memory_order_acquire)
 
 #define atm_inc(_p)     atm_fetch_add(_p, 1)
-#define atm_dec(_p)     atm_fetch_sub(_p, 1)
-
-#define atm_inc_rlx(_p) atm_fetch_add_rlx(_p, 1)
-#define atm_inc(_p)     atm_fetch_add(_p, 1)
-#define atm_dec_rlx(_p) atm_fetch_sub_rlx(_p, 1)
 #define atm_dec(_p)     atm_fetch_sub(_p, 1)
 
 #ifdef _BARRIER_DEFINED
@@ -258,7 +264,8 @@ static inline void io_wmb(void)
 #undef _BARRIED_DEFINED
 
 #define barrier()       __compiler_barrier()
-#define CACHE_ALIGNED    __attribute__ ((aligned (L1_CACHE_BYTES)))
+#define INT64_ALIGNED   __attribute__ ((aligned (__alignof__(int64_t))));
+#define CACHE_ALIGNED   __attribute__ ((aligned (L1_CACHE_BYTES)))
 
 static inline size_t sockaddr_len(const void *addr)
 {

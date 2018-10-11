@@ -109,16 +109,16 @@ void zhpeq_backend_zhpe_init(int fd);
 struct free_index {
     int32_t             index;
     uint32_t            seq;
-} __attribute__ ((aligned (__alignof__(uint64_t))));
-
-struct zhpeq_dom {
-    void                *backend_data;
-};
+} INT64_ALIGNED;
 
 struct zhpeq_ht {
     uint32_t            head;
     uint32_t            tail;
-} __attribute__ ((aligned (__alignof__(uint64_t))));
+} INT64_ALIGNED;
+
+struct zhpeq_dom {
+    void                *backend_data;
+};
 
 struct zhpeq {
     struct zhpeq_dom    *zdom;

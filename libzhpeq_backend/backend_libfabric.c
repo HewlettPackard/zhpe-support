@@ -512,6 +512,7 @@ static bool worker_domain(struct zhpeu_work_head *head,
     bdom->rkey[i].rkey = FI_KEY_NOTAVAIL;
 
     if (one_dom) {
+        bdom->fab_dom = one_dom;
         atm_inc(&one_dom->use_count);
         ret = 0;
         goto done;
@@ -612,6 +613,7 @@ static bool worker_qalloc_post(struct zhpeu_work_head *head,
     fab_plus = conn->fab_plus = &one_conn;
 
     if (fab_plus->fab_conn) {
+        ret = 0;
         atm_inc(&fab_plus->fab_conn->use_count);
         goto link;
     }

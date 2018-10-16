@@ -221,6 +221,7 @@ int zhpeq_alloc(struct zhpeq_dom *zdom, int cmd_qlen, int cmp_qlen,
         .bits.toggle_valid = 1,
     };
     int                 flags;
+    size_t              i;
 
     if (!zq_out)
         goto done;
@@ -242,15 +243,21 @@ int zhpeq_alloc(struct zhpeq_dom *zdom, int cmd_qlen, int cmp_qlen,
     cmd_qlen = roundup_pow_of_2(cmd_qlen);
     cmp_qlen = roundup_pow_of_2(cmp_qlen);
 
-    ret = b_ops->qalloc(zq, cmd_qlen, cmp_qlen, traffic_class,
+    ret = b_ops->qalloc(zq, cmd_qlen, cmd_qlen, traffic_class,
                         priority, slice_mask);
     if (ret < 0)
         goto done;
 
-    zq->context = calloc_cachealigned(zq->xqinfo.cmdq.ent,
+    zq->context = calloc_cachealigned(zq->xqinfo.cmplq.ent,
                                       sizeof(*zq->context));
     if (!zq->context)
         goto done;
+
+    /* Initialize context storage free list. */
+    for (i = 0; i < zq->xqinfo.cmplq.ent - 1; i++)
+        zq->context[i] = TO_PTR(i + 1);
+    zq->context[i] = TO_PTR(FREE_END);
+    /* context_free is zeroed. */
 
     /* zq->fd == -1 means we're faking things out. */
     flags = (zq->fd == -1 ? MAP_ANONYMOUS | MAP_PRIVATE : MAP_SHARED);
@@ -381,6 +388,45 @@ int zhpeq_commit(struct zhpeq *zq, uint32_t qindex, uint32_t n_entries)
     return ret;
 }
 
+static inline void set_context(struct zhpeq *zq, union zhpe_hw_wq_entry *wqe,
+                               void *context)
+{
+    struct free_index   old;
+    struct free_index   new;
+
+    for (old = atm_load_rlx(&zq->context_free);;) {
+        if (unlikely(old.index == FREE_END)) {
+            /* Tiny race between head moving and context slot freed. */
+            sched_yield();
+            old = atm_load_rlx(&zq->context_free);
+            continue;
+        }
+        new.index = (int32_t)(uintptr_t)zq->context[old.index];
+        new.seq = old.seq + 1;
+        if (atm_cmpxchg(&zq->context_free, &old, new))
+            break;
+    }
+    zq->context[old.index] = context;
+    wqe->hdr.cmp_index = old.index;
+}
+
+static inline void *get_context(struct zhpeq *zq, struct zhpe_cq_entry *cqe)
+{
+    void                *ret = zq->context[cqe->index];
+    struct free_index   old;
+    struct free_index   new;
+
+    for (old = atm_load_rlx(&zq->context_free) ;;) {
+        zq->context[cqe->index] = TO_PTR(old.index);
+        new.index = cqe->index;
+        new.seq = old.seq + 1;
+        if (atm_cmpxchg(&zq->context_free, &old, new))
+            break;
+    }
+
+    return ret;
+}
+
 int zhpeq_nop(struct zhpeq *zq, uint32_t qindex, bool fence,
               void *context)
 {
@@ -393,11 +439,10 @@ int zhpeq_nop(struct zhpeq *zq, uint32_t qindex, bool fence,
         goto done;
 
     qindex = qindex & (zq->xqinfo.cmdq.ent - 1);
-    zq->context[qindex] = context;
     wqe = zq->wq + qindex;
 
     wqe->hdr.opcode = ZHPE_HW_OPCODE_NOP;
-    wqe->hdr.cmp_index = qindex;
+    set_context(zq, wqe, context);
 
     ret = 0;
 
@@ -418,12 +463,11 @@ static inline int zhpeq_rw(struct zhpeq *zq, uint32_t qindex, bool fence,
         goto done;
 
     qindex = qindex & (zq->xqinfo.cmdq.ent - 1);
-    zq->context[qindex] = context;
     wqe = zq->wq + qindex;
 
     opcode |= (fence ? ZHPE_HW_OPCODE_FENCE : 0);
     wqe->hdr.opcode = opcode;
-    wqe->hdr.cmp_index = qindex;
+    set_context(zq, wqe, context);
     wqe->dma.len = len;
     wqe->dma.rd_addr = rd_addr;
     wqe->dma.wr_addr = wr_addr;
@@ -454,12 +498,11 @@ int zhpeq_puti(struct zhpeq *zq, uint32_t qindex, bool fence,
         goto done;
 
     qindex = qindex & (zq->xqinfo.cmdq.ent - 1);
-    zq->context[qindex] = context;
     wqe = zq->wq + qindex;
 
     wqe->hdr.opcode = ZHPE_HW_OPCODE_PUTIMM;
     wqe->hdr.opcode |= (fence ? ZHPE_HW_OPCODE_FENCE : 0);
-    wqe->hdr.cmp_index = qindex;
+    set_context(zq, wqe, context);
     wqe->imm.len = len;
     wqe->imm.rem_addr = remote_addr;
     memcpy(wqe->imm.data, buf, len);
@@ -490,12 +533,11 @@ int zhpeq_geti(struct zhpeq *zq, uint32_t qindex, bool fence,
         goto done;
 
     qindex = qindex & (zq->xqinfo.cmdq.ent - 1);
-    zq->context[qindex] = context;
     wqe = zq->wq + qindex;
 
     wqe->hdr.opcode = ZHPE_HW_OPCODE_GETIMM;
     wqe->hdr.opcode |= (fence ? ZHPE_HW_OPCODE_FENCE : 0);
-    wqe->hdr.cmp_index = qindex;
+    set_context(zq, wqe, context);
     wqe->imm.len = len;
     wqe->imm.rem_addr = remote_addr;
 
@@ -519,10 +561,11 @@ int zhpeq_atomic(struct zhpeq *zq, uint32_t qindex, bool fence, bool retval,
         goto done;
 
     qindex = qindex & (zq->xqinfo.cmdq.ent - 1);
-    zq->context[qindex] = context;
     wqe = zq->wq + qindex;
 
     wqe->hdr.opcode = (fence ? ZHPE_HW_OPCODE_FENCE : 0);
+    set_context(zq, wqe, context);
+
     switch (op) {
 
     case ZHPEQ_ATOMIC_ADD:
@@ -704,10 +747,10 @@ ssize_t zhpeq_cq_read(struct zhpeq *zq, struct zhpeq_cq_entry *entries,
             continue;
         }
         entries[i].z = cqe->entry;
-        entries[i].z.context = zq->context[cqe->entry.index];
         new = old + 1;
         if (!atm_cmpxchg(&zq->head_tail.head, &old, new))
             break;
+        entries[i].z.context = get_context(zq, &entries[i].z);
         old = new;
         i++;
     }

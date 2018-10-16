@@ -35,10 +35,9 @@
  */
 
 #define _GNU_SOURCE
-#include <search.h>
-#undef _GNU_SOUCE
-
 #include <zhpeq_util_fab.h>
+
+#include <search.h>
 
 void fab_dom_init(struct fab_dom *dom)
 {
@@ -890,7 +889,7 @@ struct av_tree_entry {
 
 static int compare_sa(const void *key1, const void *key2)
 {
-    return sockaddr_cmp(key1, key2, false);
+    return sockaddr_cmp(key1, key2);
 }
 
 static int compare_fi(const void *key1, const void *key2)

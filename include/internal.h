@@ -37,8 +37,6 @@
 #ifndef _LIBZHPEQ_INTERNAL_H_
 #define _LIBZHPEQ_INTERNAL_H_
 
-#define _GNU_SOURCE
-
 #include <zhpeq.h>
 #include <zhpeq_util.h>
 #include <zhpe.h>
@@ -104,7 +102,7 @@ void zhpeq_register_backend(enum zhpe_backend backend, struct backend_ops *ops);
 void zhpeq_backend_libfabric_init(int fd);
 void zhpeq_backend_zhpe_init(int fd);
 
-#define FREE_END        (-1)
+#define FREE_END        ((int32_t)-1)
 
 struct free_index {
     int32_t             index;
@@ -130,6 +128,7 @@ struct zhpeq {
     void                *backend_data;
     int                 fd;
     struct zhpeq_ht     head_tail CACHE_ALIGNED;
+    struct free_index   context_free;
     uint32_t            tail_commit CACHE_ALIGNED;
 };
 

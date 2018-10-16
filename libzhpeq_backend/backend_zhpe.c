@@ -487,7 +487,7 @@ char *zhpe_qkdata_id_str(struct zhpeq_dom *zdom,
         goto done;
 
     uuid_unparse_upper(bdom->nodes[desc->uuid_idx].uuid, uuid_str);
-    if (asprintf(&ret, "%d %s", desc->uuid_idx, uuid_str) == -1)
+    if (zhpeu_asprintf(&ret, "%d %s", desc->uuid_idx, uuid_str) == -1)
         ret = NULL;
  done:
 

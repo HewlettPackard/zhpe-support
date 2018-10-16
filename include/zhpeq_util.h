@@ -118,7 +118,7 @@ extern size_t           page_size;
 /* Borrow AF_APPLETALK since it should never be seen. */
 #define AF_ZHPE         AF_APPLETALK
 #define ZHPE_ADDRSTRLEN (37)
-#define ZHPE_QUEUEINVAL (0xFFFFFFFFUL)
+#define ZHPE_QUEUEINVAL (~(uint32_t)0)
 
 struct sockaddr_zhpe {
     sa_family_t         sz_family;
@@ -198,27 +198,43 @@ void zhpeu_free(void *ptr, const char *callf, uint line);
 #define atm_store_rlx(_p, _v) \
     atomic_store_explicit(_p, _v, memory_order_relaxed)
 
-#define atm_fetch_add(_p, _v) \
+#define atm_add(_p, _v) \
     atomic_fetch_add_explicit(_p, _v, memory_order_acq_rel)
 
-#define atm_fetch_and(_p, _v) \
-    atomic_and_explicit(_p, _v, memory_order_acq_rel)
+#define atm_and(_p, _v) \
+    atomic_fetch_and_explicit(_p, _v, memory_order_acq_rel)
 
-#define atm_fetch_or(_p, _v) \
-    atomic_or_explicit(_p, _v, memory_order_acq_rel)
+#define atm_or(_p, _v) \
+    atomic_fetch_or_explicit(_p, _v, memory_order_acq_rel)
 
-#define atm_fetch_sub(_p, _v) \
+#define atm_sub(_p, _v) \
     atomic_fetch_sub_explicit(_p, _v, memory_order_acq_rel)
 
-#define atm_fetch_xor(_p, _v) \
-    atomic_xor_explicit(_p, _v, memory_order_acq_rel)
+#define atm_xor(_p, _v) \
+    atomic_fetch_xor_explicit(_p, _v, memory_order_acq_rel)
 
 #define atm_cmpxchg(_p, _oldp, _new) \
     atomic_compare_exchange_strong_explicit( \
         _p, _oldp, _new, memory_order_acq_rel, memory_order_acquire)
 
-#define atm_inc(_p)     atm_fetch_add(_p, 1)
-#define atm_dec(_p)     atm_fetch_sub(_p, 1)
+#define atm_inc(_p)     atm_add(_p, 1)
+#define atm_dec(_p)     atm_sub(_p, 1)
+
+/* A simple atomic singly linked list insert.
+ * At the moment, used only in cases where it is okay to steal the
+ * entire list, so there are no removal issues.
+ */
+#define atm_list_insert(_type, _headp, _new, _field)    \
+do {                                                    \
+    _type               **_h = (_headp);                \
+    _type               *_n = (_new);                   \
+    _type               *_old;                          \
+    for (_old = atm_load_rlx(_h) ;;) {                  \
+        _n->_field = _old;                              \
+        if (atm_cmpxchg(_h, &_old, _n))                 \
+            break;                                      \
+    }                                                   \
+} while (0)
 
 #ifdef _BARRIER_DEFINED
 #warning _BARRIER_DEFINED already defined
@@ -264,6 +280,7 @@ static inline void io_wmb(void)
 #undef _BARRIED_DEFINED
 
 #define barrier()       __compiler_barrier()
+#define INT32_ALIGNED   __attribute__ ((aligned (__alignof__(int32_t))));
 #define INT64_ALIGNED   __attribute__ ((aligned (__alignof__(int64_t))));
 #define CACHE_ALIGNED   __attribute__ ((aligned (L1_CACHE_BYTES)))
 
@@ -327,13 +344,10 @@ static inline int sockaddr_portcmp(const void *addr1, const void *addr2)
 
     assert(sa1->sa_family == sa2->sa_family);
 
-    /* Use memcmp everywhere for -1, 0, 1 behavior. */
+    /* Use memcmp for -1, 0, 1 behavior. */
     switch (sa1->sa_family) {
 
     case AF_INET:
-        ret = memcmp(&sa1->sin_port, &sa2->sin_port, sizeof(sa1->sin_port));
-        break;
-
     case AF_INET6:
         ret = memcmp(&sa1->sin_port, &sa2->sin_port, sizeof(sa1->sin_port));
         break;
@@ -362,7 +376,7 @@ static inline int sockaddr_cmp_noport(const void *addr1, const void *addr2)
         goto done;
     }
 
-    /* Use memcmp everywhere for -1, 0, 1 behavior. */
+    /* Use memcmp for -1, 0, 1 behavior. */
     switch (sa1->sa_family) {
 
     case AF_INET:
@@ -376,8 +390,7 @@ static inline int sockaddr_cmp_noport(const void *addr1, const void *addr2)
         break;
 
     case AF_ZHPE:
-        ret = memcmp(&sa1->zhpe.sz_uuid, &sa2->zhpe.sz_uuid,
-                     sizeof(sa1->zhpe.sz_uuid));
+        ret = uuid_compare(sa1->zhpe.sz_uuid, sa2->zhpe.sz_uuid);
         break;
 
     default:
@@ -408,8 +421,6 @@ static inline int sockaddr_cmp(const void *addr1, const void *addr2)
  done:
     return ret;
 }
-
-const char *sockaddr_ntop(const void *addr, char *buf, size_t len);
 
 static inline bool sockaddr_wildcard6(const struct sockaddr_in6 *sa)
 {
@@ -499,6 +510,52 @@ static inline void sockaddr_6to4(void *addr)
     return;
 }
 
+static_assert(INET6_ADDRSTRLEN >= ZHPE_ADDRSTRLEN, "ZHPE_ADDRSTRLEN");
+
+const char *sockaddr_ntop(const void *addr, char *buf, size_t len);
+
+int zhpeu_asprintf(char **strp, const char *fmt, ...)
+    __attribute__ ((format (printf, 2, 3)));
+
+static inline char *sockaddr_str(const void *addr)
+{
+    char                *ret = NULL;
+    const union sockaddr_in46 *sa = addr;
+    const char          *family;
+    char                ntop[INET6_ADDRSTRLEN];
+    uint                port;
+
+    if (!sockaddr_ntop(sa, ntop, sizeof(ntop)))
+        return NULL;
+
+    switch (sa->sa_family) {
+
+    case AF_INET:
+        family = "ipv4";
+        port = ntohs(sa->sin_port);
+        break;
+
+    case AF_INET6:
+        family = "ipv6";
+        port = ntohs(sa->sin_port);
+        break;
+
+    case AF_ZHPE:
+        family = "zhpe";
+        port = htonl(sa->zhpe.sz_queue);
+        break;
+
+    default:
+        break;
+    }
+    if (zhpeu_asprintf(&ret, "%s:%s:%u", family, ntop, port) == -1)
+            ret = NULL;
+
+    return ret;
+}
+
+void zhpeq_util_init(char *argv0, int default_log_level, bool use_syslog);
+
 void print_dbg(const char *fmt, ...)
     __attribute__ ((format (printf, 1, 2)));
 
@@ -507,33 +564,6 @@ void print_info(const char *fmt, ...)
 
 void print_err(const char *fmt, ...)
     __attribute__ ((format (printf, 1, 2)));
-
-static inline void sockaddr_print(const char *func, uint line, const void *addr)
-{
-    const union sockaddr_in46 *sa = addr;
-    const char          *family = "";
-    char                ntop[INET6_ADDRSTRLEN];
-
-    switch (sa->sa_family) {
-
-    case AF_INET:
-        family = "ipv4";
-        break;
-
-    case AF_INET6:
-        family = "ipv6";
-        break;
-
-    default:
-        break;
-    }
-
-    print_info("%s,%u:%s:%s:%d\n",
-               func, line, family, sockaddr_ntop(sa, ntop, sizeof(ntop)),
-               sa->sin_port);
-}
-
-void zhpeq_util_init(char *argv0, int default_log_level, bool use_syslog);
 
 char *errf_str(const char *fmt, ...)
     __attribute__ ((format (printf, 1, 2)));
@@ -919,9 +949,15 @@ static inline void zhpeu_thr_wait_signal_slow(struct zhpeu_thr_wait *thr_wait,
             mutex_lock(&thr_wait->mutex);
     new = ZHPEU_THR_WAIT_IDLE;
     atm_cmpxchg(&thr_wait->state, &old, new);
-    cond_broadcast(&thr_wait->cond);
     if (unlock)
             mutex_unlock(&thr_wait->mutex);
+    cond_broadcast(&thr_wait->cond);
+}
+
+static inline void zhpeu_thr_wait_signal(struct zhpeu_thr_wait *thr_wait)
+{
+    if (zhpeu_thr_wait_signal_fast(thr_wait))
+        zhpeu_thr_wait_signal_slow(thr_wait, true, true);
 }
 
 static inline bool zhpeu_thr_wait_sleep_fast(struct zhpeu_thr_wait *thr_wait)
@@ -1003,15 +1039,25 @@ static inline void zhpeu_work_head_destroy(struct zhpeu_work_head *head)
     zhpeu_thr_wait_destroy(&head->thr_wait);
 }
 
+static inline void zhpeu_work_init_inline(struct zhpeu_work *work)
+{
+    work->status = 0;
+}
+
 static inline void zhpeu_work_init(struct zhpeu_work *work)
 {
+    zhpeu_work_init_inline(work);
     work->worker = NULL;
-    work->status = 0;
     cond_init(&work->cond, NULL);
+}
+
+static inline void zhpeu_work_destroy_inline(struct zhpeu_work *work)
+{
 }
 
 static inline void zhpeu_work_destroy(struct zhpeu_work *work)
 {
+    zhpeu_work_destroy_inline(work);
     cond_destroy(&work->cond);
 }
 
@@ -1025,6 +1071,11 @@ static inline void zhpeu_work_wait(struct zhpeu_work_head *head,
         cond_wait(&work->cond, &head->thr_wait.mutex);
     if (unlock)
         mutex_unlock(&head->thr_wait.mutex);
+}
+
+static inline bool zhpeu_work_queued(struct zhpeu_work_head *head)
+{
+    return unlikely(!!STAILQ_FIRST(&head->work_list));
 }
 
 static inline void zhpeu_work_queue(struct zhpeu_work_head *head,
@@ -1041,6 +1092,15 @@ static inline void zhpeu_work_queue(struct zhpeu_work_head *head,
         zhpeu_thr_wait_signal_slow(&head->thr_wait, false, unlock);
     else if (unlock)
         mutex_unlock(&head->thr_wait.mutex);
+}
+
+static inline void zhpeu_work_process_inline(struct zhpeu_work_head *head,
+                                             struct zhpeu_work *work,
+                                             zhpeu_worker worker, void *data)
+{
+    work->worker = worker;
+    work->data = data;
+    while (work->worker(head, work));
 }
 
 static inline bool zhpeu_work_process(struct zhpeu_work_head *head,

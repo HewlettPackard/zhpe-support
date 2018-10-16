@@ -859,7 +859,7 @@ const char *sockaddr_ntop(const void *addr, char *buf, size_t len)
         break;
 
     case AF_ZHPE:
-        if (len  < ZHPE_ADDRSTRLEN) {
+        if (len < ZHPE_ADDRSTRLEN) {
             errno = ENOSPC;
             break;
         }
@@ -931,6 +931,18 @@ int sockaddr_cmpx(const union sockaddr_in46 *sa1,
     ret = memcmp(&local1.sin_port, &local2.sin_port, sizeof(local1.sin_port));
 
  done:
+
+    return ret;
+}
+
+int zhpeu_asprintf(char **strp, const char *fmt, ...)
+{
+    int                 ret;
+    va_list             ap;
+
+    va_start(ap, fmt);
+    ret = vasprintf(strp, fmt, ap);
+    va_end(ap);
 
     return ret;
 }
@@ -1028,3 +1040,4 @@ void *zhpeu_calloc_aligned(size_t alignment, size_t nmemb, size_t size,
 
     return ret;
 }
+

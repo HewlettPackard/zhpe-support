@@ -150,7 +150,6 @@ struct io_record {
 struct stuff {
     struct circleq_entry lentry;
     struct zhpeq        *zq;
-    struct engine       *engine;
     struct fab_conn_plus *fab_plus;
     uint64_t            tx_queued;
     uint64_t            tx_completed;
@@ -164,12 +163,6 @@ struct stuff {
     struct fi_rma_ioc   atm_rma_ioc;
     struct fi_msg_atomic atm_msg;
     uint32_t            cq_tail;
-    enum engine_state   state;
-    struct context      *context;
-    size_t              context_entries;
-    struct stailq_head  context_free;
-    struct zhpe_result  *results;
-    struct fid_mr       *results_mr;
     bool                allocated;
 };
 
@@ -521,11 +514,11 @@ static bool worker_domain(struct zhpeu_work_head *head,
     one_dom = fab_dom_alloc(onfree_one_dom, &one_dom);
     if (!one_dom)
             goto done;
+    bdom->fab_dom = one_dom;
     ret = fab_dom_setup(NULL, NULL, false, backend_prov, backend_dom,
                         FI_EP_RDM, one_dom);
     if (ret < 0)
         goto done;
-    bdom->fab_dom = one_dom;
 
  done:
     work->status = ret;
@@ -624,11 +617,11 @@ static bool worker_qalloc_post(struct zhpeu_work_head *head,
     ret = fab_ep_setup(fab_plus->fab_conn, NULL, 0, 0);
     if (ret < 0)
         goto done;
-    ret = -ENOMEM;
 
     /* Build free list of context structures big enough for all I/Os. */
-    req = fab_plus->fab_conn->dom->finfo.info->tx_attr->size;
-    fab_plus->context_entries = req;
+    ret = -ENOMEM;
+    fab_plus->context_entries =
+        fab_plus->fab_conn->dom->finfo.info->tx_attr->size;
 
     req = fab_plus->context_entries * sizeof(*fab_plus->context);
     fab_plus->context = malloc_cachealigned(req);
@@ -772,14 +765,15 @@ static void cq_update(void *arg, void *vcqe, bool err)
     }
 }
 
-static inline void cleanup_eagain(struct context *context)
+static inline void cleanup_eagain(struct stuff *conn, struct context *context)
 {
+    conn->tx_queued--;
     /* Return context to head of free list. */
     STAILQ_INSERT_HEAD(&context->fab_plus->context_free,
                        &context->free_lentry, ptrs);
 }
 
-static void lfab_zq(struct stuff *conn)
+static bool lfab_zq(struct stuff *conn)
 {
     struct zhpeq        *zq = conn->zq;
     struct fab_conn_plus *fab_plus = conn->fab_plus;
@@ -835,6 +829,8 @@ static void lfab_zq(struct stuff *conn)
         context->conn = conn;
         context->cmp_index = wqe->hdr.cmp_index;
 
+        conn->tx_queued++;
+
         switch (wqe->hdr.opcode & ~ZHPE_HW_OPCODE_FENCE) {
 
         case ZHPE_HW_OPCODE_NOP:
@@ -865,7 +861,7 @@ static void lfab_zq(struct stuff *conn)
                             conn->msg.msg_iov[0].iov_len, conn->msg.context);
             if (unlikely(rc < 0)) {
                 if (rc == -FI_EAGAIN) {
-                    cleanup_eagain(context);
+                    cleanup_eagain(conn, context);
                     goto eagain;
                 }
                 print_func_fi_err(__FUNCTION__, __LINE__,
@@ -899,7 +895,7 @@ static void lfab_zq(struct stuff *conn)
                             conn->msg.msg_iov[0].iov_len, conn->msg.context);
             if (unlikely(rc < 0)) {
                 if (rc == -FI_EAGAIN) {
-                    cleanup_eagain(context);
+                    cleanup_eagain(conn, context);
                     goto eagain;
                 }
                 print_func_fi_err(__FUNCTION__, __LINE__,
@@ -930,7 +926,7 @@ static void lfab_zq(struct stuff *conn)
                             conn->msg.msg_iov[0].iov_len, conn->msg.context);
             if (unlikely(rc < 0)) {
                 if (rc == -FI_EAGAIN) {
-                    cleanup_eagain(context);
+                    cleanup_eagain(conn, context);
                     goto eagain;
                 }
                 print_func_fi_err(__FUNCTION__, __LINE__,
@@ -960,7 +956,7 @@ static void lfab_zq(struct stuff *conn)
                             conn->msg.msg_iov[0].iov_len, conn->msg.context);
             if (unlikely(rc < 0)) {
                 if (rc == -FI_EAGAIN) {
-                    cleanup_eagain(context);
+                    cleanup_eagain(conn, context);
                     goto eagain;
                 }
                 print_func_fi_err(__FUNCTION__, __LINE__,
@@ -1017,7 +1013,7 @@ static void lfab_zq(struct stuff *conn)
                             context->result_len, conn->msg.context);
             if (rc < 0) {
                 if (rc == -FI_EAGAIN) {
-                    cleanup_eagain(context);
+                    cleanup_eagain(conn, context);
                     goto eagain;
                 }
                 print_func_fi_errn(__FUNCTION__, __LINE__,
@@ -1044,6 +1040,8 @@ static void lfab_zq(struct stuff *conn)
      * Key revocation needs to be skipped. Must deal with outstanding
      * av processing.
      */
+
+    return (conn->tx_queued != conn->tx_completed || wq_head != wq_tail);
 }
 
 static void *lfab_eng_thread(void *veng)
@@ -1066,8 +1064,7 @@ static void *lfab_eng_thread(void *veng)
         /* Process all queues. */
         CIRCLEQ_FOREACH(circleq_entry, &eng->zq_head, ptrs) {
             conn = container_of(circleq_entry, struct stuff, lentry);
-            lfab_zq(conn);
-            outstanding |= (conn->tx_queued != conn->tx_completed);
+            outstanding |= lfab_zq(conn);
         }
         /* Don't sleep if there is outstanding work. */
         if (outstanding) {

@@ -87,7 +87,6 @@ static void vlog(int priority, FILE *file, const char *prefix,
     }
 }
 
-
 void print_dbg(const char *fmt, ...)
 {
     va_list             ap;
@@ -1040,4 +1039,3 @@ void *zhpeu_calloc_aligned(size_t alignment, size_t nmemb, size_t size,
 
     return ret;
 }
-

@@ -35,9 +35,9 @@
  */
 
 #define _GNU_SOURCE
-#include <zhpeq_util_fab.h>
-
 #include <search.h>
+
+#include <zhpeq_util_fab.h>
 
 void fab_dom_init(struct fab_dom *dom)
 {

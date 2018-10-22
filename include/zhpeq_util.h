@@ -1107,13 +1107,15 @@ zhpeu_thr_wait_sleep_slow(struct zhpeu_thr_wait *thr_wait, int64_t timeout_us,
                           bool lock, bool unlock)
 {
     int                 ret = 0;
+    int32_t             old = ZHPEU_THR_WAIT_SLEEP;
+    int32_t             new = ZHPEU_THR_WAIT_IDLE;
     struct timespec     timeout;
 
     /* One sleeper, many wakers. */
     if (lock)
         mutex_lock(&thr_wait->mutex);
     if (timeout_us < 0) {
-        while (atm_load_rlx(&thr_wait->state) == ZHPEU_THR_WAIT_SLEEP)
+        while (atm_load_rlx(&thr_wait->state) == old)
             cond_wait(&thr_wait->cond, &thr_wait->mutex);
     } else {
         clock_gettime(CLOCK_REALTIME, &timeout);
@@ -1122,10 +1124,12 @@ zhpeu_thr_wait_sleep_slow(struct zhpeu_thr_wait *thr_wait, int64_t timeout_us,
             timeout.tv_sec += timeout.tv_nsec / NS_PER_SEC;
             timeout.tv_nsec = timeout.tv_nsec % NS_PER_SEC;
         }
-        while (atm_load_rlx(&thr_wait->state) == ZHPEU_THR_WAIT_SLEEP) {
+        while (atm_load_rlx(&thr_wait->state) == old) {
             ret = cond_timedwait(&thr_wait->cond, &thr_wait->mutex, &timeout);
-            if (ret < 0)
+            if (ret < 0) {
+                atm_cmpxchg(&thr_wait->state, &old, new);
                 break;
+            }
         }
     }
     if (unlock)

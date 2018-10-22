@@ -297,6 +297,36 @@ static void random_rx_rcv(struct stuff *conn, struct rx_queue_head *rx_head)
     }
 }
 
+static ssize_t do_progress(struct fab_conn *fab_conn,
+                           size_t *tx_cmp, size_t *rx_cmp)
+{
+    ssize_t             ret = 0;
+    ssize_t             rc;
+
+    /* Check both tx and rx sides to make progress.
+     * FIXME: Should rx be necessary for one-sided?
+     */
+    rc = fab_completions(fab_conn->tx_cq, 0, NULL, NULL);
+    if (ret >= 0) {
+        if (tx_cmp)
+            *tx_cmp += rc;
+        else
+            assert(!rc);
+    } else
+        ret = rc;
+
+    rc = fab_completions(fab_conn->rx_cq, 0, NULL, NULL);
+    if (rc >= 0) {
+        if (rx_cmp)
+            *rx_cmp += rc;
+        else
+            assert(!rc);
+    } else if (ret >= 0)
+        ret = rc;
+
+    return ret;
+}
+
 static int do_server_pong(struct stuff *conn)
 {
     int                 ret = 0;
@@ -304,6 +334,7 @@ static int do_server_pong(struct stuff *conn)
     const struct args   *args = conn->args;
     uint                tx_flag_in = TX_NONE;
     size_t              tx_avail = conn->tx_avail;
+    size_t              rx_avail = 0;
     size_t              tx_off = 0;
     size_t              rx_off = 0;
     size_t              tx_ctx = 0;
@@ -352,20 +383,14 @@ static int do_server_pong(struct stuff *conn)
             }
             *(uint8_t *)rx_addr = 0;
         }
+        ret = do_progress(fab_conn, &tx_avail, NULL);
+        if (ret < 0)
+            goto done;
         /* Send all available buffers. */
-        for (window = TX_WINDOW; window > 0 && rx_count != tx_count;
+        for (window = TX_WINDOW; window > 0 && rx_count != tx_count && tx_avail;
              (window--, tx_count++, tx_avail--,
               tx_off = next_roff(conn, tx_off),
               tx_ctx = next_ctx(conn, tx_ctx))) {
-            /* Check for tx slots. */
-            if (!tx_avail) {
-                ret = fab_completions(fab_conn->tx_cq, 0, NULL, NULL);
-                if (ret < 0)
-                    goto done;
-                tx_avail += ret;
-                if (!tx_avail)
-                    break;
-            }
             /* Reflect buffer to same offset in client.*/
             tx_addr = conn->tx_addr + tx_off;
             rx_addr = (void *)conn->remote_addr + tx_off;
@@ -380,10 +405,9 @@ static int do_server_pong(struct stuff *conn)
         }
     }
     while (tx_avail != conn->tx_avail) {
-        ret = fab_completions(fab_conn->tx_cq, 0, NULL, NULL);
+        ret = do_progress(fab_conn, &tx_avail, NULL);
         if (ret < 0)
             goto done;
-        tx_avail += ret;
     }
     /* Do a send-receive for the final handshake. */
     ret = fi_recv(fab_conn->ep, NULL, 0, NULL, 0, &conn->ctx[0]);
@@ -391,7 +415,12 @@ static int do_server_pong(struct stuff *conn)
         print_func_fi_err(__FUNCTION__, __LINE__, "fi_recv", "", ret);
         goto done;
     }
-    while (!fab_completions(fab_conn->rx_cq, 0, NULL, NULL));
+    while (!rx_avail) {
+        ret = do_progress(fab_conn, NULL, &rx_avail);
+        if (ret < 0)
+            goto done;
+    }
+
     op_count = tx_count - warmup_count;
     fab_print_info(fab_conn);
     printf("%s:op_cnt/warmup %lu/%lu\n", appname, op_count, warmup_count);
@@ -460,24 +489,17 @@ static int do_client_pong(struct stuff *conn)
             if (delta < lat_min2)
                 lat_min2 = delta;
         }
+        ret = do_progress(fab_conn, &tx_avail, NULL);
+        if (ret < 0)
+            goto done;
         /* Send all available buffers. */
         for (window = TX_WINDOW;
-             window > 0 && ring_avail > 0 && tx_flag_out != TX_LAST;
+             window > 0 && ring_avail > 0 && tx_flag_out != TX_LAST && tx_avail;
              (window--, ring_avail--, tx_count++, tx_avail--,
               tx_off = next_roff(conn, tx_off),
               tx_ctx = next_ctx(conn, tx_ctx))) {
 
             now = get_cycles(NULL);
-            /* Check for tx slots. */
-            if (!tx_avail) {
-                ret = fab_completions(fab_conn->tx_cq, 0, NULL, NULL);
-                lat_comp += get_cycles(NULL) - now;
-                if (ret < 0)
-                    goto done;
-                tx_avail += ret;
-                if (!tx_avail)
-                    break;
-            }
 
             /* Compute delta based on cycles/ops. */
             if (args->seconds_mode)
@@ -538,11 +560,10 @@ static int do_client_pong(struct stuff *conn)
     }
     while (tx_avail != conn->tx_avail) {
         now = get_cycles(NULL);
-        ret = fab_completions(fab_conn->tx_cq, 0, NULL, NULL);
+        ret = do_progress(fab_conn, &tx_avail, NULL);
         lat_comp += get_cycles(NULL) - now;
         if (ret < 0)
             goto done;
-        tx_avail += ret;
     }
     lat_total1 = get_cycles(NULL) - lat_total1;
     /* Do a send-receive for the final handshake. */
@@ -551,7 +572,12 @@ static int do_client_pong(struct stuff *conn)
         print_func_fi_err(__FUNCTION__, __LINE__, "fi_send", "", ret);
         goto done;
     }
-    while (!fab_completions(fab_conn->tx_cq, 0, NULL, NULL));
+    for (tx_avail = 0; !tx_avail;) {
+        ret = do_progress(fab_conn, &tx_avail, NULL);
+        if (ret < 0)
+            goto done;
+    }
+
     op_count = tx_count - warmup_count;
     fab_print_info(fab_conn);
     printf("%s:op_cnt/warmup %lu/%lu\n", appname, op_count, warmup_count);
@@ -572,6 +598,7 @@ static int do_server_sink(struct stuff *conn)
     int                 ret = 0;
     struct fab_conn     *fab_conn = &conn->fab_conn;
     const struct args   *args = conn->args;
+    size_t              rx_avail = 0;
 
     /* Do a send-receive for the final handshake. */
     ret = fi_recv(fab_conn->ep, conn->rx_addr, args->ring_entry_len,
@@ -580,7 +607,12 @@ static int do_server_sink(struct stuff *conn)
         print_func_fi_err(__FUNCTION__, __LINE__, "fi_recv", "", ret);
         goto done;
     }
-    while (!fab_completions(fab_conn->rx_cq, 0, NULL, NULL));
+    while (!rx_avail) {
+        ret = do_progress(fab_conn, NULL, &rx_avail);
+        if (ret < 0)
+            goto done;
+    }
+
     fab_print_info(fab_conn);
 
  done:
@@ -987,8 +1019,8 @@ static void usage(bool help)
     print_usage(
         help,
         "Usage:%s [-acorsu] [-d <domain>] [-p <provider>] [-t <txqlen>]\n"
-        "    <port> [<node> <entry_len> <ring_entries>\n"
-        "    <op_count/seconds>]\n"
+        "    <port> [<node> <entry_len> <ring_entries>"
+        " <op_count/seconds>]\n"
         "All sizes may be postfixed with [kmgtKMGT] to specify the"
         " base units.\n"
         "Lower case is base 10; upper case is base 2.\n"

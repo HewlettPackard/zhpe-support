@@ -102,7 +102,7 @@ void zhpeq_register_backend(enum zhpe_backend backend, struct backend_ops *ops);
 void zhpeq_backend_libfabric_init(int fd);
 void zhpeq_backend_zhpe_init(int fd);
 
-#define FREE_END        ((int32_t)-1)
+#define FREE_END        ((intptr_t)-1)
 
 struct free_index {
     int32_t             index;

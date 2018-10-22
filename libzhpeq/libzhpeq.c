@@ -39,7 +39,6 @@
 #include <dlfcn.h>
 #include <limits.h>
 
-
 static_assert(sizeof(union zhpe_hw_wq_entry) ==  ZHPE_ENTRY_LEN,
               "zhpe_hw_wq_entry");
 static_assert(sizeof(union zhpe_hw_cq_entry) ==  ZHPE_ENTRY_LEN,

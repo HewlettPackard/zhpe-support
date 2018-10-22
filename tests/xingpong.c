@@ -957,8 +957,8 @@ static void usage(bool help)
     print_usage(
         help,
         "Usage:%s [-acosu] [-t <txqlen>]\n"
-        "    <port> [<node> <entry_len> <ring_entries>\n"
-        "    <op_count/seconds>]\n"
+        "    <port> [<node> <entry_len> <ring_entries>"
+        " <op_count/seconds>]\n"
         "All sizes may be postfixed with [kmgtKMGT] to specify the"
         " base units.\n"
         "Lower case is base 10; upper case is base 2.\n"

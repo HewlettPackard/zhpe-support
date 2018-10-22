@@ -171,6 +171,7 @@ struct engine {
     pthread_t           thread;
     struct circleq_head zq_head;
     enum engine_state   state;
+    bool                do_auto;
 };
 
 struct fab_conn_plus {
@@ -247,36 +248,42 @@ static inline void record_io_done(struct context *context)
 static int lfab_eng_work_queue(struct engine *eng, zhpeu_worker worker,
                                void *data)
 {
-    int                 ret;
+    int                 ret = 0;
     struct zhpeu_work   work;
 
     zhpeu_work_init(&work);
 
     mutex_lock(&eng->work_head.thr_wait.mutex);
 
-    switch (eng->state) {
+    if (eng->do_auto) {
 
-    case ENGINE_STOPPED:
-        ret = -pthread_create(&eng->thread, NULL, lfab_eng_thread, eng);
-        if (ret >= 0)
-            eng->state = ENGINE_RUNNING;
-        else
-            print_func_err(__FUNCTION__, __LINE__, "pthread_create",
-                           "eng", ret);
-        break;
+        switch (eng->state) {
 
-    default:
-        ret = 0;
-        break;
+        case ENGINE_STOPPED:
+            ret = -pthread_create(&eng->thread, NULL, lfab_eng_thread, eng);
+            if (ret >= 0)
+                eng->state = ENGINE_RUNNING;
+            else
+                print_func_err(__FUNCTION__, __LINE__, "pthread_create",
+                               "eng", ret);
+            break;
 
+        default:
+            ret = 0;
+            break;
+
+        }
     }
     if (likely(ret >= 0)) {
         zhpeu_work_queue(&eng->work_head, &work, worker, data,
-                        true, false, false);
-        zhpeu_work_wait(&eng->work_head, &work, false, false);
+                        true, false, !eng->do_auto);
+        if (eng->do_auto)
+            zhpeu_work_wait(&eng->work_head, &work, false, true);
+        else
+            while (zhpeu_work_process(&eng->work_head, true, true));
         ret = work.status;
-    }
-    mutex_unlock(&eng->work_head.thr_wait.mutex);
+    } else
+        mutex_unlock(&eng->work_head.thr_wait.mutex);
 
     zhpeu_work_destroy(&work);
 
@@ -1129,7 +1136,20 @@ static int lfab_qfree(struct zhpeq *zq)
 
 static int lfab_wq_signal(struct zhpeq *zq)
 {
-    zhpeu_thr_wait_signal(&eng.work_head.thr_wait);
+    struct circleq_entry *circleq_entry;
+    struct stuff        *conn;
+
+    if (eng.do_auto)
+        zhpeu_thr_wait_signal(&eng.work_head.thr_wait);
+    else {
+        /* Process all queues. */
+        mutex_lock(&eng.work_head.thr_wait.mutex);
+        CIRCLEQ_FOREACH(circleq_entry, &eng.zq_head, ptrs) {
+            conn = container_of(circleq_entry, struct stuff, lentry);
+            lfab_zq(conn);
+        }
+        mutex_unlock(&eng.work_head.thr_wait.mutex);
+    }
 
     return 0;
 }
@@ -1427,6 +1447,7 @@ void zhpeq_backend_libfabric_init(int fd)
 {
     backend_prov = getenv("ZHPE_BACKEND_LIBFABRIC_PROV");
     backend_dom = getenv("ZHPE_BACKEND_LIBFABRIC_DOM");
+    eng.do_auto = !!getenv("ZHPE_BACKEND_LIBFABRIC_AUTO");
 
     if (fd != -1)
         return;

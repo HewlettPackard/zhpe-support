@@ -47,15 +47,24 @@ static bool             log_syslog;
 static bool             log_syslog_init;
 static int              log_level = LOG_ERR;
 
+static struct zhpeu_atm_list_ptr atm_dummy;
+
 static void __attribute__((constructor)) lib_init(void)
 {
     long                rcl;
+    struct zhpeu_atm_list_ptr oldh;
+    struct zhpeu_atm_list_ptr newh;
 
     /* Make sure page_size is set before use; if we can't get it, just die. */
     rcl = sysconf(_SC_PAGESIZE);
     if (rcl == -1)
         abort();
     page_size = rcl;
+    /* Force __atomic_load_16 and __atomic_compare_exchange_16 to be linked. */
+    oldh = atm_load_rlx(&atm_dummy);
+    newh.ptr = NULL;
+    newh.seq = oldh.seq + 1;
+    atm_cmpxchg(&atm_dummy, &oldh, newh);
 }
 
 void zhpeq_util_init(char *argv0, int default_log_level, bool use_syslog)
@@ -1007,6 +1016,12 @@ void *zhpeu_calloc(size_t nmemb, size_t size, const char *callf, uint line)
     }
 
     return ret;
+}
+
+/* For things that want a function pointer to free. */
+void zhpeu_free_ptr(void *ptr)
+{
+    free(ptr);
 }
 
 #undef free

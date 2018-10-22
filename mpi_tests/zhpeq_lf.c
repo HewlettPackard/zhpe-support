@@ -143,8 +143,9 @@ void zhpel_init(struct zhpel_data *lf_data, const char *provider,
     hints = NULLCHK(fi_allocinfo, ());
     hints->caps = FI_RMA | (use_rma_events ? FI_RMA_EVENT : 0);
     hints->domain_attr->mr_mode = FI_MR_LOCAL | FI_MR_ALLOCATED;
-    /* Assume provid-er can always just lie and give us thread-safe behavior. */
-    hints->domain_attr->threading = FI_THREAD_FID;
+    /* Assume provider can always just lie and give us thread-safe behavior. */
+    hints->domain_attr->threading = FI_THREAD_COMPLETION;
+    hints->domain_attr->data_progress = FI_PROGRESS_AUTO;
     hints->ep_attr->type = FI_EP_RDM;
     if (use_sep) {
         hints->domain_attr->tx_ctx_cnt  = lf_data->cli.n_eps;

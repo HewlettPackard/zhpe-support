@@ -196,7 +196,7 @@ static inline void cq_write(void *vcontext, int status);
 
 #ifdef ZHPE_IO_RECORD
 
-static struct io_record io_rec[ZHPE_IO_RECORD];
+static struct io_record io_rec[ZHPE_IO_RECORD] __attribute__((used));
 static uint32_t         io_rec_idx;
 
 static void

@@ -365,6 +365,23 @@ static int zq_write(struct zhpeq *zq, bool fence, uint64_t lcl_zaddr,
     return ret;
 }
 
+static ssize_t do_progress(struct zhpeq *zq, size_t *tx_cmp)
+{
+    ssize_t             ret = 0;
+    ssize_t             rc;
+
+    rc = zq_completions(zq);
+    if (ret >= 0) {
+        if (tx_cmp)
+            *tx_cmp += rc;
+        else
+            assert(!rc);
+    } else
+        ret = rc;
+
+    return ret;
+}
+
 static int do_server_pong(struct stuff *conn)
 {
     int                 ret = 0;
@@ -419,20 +436,13 @@ static int do_server_pong(struct stuff *conn)
             }
             *(uint8_t *)rx_addr = 0;
         }
+        ret = do_progress(conn->zq, &tx_avail);
+        if (ret < 0)
+            goto done;
         /* Send all available buffers. */
-        for (window = TX_WINDOW; window > 0 && rx_count != tx_count;
+        for (window = TX_WINDOW; window > 0 && rx_count != tx_count && tx_avail;
              (window--, tx_count++, tx_avail--,
               tx_off = next_roff(conn, tx_off))) {
-            /* Check for tx slots. */
-            if (!tx_avail) {
-                ret = zq_completions(conn->zq);
-                if (ret < 0)
-                    goto done;
-                tx_avail += ret;
-                if (!tx_avail)
-                    break;
-            }
-            /* Check for tx slots. */
             /* Reflect buffer to same offset in client.*/
             zq_tx_addr = conn->zq_local_tx_zaddr + tx_off;
             zq_rx_addr = conn->zq_remote_rx_zaddr + tx_off;
@@ -443,10 +453,9 @@ static int do_server_pong(struct stuff *conn)
         }
     }
     while (tx_avail != conn->tx_avail) {
-        ret = zq_completions(conn->zq);
+        ret = do_progress(conn->zq, &tx_avail);
         if (ret < 0)
             goto done;
-        tx_avail += ret;
     }
     op_count = tx_count - warmup_count;
     zhpeq_print_info(conn->zq);
@@ -516,23 +525,16 @@ static int do_client_pong(struct stuff *conn)
             if (delta < lat_min2)
                 lat_min2 = delta;
         }
+        ret = do_progress(conn->zq, &tx_avail);
+        if (ret < 0)
+            goto done;
         /* Send all available buffers. */
         for (window = TX_WINDOW;
-             window > 0 && ring_avail > 0 && tx_flag_out != TX_LAST;
+             window > 0 && ring_avail > 0 && tx_flag_out != TX_LAST && tx_avail;
              (window--, ring_avail--, tx_count++, tx_avail--,
               tx_off = next_roff(conn, tx_off))) {
 
             now = get_cycles(NULL);
-            /* Check for tx slots. */
-            if (!tx_avail) {
-                ret = zq_completions(conn->zq);
-                lat_comp += get_cycles(NULL) - now;
-                if (ret < 0)
-                    goto done;
-                tx_avail += ret;
-                if (!tx_avail)
-                    break;
-            }
 
             /* Compute delta based on cycles/ops. */
             if (args->seconds_mode)
@@ -590,11 +592,10 @@ static int do_client_pong(struct stuff *conn)
     }
     while (tx_avail != conn->tx_avail) {
         now = get_cycles(NULL);
-        ret = zq_completions(conn->zq);
+        ret = do_progress(conn->zq, &tx_avail);
         lat_comp += get_cycles(NULL) - now;
         if (ret < 0)
             goto done;
-        tx_avail += ret;
     }
     lat_total1 = get_cycles(NULL) - lat_total1;
     op_count = tx_count - warmup_count;
@@ -649,14 +650,10 @@ static int do_client_unidir(struct stuff *conn)
          tx_count++, tx_avail--, tx_off = next_roff(conn, tx_off)) {
 
         now = get_cycles(NULL);
-        /* Check for tx slots. */
-        while (!tx_avail) {
-            ret = zq_completions(conn->zq);
-            if (ret < 0)
-                goto done;
-            tx_avail += ret;
-        }
+        ret = do_progress(conn->zq, &tx_avail);
         lat_comp += get_cycles(NULL) - now;
+        if (ret < 0)
+            goto done;
 
         /* Compute delta based on cycles/ops. */
         if (args->seconds_mode)
@@ -708,11 +705,10 @@ static int do_client_unidir(struct stuff *conn)
     }
     while (tx_avail != conn->tx_avail) {
         now = get_cycles(NULL);
-        ret = zq_completions(conn->zq);
+        ret = do_progress(conn->zq, &tx_avail);
         lat_comp += get_cycles(NULL) - now;
         if (ret < 0)
             goto done;
-        tx_avail += ret;
     }
     lat_total1 = get_cycles(NULL) - lat_total1;
     op_count = tx_count - warmup_count;

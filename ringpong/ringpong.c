@@ -334,7 +334,6 @@ static int do_server_pong(struct stuff *conn)
     const struct args   *args = conn->args;
     uint                tx_flag_in = TX_NONE;
     size_t              tx_avail = conn->tx_avail;
-    size_t              rx_avail = 0;
     size_t              tx_off = 0;
     size_t              rx_off = 0;
     size_t              tx_ctx = 0;
@@ -348,6 +347,7 @@ static int do_server_pong(struct stuff *conn)
     uint8_t             *tx_addr;
     volatile uint8_t    *rx_addr;
     uint8_t             tx_flag_new;
+    size_t              rx_avail;
 
     /* Create a random receive list for copy mode */
     if (args->copy_mode)
@@ -415,7 +415,7 @@ static int do_server_pong(struct stuff *conn)
         print_func_fi_err(__FUNCTION__, __LINE__, "fi_recv", "", ret);
         goto done;
     }
-    while (!rx_avail) {
+    for (rx_avail = 0 ; !rx_avail;) {
         ret = do_progress(fab_conn, NULL, &rx_avail);
         if (ret < 0)
             goto done;
@@ -598,7 +598,7 @@ static int do_server_sink(struct stuff *conn)
     int                 ret = 0;
     struct fab_conn     *fab_conn = &conn->fab_conn;
     const struct args   *args = conn->args;
-    size_t              rx_avail = 0;
+    size_t              rx_avail;
 
     /* Do a send-receive for the final handshake. */
     ret = fi_recv(fab_conn->ep, conn->rx_addr, args->ring_entry_len,
@@ -607,7 +607,7 @@ static int do_server_sink(struct stuff *conn)
         print_func_fi_err(__FUNCTION__, __LINE__, "fi_recv", "", ret);
         goto done;
     }
-    while (!rx_avail) {
+    for (rx_avail = 0; !rx_avail;) {
         ret = do_progress(fab_conn, NULL, &rx_avail);
         if (ret < 0)
             goto done;
@@ -647,12 +647,10 @@ static int do_client_unidir(struct stuff *conn)
           tx_ctx = next_ctx(conn, tx_ctx))) {
 
         now = get_cycles(NULL);
-        /* Check for tx slots. */
         while (!tx_avail) {
-            ret = fab_completions(fab_conn->tx_cq, 0, NULL, NULL);
+            ret = do_progress (fab_conn, &tx_avail, NULL);
             if (ret < 0)
                 goto done;
-            tx_avail += ret;
         }
         lat_comp += get_cycles(NULL) - now;
 
@@ -707,11 +705,10 @@ static int do_client_unidir(struct stuff *conn)
     }
     while (tx_avail != conn->tx_avail) {
         now = get_cycles(NULL);
-        ret = fab_completions(fab_conn->tx_cq, 0, NULL, NULL);
+        ret = do_progress(fab_conn, &tx_avail, NULL);
         lat_comp += get_cycles(NULL) - now;
         if (ret < 0)
             goto done;
-        tx_avail += ret;
     }
     lat_total1 = get_cycles(NULL) - lat_total1;
     /* Do a send-receive for the final handshake. */
@@ -721,7 +718,11 @@ static int do_client_unidir(struct stuff *conn)
         print_func_fi_err(__FUNCTION__, __LINE__, "fi_send", "", ret);
         goto done;
     }
-    while (!fab_completions(fab_conn->rx_cq, 0, NULL, NULL));
+    for (tx_avail = 0; !tx_avail;) {
+        ret = do_progress(fab_conn, &tx_avail, NULL);
+        if (ret < 0)
+            goto done;
+    }
     op_count = tx_count - warmup_count;
     fab_print_info(fab_conn);
     printf("%s:op_cnt/warmup %lu/%lu\n", appname, op_count, warmup_count);

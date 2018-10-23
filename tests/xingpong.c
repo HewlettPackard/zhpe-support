@@ -843,7 +843,7 @@ static int do_server(const struct args *args)
         print_func_err(__FUNCTION__, __LINE__, "socket", "", ret);
         goto done;
     }
-    if (setsockopt(listener_fd, SOL_SOCKET, SO_REUSEPORT,
+    if (setsockopt(listener_fd, SOL_SOCKET, SO_REUSEADDR,
                    &oflags, sizeof(oflags)) == -1) {
         ret = -errno;
         print_func_err(__FUNCTION__, __LINE__, "setsockopt", "", ret);

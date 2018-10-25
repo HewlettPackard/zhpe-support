@@ -237,6 +237,11 @@ void zhpel_init(struct zhpel_data *lf_data, const char *provider,
         FI_ERRCHK(fi_cntr_wait, (rcnt, 1, -1));
         FI_ERRCHK(fi_cntr_set, (rcnt, 0));
     }
+    if (use_rma_events) {
+        rcnt = lf_data->svr.rcnts[0];
+        FI_ERRCHK(fi_cntr_wait, (rcnt, n_ranks, -1));
+        FI_ERRCHK(fi_cntr_set, (rcnt, 0));
+    }
 
     fi_freeinfo(hints);
     free(svr_addrs);

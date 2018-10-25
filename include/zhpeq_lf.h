@@ -158,7 +158,7 @@ void zhpel_mpi_exit(int status) __attribute__ ((__noreturn__));
     __rc;                                                               \
 })
 
-#define ZHPEL_RKEY              (0)
+#define ZHPEL_RKEY              (65536)
 
 struct zhpel_eps {
     size_t              n_eps;

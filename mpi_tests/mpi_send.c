@@ -36,28 +36,25 @@
 
 #include <mpi.h>
 
-#include <internal.h>
+#include <zhpeq_util.h>
 
 #define WARMUP          (100)
 
 int main(int argc, char **argv)
 {
     int                 ret = 1;
-    struct zhpeq_timing_timer total = { "total" };
-    struct zhpeq_timing_timer turnaround = { "turnaround" };
-    struct zhpe_timing_stamp *buf = NULL;
-    uint64_t            size = sizeof(*buf);
+    uint64_t            size = 1;
+    void                *buf = NULL;
     uint64_t            loops;
     uint64_t            i;
     int                 n_proc;
     int                 n_rank;
-    void                *timing_saved;
 
     if (MPI_Init(&argc, &argv) != MPI_SUCCESS)
         goto done;
 
     if (argc < 2 || argc > 3) {
-        fprintf(stderr, "Need loops and, optionally, size >= 12.\n");
+        fprintf(stderr, "Need loops and, optionally, size.\n");
         goto done;
     }
 
@@ -67,7 +64,7 @@ int main(int argc, char **argv)
         goto done;
     if (argc == 3 &&
         parse_kb_uint64_t(__FUNCTION__, __LINE__, "size",
-                          argv[2], &size, 0, 12, SIZE_MAX,
+                          argv[2], &size, 0, 1, SIZE_MAX,
                           PARSE_KB | PARSE_KIB) < 0)
         goto done;
 
@@ -99,26 +96,15 @@ int main(int argc, char **argv)
                 goto done;
         }
 
-        timing_saved = zhpeq_timing_reset_all();
-        free(timing_saved);
-
         for (i = 0; i < loops; i++) {
-            zhpeq_timing_update_stamp(&zhpeq_timing_tx_start_stamp);
-            *buf = zhpeq_timing_tx_start_stamp;
             if (MPI_Send(buf, size, MPI_BYTE, 1, 0, MPI_COMM_WORLD)
                 != MPI_SUCCESS)
                 goto done;
             if (MPI_Recv(buf, size, MPI_BYTE, 1, 0, MPI_COMM_WORLD,
                          MPI_STATUS_IGNORE) != MPI_SUCCESS)
                 goto done;
-            zhpeq_timing_update(&total, NULL, buf, 0);
         }
         printf("RANK %d\n", n_rank);
-        timing_saved = zhpeq_timing_reset_all();
-        zhpeq_timing_print_all(timing_saved);
-        free(timing_saved);
-        zhpeq_timing_print_timer(&total);
-        fflush(stdout);
         MPI_Barrier(MPI_COMM_WORLD);
     }
     else {
@@ -131,25 +117,16 @@ int main(int argc, char **argv)
                 goto done;
         }
 
-        timing_saved = zhpeq_timing_reset_all();
-        free(timing_saved);
-
         for (i = 0; i < loops; i++) {
             if (MPI_Recv(buf, size, MPI_BYTE, 0, 0, MPI_COMM_WORLD,
                          MPI_STATUS_IGNORE) != MPI_SUCCESS)
                 goto done;
-            zhpeq_timing_update(&turnaround, NULL, buf, 0);
-            zhpeq_timing_tx_start_stamp = *buf;
             if (MPI_Send(buf, size, MPI_BYTE, 0, 0, MPI_COMM_WORLD)
                 != MPI_SUCCESS)
                 goto done;
         }
-        timing_saved = zhpeq_timing_reset_all();
         MPI_Barrier(MPI_COMM_WORLD);
         printf("RANK %d\n", n_rank);
-        zhpeq_timing_print_all(timing_saved);
-        zhpeq_timing_print_timer(&turnaround);
-        free(timing_saved);
     }
     ret = 0;
 

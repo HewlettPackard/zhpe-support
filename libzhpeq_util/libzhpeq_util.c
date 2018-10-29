@@ -40,22 +40,31 @@
 
 #include <libgen.h>
 
-const char              *appname = "libzhpeq_util";
+const char              *appname;
 size_t                  page_size;
 
 static bool             log_syslog;
 static bool             log_syslog_init;
 static int              log_level = LOG_ERR;
 
+static struct zhpeu_atm_list_ptr atm_dummy;
+
 static void __attribute__((constructor)) lib_init(void)
 {
     long                rcl;
+    struct zhpeu_atm_list_ptr oldh;
+    struct zhpeu_atm_list_ptr newh;
 
     /* Make sure page_size is set before use; if we can't get it, just die. */
     rcl = sysconf(_SC_PAGESIZE);
     if (rcl == -1)
         abort();
     page_size = rcl;
+    /* Force __atomic_load_16 and __atomic_compare_exchange_16 to be linked. */
+    oldh = atm_load_rlx(&atm_dummy);
+    newh.ptr = NULL;
+    newh.seq = oldh.seq + 1;
+    atm_cmpxchg(&atm_dummy, &oldh, newh);
 }
 
 void zhpeq_util_init(char *argv0, int default_log_level, bool use_syslog)
@@ -86,7 +95,6 @@ static void vlog(int priority, FILE *file, const char *prefix,
             fprintf(file, "\n");
     }
 }
-
 
 void print_dbg(const char *fmt, ...)
 {
@@ -265,7 +273,7 @@ static uint64_t __get_tsc_freq(void)
     fname = fname_info;
     fp = fopen(fname, "r");
     if (!fp) {
-        print_func_err(__FUNCTION__, __LINE__, "fopen", fname, errno);
+        print_func_err(__func__, __LINE__, "fopen", fname, errno);
         goto done;
     }
     /* We only handle Intel, for now */
@@ -288,7 +296,7 @@ static uint64_t __get_tsc_freq(void)
             break;
     }
     if (!tok) {
-        print_err("%s:CPU missing constant_tsc/nonstop_tsc", __FUNCTION__);
+        print_err("%s:CPU missing constant_tsc/nonstop_tsc", __func__);
         goto done;
     }
 
@@ -352,7 +360,7 @@ static uint64_t __get_tsc_freq(void)
         ret = val1;
     } else if (!fp) {
         if (errno != ENOENT) {
-            print_func_err(__FUNCTION__, __LINE__, "fopen", fname, errno);
+            print_func_err(__func__, __LINE__, "fopen", fname, errno);
             goto done;
         }
     }
@@ -361,7 +369,7 @@ done:
     if (fp) {
         if (ferror(fp)) {
             print_err("%s,%u:Error reading %s\n",
-                      __FUNCTION__, __LINE__, fname);
+                      __func__, __LINE__, fname);
             ret = 0;
         }
         fclose(fp);
@@ -378,7 +386,7 @@ uint64_t get_tsc_freq(void)
         freq = __get_tsc_freq();
         if (!freq) {
             print_err("%s,%u:Failed to determine cycle frequency",
-                      __FUNCTION__, __LINE__);
+                      __func__, __LINE__);
             abort();
         }
     }
@@ -572,7 +580,7 @@ int do_getaddrinfo(const char *node, const char *service,
     if (ret < 0)
         print_err("%s,%u:getaddrinfo(%s,%s) returned gai %d:%s,\n"
                   "    errno %d:%s\n",
-                  __FUNCTION__, __LINE__, node ?: "", service ?: "",
+                  __func__, __LINE__, node ?: "", service ?: "",
                   rc, gai_strerror(rc), -ret, (ret < 0 ? strerror(-ret) : ""));
 
     if (ret < 0)
@@ -592,12 +600,12 @@ int connect_sock(const char *node, const char *service)
     ret = socket(resp->ai_family, resp->ai_socktype, resp->ai_protocol);
     if (ret == -1) {
         ret = -errno;
-        print_func_err(__FUNCTION__, __LINE__, "socket", "", ret);
+        print_func_err(__func__, __LINE__, "socket", "", ret);
         goto done;
     }
     if (connect(ret, resp->ai_addr, resp->ai_addrlen) == -1) {
         ret = -errno;
-        print_func_err(__FUNCTION__, __LINE__, "connect", "", ret);
+        print_func_err(__func__, __LINE__, "connect", "", ret);
         goto done;
     }
 
@@ -647,57 +655,6 @@ uint *random_array(uint *array, uint entries)
     return ret;
 }
 
-void *_do_malloc(const char *callf, uint line, size_t size)
-{
-    void                *ret = malloc(size);
-    int                 save_err;
-
-    if (!ret) {
-        save_err = errno;
-        print_err("%s,%u:Failed to allocate %Lu bytes\n",
-                  callf, line, (ullong)size);
-        errno = save_err;
-    }
-
-    return ret;
-}
-
-void *_do_realloc(const char *callf, uint line, void *ptr, size_t size)
-{
-    void                *ret = realloc(ptr, size);
-    int                 save_err;
-
-    if (!ret) {
-        save_err = errno;
-        print_err("%s,%u:Failed to allocate %Lu bytes\n",
-                  callf, line, (ullong)size);
-        errno = save_err;
-    }
-
-    return ret;
-}
-
-void *_do_calloc(const char *callf, uint line, size_t nmemb, size_t size)
-{
-    void                *ret = calloc(nmemb, size);
-    int                 save_err;
-
-    if (!ret) {
-        save_err = errno;
-        print_err("%s,%u:Failed to allocate %Lu bytes\n",
-                  callf, line, (ullong)(nmemb * size));
-        errno = save_err;
-    }
-
-    return ret;
-}
-
-void _do_free(const char *callf, uint line, void *ptr)
-{
-    /* XXX:Implement alloc/free tracking? */
-    free(ptr);
-}
-
 bool _expected_saw(const char *callf, uint line,
                    const char *label, uintptr_t expected, uintptr_t saw)
 {
@@ -736,7 +693,7 @@ char *_sockaddr_str(const char *callf, uint line, const void *addr)
     const size_t        ipv6_dual_pre_len = sizeof(ipv6_dual_pre) - 1;
     size_t              ret_len;
 
-    ret = do_malloc(INET6_ADDRSTRLEN);
+    ret = zhpeu_malloc(INET6_ADDRSTRLEN, callf, line);
     if (!ret)
         goto done;
     if (!sockaddr_ntop(addr, ret, INET6_ADDRSTRLEN)) {
@@ -867,7 +824,7 @@ int _sock_recv_var_blob(const char *callf, uint line,
     if (req == UINT32_MAX)
         goto done;
     *blob_len = req;
-    *blob = _do_malloc(callf, line, req + extra_len);
+    *blob = zhpeu_malloc(req + extra_len, callf, line);
     if (!*blob) {
         ret = -errno;
         goto done;
@@ -910,7 +867,7 @@ const char *sockaddr_ntop(const void *addr, char *buf, size_t len)
         break;
 
     case AF_ZHPE:
-        if (len  < ZHPE_ADDRSTRLEN) {
+        if (len < ZHPE_ADDRSTRLEN) {
             errno = ENOSPC;
             break;
         }
@@ -982,6 +939,118 @@ int sockaddr_cmpx(const union sockaddr_in46 *sa1,
     ret = memcmp(&local1.sin_port, &local2.sin_port, sizeof(local1.sin_port));
 
  done:
+
+    return ret;
+}
+
+int zhpeu_asprintf(char **strp, const char *fmt, ...)
+{
+    int                 ret;
+    va_list             ap;
+
+    va_start(ap, fmt);
+    ret = vasprintf(strp, fmt, ap);
+    va_end(ap);
+
+    return ret;
+}
+
+#undef posix_memalign
+
+int zhpeu_posix_memalign(void **memptr, size_t alignment, size_t size,
+                         const char *callf, uint line)
+{
+    int                 ret = posix_memalign(memptr, alignment, size);
+
+    if (unlikely(ret)) {
+        *memptr = NULL;
+        print_func_errn(callf, line, "posix_memalign", size, false, ret);
+    }
+
+    return ret;
+}
+
+#undef malloc
+
+void *zhpeu_malloc(size_t size, const char *callf, uint line)
+{
+    void                *ret = malloc(size);
+    int                 save_err;
+
+    if (unlikely(!ret)) {
+        save_err = errno;
+        print_func_errn(callf, line, "malloc", size, false, errno);
+        errno = save_err;
+    }
+
+    return ret;
+}
+
+#undef realloc
+
+void *zhpeu_realloc(void *ptr, size_t size, const char *callf, uint line)
+{
+    void                *ret = realloc(ptr, size);
+    int                 save_err;
+
+    if (unlikely(!ret)) {
+        save_err = errno;
+        print_func_errn(callf, line, "realloc", size, false, errno);
+        errno = save_err;
+    }
+
+    return ret;
+}
+
+#undef calloc
+
+void *zhpeu_calloc(size_t nmemb, size_t size, const char *callf, uint line)
+{
+    void                *ret = calloc(nmemb, size);
+    int                 save_err;
+
+    if (unlikely(!ret)) {
+        save_err = errno;
+        print_func_errn(callf, line, "calloc", size, false, errno);
+        errno = save_err;
+    }
+
+    return ret;
+}
+
+/* For things that want a function pointer to free. */
+void zhpeu_free_ptr(void *ptr)
+{
+    free(ptr);
+}
+
+#undef free
+
+void zhpeu_free(void *ptr, const char *callf, uint line)
+{
+    /* XXX:Implement alloc/free tracking? */
+    free(ptr);
+}
+
+void *zhpeu_malloc_aligned(size_t alignment, size_t size,
+                           const char *callf, uint line)
+{
+    void                *ret;
+
+    (void)zhpeu_posix_memalign(&ret, alignment, size, callf, line);
+
+    return ret;
+}
+
+void *zhpeu_calloc_aligned(size_t alignment, size_t nmemb, size_t size,
+                           const char *callf, uint line)
+{
+    void                *ret;
+
+    size *= nmemb;
+    (void)zhpeu_posix_memalign(&ret, alignment, size, callf, line);
+    if (likely(ret))
+        memset(ret, 0, size);
 
     return ret;
 }

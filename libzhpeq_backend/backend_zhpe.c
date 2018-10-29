@@ -173,8 +173,8 @@ static int zhpe_domain_free(struct zhpeq_dom *zdom)
     mutex_destroy(&bdom->node_mutex);
     for (i = 0; i < bdom->node_idx; i++)
         uuid_free(bdom->nodes[i].uuid);
-    do_free(bdom->nodes);
-    do_free(bdom);
+    free(bdom->nodes);
+    free(bdom);
 
     return 0;
 }
@@ -184,7 +184,7 @@ static int zhpe_domain(struct zhpeq_dom *zdom)
     int                 ret = -ENOMEM;
     struct zdom_data    *bdom;
 
-    bdom = zdom->backend_data = do_calloc(1, sizeof(*bdom));
+    bdom = zdom->backend_data = calloc(1, sizeof(*bdom));
     if (!bdom)
         goto done;
     mutex_init(&bdom->node_mutex, NULL);
@@ -249,7 +249,7 @@ static int zhpe_open(struct zhpeq *zq, int sock_fd)
         goto done;
 
     if ((bdom->node_idx % NODE_CHUNKS) == 0) {
-        bdom->nodes = do_realloc(
+        bdom->nodes = realloc(
             bdom->nodes, (bdom->node_idx + NODE_CHUNKS) * sizeof(*bdom->nodes));
         if (!bdom->nodes)
             ret = -ENOMEM;
@@ -295,6 +295,11 @@ static int zhpe_qfree(struct zhpeq *zq)
     return ret;
 }
 
+static int zhpe_wq_signal(struct zhpeq *zq)
+{
+    return 0;
+}
+
 static int zhpe_mr_reg(struct zhpeq_dom *zdom,
                        const void *buf, size_t len,
                        uint32_t access, struct zhpeq_key_data **qkdata_out)
@@ -305,7 +310,7 @@ static int zhpe_mr_reg(struct zhpeq_dom *zdom,
     union zhpe_req      *req = &op.req;
     union zhpe_rsp      *rsp = &op.rsp;
 
-    desc = do_malloc(sizeof(*desc));
+    desc = malloc(sizeof(*desc));
     if (!desc)
         goto done;
     req->hdr.opcode = ZHPE_OP_MR_REG;
@@ -330,7 +335,7 @@ static int zhpe_mr_reg(struct zhpeq_dom *zdom,
 
  done:
     if (ret < 0)
-        do_free(desc);
+        free(desc);
 
     return ret;
 }
@@ -355,7 +360,7 @@ static int zhpe_mr_free(struct zhpeq_dom *zdom, struct zhpeq_key_data *qkdata)
     req->mr_free.access = desc->access_plus;
     req->mr_free.rsp_zaddr = desc->qkdata.z.zaddr;
     ret = driver_cmd(&op, sizeof(req->mr_free), sizeof(rsp->mr_free));
-    do_free(desc);
+    free(desc);
 
  done:
     return ret;
@@ -382,7 +387,7 @@ static int zhpe_zmmu_import(struct zhpeq_dom *zdom, int open_idx,
         goto done;
 
     ret = -ENOMEM;
-    desc = do_malloc(sizeof(*desc));
+    desc = malloc(sizeof(*desc));
     if (!desc)
         goto done;
 
@@ -407,7 +412,7 @@ static int zhpe_zmmu_import(struct zhpeq_dom *zdom, int open_idx,
 
  done:
     if (ret < 0)
-        do_free(desc);
+        free(desc);
 
     return ret;
 }
@@ -435,7 +440,7 @@ static int zhpe_zmmu_free(struct zhpeq_dom *zdom, struct zhpeq_key_data *qkdata)
     req->rmr_free.access = desc->access_plus;
     req->rmr_free.rsp_zaddr = qkdata->rsp_zaddr;
     ret = driver_cmd(&op, sizeof(req->rmr_free), sizeof(rsp->rmr_free));
-    do_free(desc);
+    free(desc);
 
  done:
     return ret;
@@ -482,7 +487,7 @@ char *zhpe_qkdata_id_str(struct zhpeq_dom *zdom,
         goto done;
 
     uuid_unparse_upper(bdom->nodes[desc->uuid_idx].uuid, uuid_str);
-    if (asprintf(&ret, "%d %s", desc->uuid_idx, uuid_str) == -1)
+    if (zhpeu_asprintf(&ret, "%d %s", desc->uuid_idx, uuid_str) == -1)
         ret = NULL;
  done:
 
@@ -497,6 +502,7 @@ struct backend_ops ops = {
     .qfree              = zhpe_qfree,
     .open               = zhpe_open,
     .close              = zhpe_close,
+    .wq_signal          = zhpe_wq_signal,
     .mr_reg             = zhpe_mr_reg,
     .mr_free            = zhpe_mr_free,
     .zmmu_import        = zhpe_zmmu_import,

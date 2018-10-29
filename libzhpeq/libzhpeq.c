@@ -39,6 +39,11 @@
 #include <dlfcn.h>
 #include <limits.h>
 
+static_assert(sizeof(union zhpe_hw_wq_entry) ==  ZHPE_ENTRY_LEN,
+              "zhpe_hw_wq_entry");
+static_assert(sizeof(union zhpe_hw_cq_entry) ==  ZHPE_ENTRY_LEN,
+              "zhpe_hw_cq_entry");
+
 /* Set to 1 to dump qkdata when registered/exported/imported/freed. */
 #define QKDATA_DUMP     (0)
 
@@ -52,229 +57,12 @@ static struct zhpeq_attr b_attr;
 
 uuid_t                  zhpeq_uuid;
 
-ZHPEQ_TIMING_TIMERS(ZHPEQ_TIMING_TIMER_DECLARE)
-ZHPEQ_TIMING_COUNTERS(ZHPEQ_TIMING_COUNTER_DECLARE)
-
-static struct zhpeq_timing_timer *timer_table[] = {
-    ZHPEQ_TIMING_TIMERS(ZHPEQ_TIMING_TABLE_ENTRY)
-    NULL
-};
-
-static struct zhpeq_timing_counter *counter_table[] = {
-    ZHPEQ_TIMING_COUNTERS(ZHPEQ_TIMING_TABLE_ENTRY)
-    NULL
-};
-
-struct zhpe_timing_stamp zhpeq_timing_tx_start_stamp;
-struct zhpe_timing_stamp zhpeq_timing_tx_ibv_post_send_stamp;
-
-void zhpeq_timing_reset_timer(struct zhpeq_timing_timer *timer)
-{
-    timer->time = 0;
-    timer->min = UINT64_MAX;
-    timer->max = 0;
-    timer->count = 0;
-    timer->cpu_change = 0;
-}
-
-void zhpeq_timing_reset_counter(struct zhpeq_timing_counter *counter)
-{
-    counter->count = 0;
-}
-
-void *zhpeq_timing_reset_all(void)
-{
-    void                *ret = NULL;
-    size_t              i;
-    size_t              req;
-    struct zhpeq_timing_timer *timer;
-    struct zhpeq_timing_counter *counter;
-
-    /* This is not atomic. */
-    for (i = 0; timer_table[i]; i++);
-    req = (i + 1) * sizeof(*timer);
-    for (i = 0; counter_table[i]; i++);
-    req += (i + 1) * sizeof(*counter);
-    ret = malloc(req);
-    if (ret) {
-        memset(ret, 0, req);
-        for (i = 0, timer = ret; timer_table[i]; i++, timer++)
-            *timer = *timer_table[i];
-        timer++;
-        for (i = 0, counter = (void *)timer; counter_table[i]; i++, counter++)
-            *counter = *counter_table[i];
-    }
-
-    for (i = 0; timer_table[i]; i++)
-        zhpeq_timing_reset_timer(timer_table[i]);
-    for (i = 0; counter_table[i]; i++)
-        zhpeq_timing_reset_counter(counter_table[i]);
-
-    return ret;
-}
-
-void zhpeq_timing_print_timer(struct zhpeq_timing_timer *timer)
-{
-    if (timer->count)
-        printf("    %s %.3lf/%.3lf/%.3lf/%Lu/%Lu\n", timer->name,
-               cycles_to_usec(timer->time, timer->count),
-               cycles_to_usec(timer->min, 1), cycles_to_usec(timer->max, 1),
-               (ullong)timer->count, (ullong)timer->cpu_change);
-    else
-        printf("    %s 0/0/0/0/0\n", timer->name);
-}
-
-void zhpeq_timing_print_counter(struct zhpeq_timing_counter *counter)
-{
-    printf("    %s %Lu\n", counter->name, (ullong)counter->count);
-}
-
-void zhpeq_timing_print_all(void *saved)
-{
-    struct zhpeq_timing_timer *timer;
-    struct zhpeq_timing_counter *counter;
-
-    if (!saved)
-        return;
-
-    for (timer = saved; timer->name; timer++)
-        zhpeq_timing_print_timer(timer);
-    timer++;
-    for (counter = (void *)timer ; counter->name; counter++)
-        zhpeq_timing_print_counter(counter);
-}
-
-#ifdef ZHPEQ_TIMING
-
-/* Save timestamp in work-queue-entry memory. */
-static inline void zhpeq_timing_reserve(struct zhpeq *zq, uint32_t qindex,
-                                        uint32_t n_entries)
-{
-    uint32_t            i;
-    uint32_t            qmask = zq->xqinfo.cmdq.ent - 1;
-    struct zhpe_timing_stamp now;
-    union zhpe_hw_wq_entry *wqe;
-
-    if (likely(zhpeq_timing_tx_start_stamp.time != 0)) {
-        zhpeq_timing_update_stamp(&now);
-        now.time = zhpeq_timing_tx_start_stamp.time;
-        zhpeq_timing_tx_start_stamp.time = 0;
-    } else
-        now.time = 0;
-
-    /* Save timestamp in entries. */
-    for (i = 0; i < n_entries; i++) {
-        wqe = zq->wq + ((qindex + i) & qmask);
-        wqe->nop.timestamp = now;
-    };
-}
-
-/* Move timestamp to safe place when operation formatted. */
-static inline void zhpeq_timing_nop(union zhpe_hw_wq_entry *wqe)
-{
-    /* Nothing to do. */
-}
-
-static inline void zhpeq_timing_dma(union zhpe_hw_wq_entry *wqe)
-{
-    wqe->dma.timestamp = wqe->nop.timestamp;
-}
-
-static inline void zhpeq_timing_imm(union zhpe_hw_wq_entry *wqe)
-{
-    wqe->imm.timestamp = wqe->nop.timestamp;
-}
-
-static inline void zhpeq_timing_atm(union zhpe_hw_wq_entry *wqe)
-{
-    wqe->atm.timestamp = wqe->nop.timestamp;
-}
-
-/* Count time from reserve to commit, update timestamp. */
-static inline void zhpeq_timing_commit(struct zhpeq *zq, uint32_t qindex,
-                                       uint32_t n_entries)
-{
-    uint32_t            i;
-    uint32_t            qmask = zq->xqinfo.cmdq.ent - 1;
-    struct zhpe_timing_stamp now;
-    struct zhpe_timing_stamp then;
-    union zhpe_hw_wq_entry *wqe;
-
-    zhpeq_timing_update_stamp(&now);
-    for (i = 0; i < n_entries; i++) {
-        wqe = zq->wq + ((qindex + i) & qmask);
-
-        switch (wqe->hdr.opcode & ~ZHPE_HW_OPCODE_FENCE) {
-
-        case ZHPE_HW_OPCODE_NOP:
-            then = wqe->nop.timestamp;
-            wqe->nop.timestamp.cpu = now.cpu;
-            break;
-
-        case ZHPE_HW_OPCODE_PUT:
-        case ZHPE_HW_OPCODE_GET:
-            then = wqe->dma.timestamp;
-            wqe->dma.timestamp.cpu = now.cpu;
-            break;
-
-        case ZHPE_HW_OPCODE_PUTIMM:
-        case ZHPE_HW_OPCODE_GETIMM:
-            then = wqe->imm.timestamp;
-            wqe->imm.timestamp.cpu = now.cpu;
-            break;
-
-        case ZHPE_HW_OPCODE_ATM_ADD:
-        case ZHPE_HW_OPCODE_ATM_CAS:
-            then = wqe->atm.timestamp;
-            wqe->atm.timestamp.cpu = now.cpu;
-            break;
-
-        default:
-            print_err("%s,%u:Unexpected opcode 0x%02x\n",
-                      __FUNCTION__, __LINE__, wqe->hdr.opcode);
-            return;
-        }
-        zhpeq_timing_update(&zhpeq_timing_tx_commit, &now, &then, 0);
-    }
-}
-
-#else
-
-static inline void zhpeq_timing_reserve(struct zhpeq *zq, uint32_t qindex,
-                                        uint32_t n_entries)
-{
-}
-
-static inline void zhpeq_timing_nop(union zhpe_hw_wq_entry *wqe)
-{
-}
-
-static inline void zhpeq_timing_dma(union zhpe_hw_wq_entry *wqe)
-{
-}
-
-static inline void zhpeq_timing_imm(union zhpe_hw_wq_entry *wqe)
-{
-}
-
-static inline void zhpeq_timing_atm(union zhpe_hw_wq_entry *wqe)
-{
-}
-
-/* Count time from reserve to commit, update timestamp. */
-static inline void zhpeq_timing_commit(struct zhpeq *zq, uint32_t qindex,
-                                       uint32_t n_entries)
-{
-}
-
-#endif
-
 static void __attribute__((constructor)) lib_init(void)
 {
     void                *dlhandle = dlopen(BACKNAME, RTLD_NOW);
 
     if (!dlhandle) {
-        print_err("Failed to load %s\n", BACKNAME);
+        print_err("Failed to load %s:%s\n", BACKNAME, dlerror());
         abort();
     }
 }
@@ -307,12 +95,7 @@ int zhpeq_init(int api_version)
     if (init_status > 0) {
         if (!expected_saw("api_version", ZHPEQ_API_VERSION, api_version))
             goto done;
-        if (!expected_saw("sizeof(zhpe_hw_wq_entry)",
-                          ZHPE_ENTRY_LEN, sizeof(union zhpe_hw_wq_entry)))
-            goto done;
-        if (!expected_saw("sizeof(zhpeq_cq_entry)",
-                          ZHPE_ENTRY_LEN, sizeof(struct zhpeq_cq_entry)))
-        goto done;
+
         mutex_lock(&init_mutex);
         if (b_ops->lib_init)
             ret = b_ops->lib_init(&b_attr);
@@ -367,7 +150,7 @@ int zhpeq_domain_alloc(struct zhpeq_dom **zdom_out)
     *zdom_out = NULL;
 
     ret = -ENOMEM;
-    zdom = do_calloc(1, sizeof(*zdom));
+    zdom = calloc_cachealigned(1, sizeof(*zdom));
     if (!zdom)
         goto done;
 
@@ -419,11 +202,9 @@ int zhpeq_free(struct zhpeq *zq)
     rc = b_ops->qfree(zq);
     if (ret >= 0 && rc < 0)
         ret = rc;
-    if (zq->tail_lock_init)
-        spin_destroy(&zq->tail_lock);
     /* Free queue memory. */
-    do_free(zq->context);
-    do_free(zq);
+    free(zq->context);
+    free(zq);
 
  done:
     return ret;
@@ -439,6 +220,7 @@ int zhpeq_alloc(struct zhpeq_dom *zdom, int cmd_qlen, int cmp_qlen,
         .bits.toggle_valid = 1,
     };
     int                 flags;
+    size_t              i;
 
     if (!zq_out)
         goto done;
@@ -452,15 +234,10 @@ int zhpeq_alloc(struct zhpeq_dom *zdom, int cmd_qlen, int cmp_qlen,
         goto done;
 
     ret = -ENOMEM;
-    zq = do_calloc(1, sizeof(*zq));
+    zq = calloc_cachealigned(1, sizeof(*zq));
     if (!zq)
         goto done;
     zq->zdom = zdom;
-    spin_init(&zq->tail_lock, PTHREAD_PROCESS_PRIVATE);
-    zq->tail_lock_init = true;
-
-    if (cmd_qlen < cmp_qlen)
-        cmd_qlen = cmp_qlen;
 
     cmd_qlen = roundup_pow_of_2(cmd_qlen);
     cmp_qlen = roundup_pow_of_2(cmp_qlen);
@@ -470,9 +247,16 @@ int zhpeq_alloc(struct zhpeq_dom *zdom, int cmd_qlen, int cmp_qlen,
     if (ret < 0)
         goto done;
 
-    zq->context = calloc(zq->xqinfo.cmdq.ent, sizeof(*zq->context));
+    zq->context = calloc_cachealigned(zq->xqinfo.cmplq.ent,
+                                      sizeof(*zq->context));
     if (!zq->context)
         goto done;
+
+    /* Initialize context storage free list. */
+    for (i = 0; i < zq->xqinfo.cmplq.ent - 1; i++)
+        zq->context[i] = TO_PTR(i + 1);
+    zq->context[i] = TO_PTR(FREE_END);
+    /* context_free is zeroed. */
 
     /* zq->fd == -1 means we're faking things out. */
     flags = (zq->fd == -1 ? MAP_ANONYMOUS | MAP_PRIVATE : MAP_SHARED);
@@ -548,6 +332,8 @@ int64_t zhpeq_reserve(struct zhpeq *zq, uint32_t n_entries)
     int64_t             ret = -EINVAL;
     uint32_t            qmask;
     uint32_t            avail;
+    struct zhpeq_ht     old;
+    struct zhpeq_ht     new;
 
     if (!zq)
         goto done;
@@ -555,19 +341,19 @@ int64_t zhpeq_reserve(struct zhpeq *zq, uint32_t n_entries)
     if (!zq || n_entries < 1 || n_entries > qmask)
         goto done;
 
-    /* While I can use compare-and-swap for reserve, it won't work
-     * for commit.
-     */
     ret = 0;
-    spin_lock(&zq->tail_lock);
-    avail = qmask - ((zq->tail_reserved - zq->q_head) & qmask);
-    if (avail >= n_entries) {
-        ret = zq->tail_reserved;
-        zq->tail_reserved += n_entries;
-        zhpeq_timing_reserve(zq, ret, n_entries);
-    } else
-        ret = -EAGAIN;
-    spin_unlock(&zq->tail_lock);
+    for (old = atm_load_rlx(&zq->head_tail) ;;) {
+        avail = qmask - (old.tail - old.head);
+        if (avail < n_entries) {
+            ret = -EAGAIN;
+            break;
+        }
+        new.head = old.head;
+        ret = old.tail;
+        new.tail = old.tail + n_entries;
+        if (atm_cmpxchg(&zq->head_tail, &old, new))
+            break;
+    }
 
  done:
     return ret;
@@ -576,39 +362,67 @@ int64_t zhpeq_reserve(struct zhpeq *zq, uint32_t n_entries)
 int zhpeq_commit(struct zhpeq *zq, uint32_t qindex, uint32_t n_entries)
 {
     int                 ret = -EINVAL;
-    bool                set = false;
     uint32_t            qmask;
+    uint32_t            old;
+    uint32_t            new;
 
     if (!zq)
         goto done;
 
     qmask = zq->xqinfo.cmdq.ent - 1;
-    /* We need a lock to guarantee writes to tail register are ordered. */
-    ret = 0;
-    for (;;) {
-        spin_lock(&zq->tail_lock);
-        if (qindex == zq->tail_commit) {
-            smp_wmb();
-            zhpeq_timing_commit(zq, qindex, n_entries);
-            zq->tail_commit += n_entries;
-            iowrite64(zq->tail_commit & qmask,
-                      zq->qcm + ZHPE_XDM_QCM_CMD_QUEUE_TAIL_OFFSET);
-            set = true;
-        }
-        spin_unlock(&zq->tail_lock);
-        if (set) {
-            if (b_ops->wq_signal)
-                ret = b_ops->wq_signal(zq);
-            break;
-        }
-        /* FIXME: Yes? No? */
-        sched_yield();
+    old = atm_load_rlx(&zq->tail_commit);
+    if (old != qindex) {
+        ret = -EAGAIN;
+        goto done;
     }
-    ZHPEQ_TIMING_UPDATE(&zhpeq_timing_tx_commit, NULL,
-                        &zhpeq_timing_tx_start_stamp,
-                        ZHPEQ_TIMING_UPDATE_OLD_CPU);
+    new = old + n_entries;
+    io_wmb();
+    iowrite64(new & qmask,
+              zq->qcm + ZHPE_XDM_QCM_CMD_QUEUE_TAIL_OFFSET);
+    ret = b_ops->wq_signal(zq);
+    io_wmb();
+    atm_store_rlx(&zq->tail_commit, new);
 
  done:
+    return ret;
+}
+
+static inline void set_context(struct zhpeq *zq, union zhpe_hw_wq_entry *wqe,
+                               void *context)
+{
+    struct free_index   old;
+    struct free_index   new;
+
+    for (old = atm_load_rlx(&zq->context_free);;) {
+        if (unlikely(old.index == FREE_END)) {
+            /* Tiny race between head moving and context slot freed. */
+            sched_yield();
+            old = atm_load_rlx(&zq->context_free);
+            continue;
+        }
+        new.index = (int32_t)(uintptr_t)zq->context[old.index];
+        new.seq = old.seq + 1;
+        if (atm_cmpxchg(&zq->context_free, &old, new))
+            break;
+    }
+    zq->context[old.index] = context;
+    wqe->hdr.cmp_index = old.index;
+}
+
+static inline void *get_context(struct zhpeq *zq, struct zhpe_cq_entry *cqe)
+{
+    void                *ret = zq->context[cqe->index];
+    struct free_index   old;
+    struct free_index   new;
+
+    for (old = atm_load_rlx(&zq->context_free) ;;) {
+        zq->context[cqe->index] = TO_PTR(old.index);
+        new.index = cqe->index;
+        new.seq = old.seq + 1;
+        if (atm_cmpxchg(&zq->context_free, &old, new))
+            break;
+    }
+
     return ret;
 }
 
@@ -624,12 +438,10 @@ int zhpeq_nop(struct zhpeq *zq, uint32_t qindex, bool fence,
         goto done;
 
     qindex = qindex & (zq->xqinfo.cmdq.ent - 1);
-    zq->context[qindex] = context;
     wqe = zq->wq + qindex;
-    zhpeq_timing_nop(wqe);
 
     wqe->hdr.opcode = ZHPE_HW_OPCODE_NOP;
-    wqe->hdr.cmp_index = qindex;
+    set_context(zq, wqe, context);
 
     ret = 0;
 
@@ -650,13 +462,11 @@ static inline int zhpeq_rw(struct zhpeq *zq, uint32_t qindex, bool fence,
         goto done;
 
     qindex = qindex & (zq->xqinfo.cmdq.ent - 1);
-    zq->context[qindex] = context;
     wqe = zq->wq + qindex;
-    zhpeq_timing_dma(wqe);
 
     opcode |= (fence ? ZHPE_HW_OPCODE_FENCE : 0);
     wqe->hdr.opcode = opcode;
-    wqe->hdr.cmp_index = qindex;
+    set_context(zq, wqe, context);
     wqe->dma.len = len;
     wqe->dma.rd_addr = rd_addr;
     wqe->dma.wr_addr = wr_addr;
@@ -687,13 +497,11 @@ int zhpeq_puti(struct zhpeq *zq, uint32_t qindex, bool fence,
         goto done;
 
     qindex = qindex & (zq->xqinfo.cmdq.ent - 1);
-    zq->context[qindex] = context;
     wqe = zq->wq + qindex;
-    zhpeq_timing_imm(wqe);
 
     wqe->hdr.opcode = ZHPE_HW_OPCODE_PUTIMM;
     wqe->hdr.opcode |= (fence ? ZHPE_HW_OPCODE_FENCE : 0);
-    wqe->hdr.cmp_index = qindex;
+    set_context(zq, wqe, context);
     wqe->imm.len = len;
     wqe->imm.rem_addr = remote_addr;
     memcpy(wqe->imm.data, buf, len);
@@ -724,13 +532,11 @@ int zhpeq_geti(struct zhpeq *zq, uint32_t qindex, bool fence,
         goto done;
 
     qindex = qindex & (zq->xqinfo.cmdq.ent - 1);
-    zq->context[qindex] = context;
     wqe = zq->wq + qindex;
-    zhpeq_timing_imm(wqe);
 
     wqe->hdr.opcode = ZHPE_HW_OPCODE_GETIMM;
     wqe->hdr.opcode |= (fence ? ZHPE_HW_OPCODE_FENCE : 0);
-    wqe->hdr.cmp_index = qindex;
+    set_context(zq, wqe, context);
     wqe->imm.len = len;
     wqe->imm.rem_addr = remote_addr;
 
@@ -754,11 +560,11 @@ int zhpeq_atomic(struct zhpeq *zq, uint32_t qindex, bool fence, bool retval,
         goto done;
 
     qindex = qindex & (zq->xqinfo.cmdq.ent - 1);
-    zq->context[qindex] = context;
     wqe = zq->wq + qindex;
-    zhpeq_timing_atm(wqe);
 
     wqe->hdr.opcode = (fence ? ZHPE_HW_OPCODE_FENCE : 0);
+    set_context(zq, wqe, context);
+
     switch (op) {
 
     case ZHPEQ_ATOMIC_ADD:
@@ -916,26 +722,21 @@ ssize_t zhpeq_cq_read(struct zhpeq *zq, struct zhpeq_cq_entry *entries,
 {
     ssize_t             ret = -EINVAL;
     bool                polled = false;
-    uint16_t            qmask;
     union zhpe_hw_cq_entry *cqe;
-    volatile uint8_t    *validp;
     ssize_t             i;
-    uint32_t            idx;
+    uint32_t            qmask;
+    uint32_t            old;
+    uint32_t            new;
 
     if (!zq || !entries || n_entries > SSIZE_MAX)
         goto done;
 
-    /* This is currently not thread safe for multiple readers on a single zq;
-     * I don't see a use for it, at the moment.
-     */
     qmask = zq->xqinfo.cmplq.ent - 1;
 
-    /* Lets try to optimize our read-barriers. */
-    for (i = 0; i < n_entries;) {
-        idx = ((zq->q_head + i) & qmask);
-        cqe = zq->cq + idx;
-        validp = (void *)cqe;
-        if ((*validp & ZHPE_HW_CQ_VALID) != cq_valid(zq->q_head + i, qmask)) {
+    for (i = 0, old = atm_load_rlx(&zq->head_tail.head) ; i < n_entries ;) {
+        cqe = zq->cq + (old & qmask);
+        if ((atm_load_rlx((uint8_t *)cqe) & ZHPE_HW_CQ_VALID) !=
+             cq_valid(old, qmask)) {
             if (i > 0 || !b_ops->cq_poll || polled)
                 break;
             ret = b_ops->cq_poll(zq, n_entries);
@@ -944,23 +745,15 @@ ssize_t zhpeq_cq_read(struct zhpeq *zq, struct zhpeq_cq_entry *entries,
             polled = true;
             continue;
         }
+        entries[i].z = cqe->entry;
+        new = old + 1;
+        if (!atm_cmpxchg(&zq->head_tail.head, &old, new))
+            break;
+        entries[i].z.context = get_context(zq, &entries[i].z);
+        old = new;
         i++;
     }
     ret = i;
-    /* Just the one. */
-    smp_rmb();
-    /* Transfer entries to the caller's buffer and reset valid.
-     */
-    for (i = 0; i < ret; i++) {
-        idx = ((zq->q_head + i) & qmask);
-        cqe = zq->cq + idx;
-        entries[i].z = cqe->entry;
-        entries[i].z.context = zq->context[cqe->entry.index];
-        ZHPEQ_TIMING_UPDATE(&zhpeq_timing_tx_cqread,
-                            NULL, &cqe->entry.timestamp, 0);
-    }
-    smp_wmb();
-    zq->q_head += ret;
 
  done:
     return ret;

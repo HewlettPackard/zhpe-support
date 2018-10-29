@@ -256,10 +256,10 @@ int main(int argc, char **argv)
         qlen = u64;
     }
 
-    zq = do_calloc(queues, sizeof(*zq));
+    zq = calloc(queues, sizeof(*zq));
     if (!zq)
         goto done;
-    shuffle = do_calloc(queues, sizeof(*shuffle));
+    shuffle = calloc(queues, sizeof(*shuffle));
     if (!shuffle)
         goto done;
     if (qlen) {
@@ -349,8 +349,8 @@ int main(int argc, char **argv)
 
  done:
     zhpeq_domain_free(zdom);
-    do_free(zq);
-    do_free(shuffle);
+    free(zq);
+    free(shuffle);
 
     printf("%s:done, ret = %d\n", appname, ret);
 

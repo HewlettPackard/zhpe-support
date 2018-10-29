@@ -37,8 +37,6 @@
 #ifndef _LIBZHPEQ_INTERNAL_H_
 #define _LIBZHPEQ_INTERNAL_H_
 
-#define _GNU_SOURCE
-
 #include <zhpeq.h>
 #include <zhpeq_util.h>
 #include <zhpe.h>
@@ -63,8 +61,6 @@
 _EXTERN_C_BEG
 
 #define DEV_NAME        "/dev/"DRIVER_NAME
-
-#define CACHE_ALIGNED    __attribute__ ((aligned (64)))
 
 struct backend_ops {
     int                 (*lib_init)(struct zhpeq_attr *attr);
@@ -106,15 +102,17 @@ void zhpeq_register_backend(enum zhpe_backend backend, struct backend_ops *ops);
 void zhpeq_backend_libfabric_init(int fd);
 void zhpeq_backend_zhpe_init(int fd);
 
-#define FREE_END        (-1)
+#define FREE_END        ((intptr_t)-1)
 
-union free_index {
-    struct {
-        int32_t         index;
-        uint32_t        seq;
-    };
-    uint64_t            blob;
-};
+struct free_index {
+    int32_t             index;
+    uint32_t            seq;
+} INT64_ALIGNED;
+
+struct zhpeq_ht {
+    uint32_t            head;
+    uint32_t            tail;
+} INT64_ALIGNED;
 
 struct zhpeq_dom {
     void                *backend_data;
@@ -129,21 +127,15 @@ struct zhpeq {
     void                **context;
     void                *backend_data;
     int                 fd;
-    pthread_spinlock_t  tail_lock CACHE_ALIGNED;
-    /* Shadow for wq and cq, q_head may be updated in progress thread. */
-    uint32_t            q_head CACHE_ALIGNED;
-    uint32_t            tail_reserved CACHE_ALIGNED;
-    uint32_t            tail_commit;
-    bool                tail_lock_init;
+    struct zhpeq_ht     head_tail CACHE_ALIGNED;
+    struct free_index   context_free;
+    uint32_t            tail_commit CACHE_ALIGNED;
 };
 
 static inline uint8_t cq_valid(uint32_t idx, uint32_t qmask)
 {
     return ((idx & (qmask + 1)) ? 0 : ZHPE_HW_CQ_VALID);
 }
-
-#define likely(x)		__builtin_expect((x), 1)
-#define unlikely(x)		__builtin_expect((x), 0)
 
 static inline uint64_t ioread64(const volatile void *addr)
 {

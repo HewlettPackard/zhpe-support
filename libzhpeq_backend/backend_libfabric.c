@@ -58,69 +58,6 @@
 static const char       *backend_prov = NULL;
 static const char       *backend_dom = NULL;
 
-struct rkey {
-    uint64_t            rkey;
-    uint64_t            av_idx;
-};
-
-struct zdom_data {
-    struct fab_dom      fab_dom;
-    struct fid_mr       **lcl_mr;
-    union free_index    lcl_mr_free;
-    struct rkey         *rkey;
-    union free_index    rkey_free;
-};
-
-enum engine_state {
-    ENGINE_STOPPED,
-    ENGINE_RUNNING,
-    ENGINE_HALTING,
-};
-
-/*
- * The sockets provider gets annoyed if you delete the listener before
- * deleting all the sockets derived from it. Seems stupid.
- */
-
-struct context {
-    struct fi_context2  opaque;
-    struct zhpe_result  *result;
-    ZHPEQ_TIMING_CODE(struct zhpe_timing_stamp timestamp);
-    uint16_t            cmp_index;
-    uint8_t             result_len;
-};
-
-#ifdef ZHPEQ_TIMING
-
-#define lfabt_cmdpost(_data, _wqe, _ctxt)                               \
-do {                                                                    \
-    zhpeq_timing_update(&zhpeq_timing_tx_cmdnew, &lfabt_new,            \
-                        &(_wqe)->_data.timestamp, 0);                   \
-    zhpeq_timing_update_stamp(&(_ctxt)->timestamp);                     \
-    (_ctxt)->timestamp.time = (_wqe)->_data.timestamp.time;             \
-    zhpeq_timing_tx_ibv_post_send_stamp.time =                          \
-        (_wqe)->_data.timestamp.time;                                   \
-    zhpeq_timing_tx_ibv_post_send_stamp.cpu = (_ctxt)->timestamp.cpu;   \
-} while (0)
-
-#define lfabt_cmddone(_ctxt, _cqe)                                      \
-do {                                                                    \
-    zhpeq_timing_update_stamp(&(_cqe)->entry.timestamp);                \
-    zhpeq_timing_update(&zhpeq_timing_tx_cmddone,                       \
-                        &(_cqe)->entry.timestamp,                       \
-                        &(_ctxt)->timestamp, 0);                        \
-} while (0)
-
-#else
-
-#define lfabt_cmdpost(_data, _wqe, _ctxt)       \
-    do {} while (0)
-
-#define lfabt_cmddone(_ctxt, _cqe)              \
-    do {} while (0)
-
-#endif
-
 STAILQ_HEAD(stailq_head, stailq_entry);
 
 struct stailq_entry {
@@ -133,29 +70,87 @@ struct circleq_entry {
     CIRCLEQ_ENTRY(circleq_entry) ptrs;
 };
 
-struct lfab_work;
+struct rkey {
+    uint64_t            rkey;
+    uint64_t            av_idx;
+};
 
-typedef int (*lfab_worker)(struct lfab_work *work);
-typedef void (*lfab_work_signal)(void *signal_data);
+struct zdom_data {
+    struct fab_dom      *fab_dom;
+    struct fid_mr       **lcl_mr;
+    struct free_index   lcl_mr_free;
+    struct rkey         *rkey;
+    struct free_index   rkey_free;
+};
 
-struct lfab_work {
-    struct stailq_entry lentry;
-    lfab_worker		worker;
-    void                *data;
-    pthread_cond_t      cond;
+enum engine_state {
+    ENGINE_STOPPED,
+    ENGINE_RUNNING,
+};
+
+/*
+ * The sockets provider gets annoyed if you delete the listener before
+ * deleting all the sockets derived from it. Seems stupid.
+ */
+
+struct context {
+    union {
+        struct fi_context2  opaque;
+        struct stailq_entry free_lentry;
+    };
+    struct fab_conn_plus *fab_plus;
+    struct stuff        *conn;
+    struct zhpe_result  *result;
+    uint16_t            cmp_index;
+    uint8_t             result_len;
+#if ZHPE_IO_RECORD
+    bool                done;
+#endif
+};
+
+struct lfab_work_av_op {
+    struct stuff        *conn;
+    fi_addr_t           fi_addr;
+    union sockaddr_in46 ep_addr;
+};
+
+struct lfab_work_fi_mr_reg {
+    struct fid_domain   *domain;
+    const void          *buf;
+    size_t              len;
+    uint64_t            access;
+    struct fid_mr       **mr_out;
+};
+
+struct lfab_work_fi_getname {
+    struct fid          *fid;
+    void                *buf;
+    size_t              *len_inout;
+};
+
+struct lfab_work_qfree_pre {
+    struct stuff        *conn;
+    uint64_t            tx_queued;
+    uint64_t            tx_completed;
+    struct timespec     ts_last;
+};
+
+struct io_record {
+    struct stuff        *conn;
+    uint64_t            fi_addr;
+    void                *buf;
+    void                *desc;
+    uint64_t            raddr;
+    uint64_t            rkey;
+    uint64_t            len;
+    struct context      *context;
+    uint8_t             op;
 };
 
 struct stuff {
-    struct zhpeq        *zq;
-    struct engine       *eng;
-    struct stailq_head  work_list;
     struct circleq_entry lentry;
-    struct fab_conn     fab_conn;
-    struct context      *context;
-    struct context      *context_free;
-    struct zhpe_result  *results;
-    struct fid_mr       *results_mr;
-    void                *results_desc;
+    struct zhpeq        *zq;
+    struct fab_conn_plus *fab_plus;
     uint64_t            tx_queued;
     uint64_t            tx_completed;
     struct iovec        msg_iov;
@@ -172,121 +167,184 @@ struct stuff {
 };
 
 struct engine {
-    pthread_mutex_t     mutex;
-    pthread_cond_t      cond;
-    uint64_t            signal;
-    uint64_t            signal_seen;
+    struct zhpeu_work_head  work_head;
     pthread_t           thread;
-    struct stailq_head  work_list;
     struct circleq_head zq_head;
     enum engine_state   state;
+    bool                do_auto;
 };
 
-static struct engine eng;
+struct fab_conn_plus {
+    struct fab_conn     *fab_conn;
+    struct context      *context;
+    size_t              context_entries;
+    struct stailq_head  context_free;
+    struct zhpe_result  *results;
+    struct fid_mr       *results_mr;
+    void                *results_desc;
+};
+
+/* A single engine thread, a single endpoint,and a single domain. */
+static struct engine    eng;
+static struct fab_dom   *one_dom;
+static struct fab_conn_plus one_conn;
 
 static void *lfab_eng_thread(void *veng);
 static void cq_update(void *arg, void *vcqe, bool err);
+static int stuff_free(struct stuff *stuff);
+static inline void cq_write(void *vcontext, int status);
 
-static void lfab_work_init(struct lfab_work *work)
+#ifdef ZHPE_IO_RECORD
+
+static struct io_record io_rec[ZHPE_IO_RECORD] __attribute__((used));
+static uint32_t         io_rec_idx;
+
+static void
+record_io_start(int rc, struct stuff *conn, uint64_t op, uint64_t fi_addr,
+                void *buf, void *desc, uint64_t raddr, uint64_t rkey,
+                uint64_t len, struct context *context)
 {
-    work->worker = NULL;
-    cond_init(&work->cond, NULL);
+    uint                idx;
+    struct io_record    *io;
+
+    if (rc == -FI_EAGAIN)
+        return;
+
+    idx = atm_inc(&io_rec_idx);
+    io = &io_rec[idx & (ARRAY_SIZE(io_rec) - 1)];
+
+    io->conn = conn;
+    io->fi_addr = fi_addr;
+    io->buf = buf;
+    io->desc = desc;
+    io->raddr = raddr;
+    io->rkey = rkey;
+    io->len = len;
+    io->context = context;
+    io->op = op;
+
+    context->done = false;
 }
 
-static void lfab_work_destroy(struct lfab_work *work)
+static inline void record_io_done(struct context *context)
 {
-    cond_destroy(&work->cond);
+    context->done = true;
 }
 
-static inline void lfab_work_queue(struct stailq_head *head,
-                                   pthread_mutex_t *head_mutex, bool locked,
-                                   lfab_work_signal signal, void *sigdata,
-                                   struct lfab_work *work, lfab_worker worker,
-                                   void *data, bool wait)
+#else
+
+static void
+record_io_start(int rc, struct stuff *conn, uint64_t op, uint64_t fi_addr,
+                void *buf, void *desc, uint64_t raddr, uint64_t rkey,
+                uint64_t len, void *context)
 {
-    if (!locked)
-        mutex_lock(head_mutex);
-    /* Wait for pending operation to complete. */
-    while (work->worker)
-        cond_wait(&work->cond, head_mutex);
-    work->worker = worker;
-    work->data = data;
-    STAILQ_INSERT_TAIL(head, &work->lentry, ptrs);
-    if (wait) {
-        if (signal)
-            signal(sigdata);
-        while (work->worker)
-            cond_wait(&work->cond, head_mutex);
-        mutex_unlock(head_mutex);
-    } else {
-        mutex_unlock(head_mutex);
-        if (signal)
-            signal(sigdata);
+}
+
+static inline void record_io_done(struct context *context)
+{
+}
+#endif
+
+static int lfab_eng_work_queue(struct engine *eng, zhpeu_worker worker,
+                               void *data)
+{
+    int                 ret = 0;
+    struct zhpeu_work   work;
+
+    zhpeu_work_init(&work);
+
+    mutex_lock(&eng->work_head.thr_wait.mutex);
+
+    if (eng->do_auto) {
+
+        switch (eng->state) {
+
+        case ENGINE_STOPPED:
+            ret = -pthread_create(&eng->thread, NULL, lfab_eng_thread, eng);
+            if (ret >= 0)
+                eng->state = ENGINE_RUNNING;
+            else
+                print_func_err(__FUNCTION__, __LINE__, "pthread_create",
+                               "eng", ret);
+            break;
+
+        default:
+            ret = 0;
+            break;
+
+        }
     }
+    if (likely(ret >= 0)) {
+        zhpeu_work_queue(&eng->work_head, &work, worker, data,
+                        true, false, !eng->do_auto);
+        if (eng->do_auto)
+            zhpeu_work_wait(&eng->work_head, &work, false, true);
+        else
+            while (zhpeu_work_process(&eng->work_head, true, true));
+        ret = work.status;
+    } else
+        mutex_unlock(&eng->work_head.thr_wait.mutex);
+
+    zhpeu_work_destroy(&work);
+
+    return ret;
 }
 
-struct lfab_work_eng_data {
-    struct engine       *eng;
-    struct stuff        *conn;
-    union sockaddr_in46 ep_addr;
-    fi_addr_t           fi_addr;
-    struct timespec     ts_last;
-    uint64_t            tx_queued;
-    uint64_t            tx_completed;
-    int                 status;
-};
-
-static int conn_eng_remove(struct lfab_work *work)
+static bool worker_qfree_pre(struct zhpeu_work_head *head,
+                             struct zhpeu_work *work)
 {
-    struct lfab_work_eng_data *data = work->data;
-    struct engine       *eng = data->eng;
+    struct lfab_work_qfree_pre *data = work->data;
     struct stuff        *conn = data->conn;
+    struct engine       *eng = container_of(head, struct engine, work_head);
     struct timespec     ts_now;
+    struct context      *context;
+    size_t              i;
 
-    if (!conn->eng)
-        return 0;
     /* All operations done? */
     if (conn->tx_queued == conn->tx_completed)
         goto remove;
-    /* No:we will stooge around for up to 1 second after progress stops. */
+    /* First time? */
     clock_gettime_monotonic(&ts_now);
-    if (data->status > 0) {
-        data->status = 0;
-        /* Save current progress and timestamp. */
+    if (!work->status) {
+        /* Yes: snapshot initial state. */
         data->tx_queued = conn->tx_queued;
         data->tx_completed = conn->tx_completed;
         data->ts_last = ts_now;
-    } else if (data->tx_completed != conn->tx_completed) {
-        /* Have new ops been issued? */
-        if ((int64_t)(conn->tx_completed - data->tx_queued) > 0)
-            /* Yes: give up. */
-            goto remove;
-        /* Update progress and timestamp. */
-        data->tx_completed = conn->tx_completed;
-        data->ts_last = ts_now;
-    } else if (ts_delta(&data->ts_last, &ts_now) > QFREE_THRESHOLD_NS)
-        goto remove;
+        work->status = 1;
+        return true;
+    }
+    /* Making progress? */
+    if (data->tx_completed != conn->tx_completed) {
+        /* Yes: are new I/Os being started? */
+        if (conn->tx_queued == data->tx_queued) {
+            /* No: update state. */
+            data->tx_completed = conn->tx_completed;
+            data->ts_last = ts_now;
+            return true;
+        }
+        /* Yes, someone is breaking the rules: give up. */
+    }
+    /* No progress: 2ms timer expired? */
+    else if (ts_delta(&data->ts_last, &ts_now) < 2 * NS_PER_SEC / MS_PER_SEC)
+        /* No: keep trying. */
+        return true;
 
-    /* Remain in queue. */
-    return 1;
+    /* Give up and somewhat painfully clean up outstanding I/Os:
+     * mark all contexts associated with this conn so they won't generate
+     * completions.
+     */
+    for (i = 0, context = conn->fab_plus->context;
+         i < conn->fab_plus->context_entries; i++, context++) {
+        if (context->conn == conn)
+            context->conn = NULL;
+    }
 
  remove:
+    /* Remove the conn from the engine thread. */
     CIRCLEQ_REMOVE(&eng->zq_head, &conn->lentry, ptrs);
-    conn->eng = NULL;
+    work->status = stuff_free(conn);
 
-    return 0;
-}
-
-static int conn_eng_add(struct lfab_work *work)
-{
-    struct lfab_work_eng_data *data = work->data;
-    struct engine       *eng = data->eng;
-    struct stuff        *conn = data->conn;
-
-    CIRCLEQ_INSERT_TAIL(&eng->zq_head, &conn->lentry, ptrs);
-    conn->eng = eng;
-
-    return 0;
+    return false;
 }
 
 static int retry_none(void *args)
@@ -295,119 +353,101 @@ static int retry_none(void *args)
     return 1;
 }
 
-static int conn_av_remove(struct lfab_work *work)
+static bool worker_av_op_remove(struct zhpeu_work_head *head,
+                                struct zhpeu_work *work)
 {
-    struct lfab_work_eng_data *data = work->data;
+    struct lfab_work_av_op *data = work->data;
     struct stuff        *conn = data->conn;
+    struct fab_conn     *fab_conn = conn->fab_plus->fab_conn;
 
-    data->status = fab_av_remove(conn->fab_conn.dom, data->fi_addr);
+    work->status = fab_av_remove(fab_conn->dom, data->fi_addr);
 
-    return 0;
+    return false;
 }
 
-static int conn_av_recv(struct lfab_work *work)
+static bool worker_av_op_recv(struct zhpeu_work_head *head,
+                              struct zhpeu_work *work)
 {
-    struct lfab_work_eng_data *data = work->data;
+    struct lfab_work_av_op *data = work->data;
     struct stuff        *conn = data->conn;
+    struct fab_conn     *fab_conn = conn->fab_plus->fab_conn;
     int                 rc;
 
-    rc = fab_av_wait_recv(&conn->fab_conn, data->fi_addr, retry_none, NULL);
-    if (rc < 0)
-        data->status = rc;
+    rc = fab_av_wait_recv(fab_conn, data->fi_addr, retry_none, NULL);
+    if (rc <= 0) {
+        work->status = rc;
+        return false;
+    }
 
-    return 0;
+    return true;
 }
 
-static int conn_av_send(struct lfab_work *work)
+static bool worker_av_op_send(struct zhpeu_work_head *head,
+                              struct zhpeu_work *work)
 {
-    struct lfab_work_eng_data *data = work->data;
+    struct lfab_work_av_op *data = work->data;
     struct stuff        *conn = data->conn;
+    struct fab_conn     *fab_conn = conn->fab_plus->fab_conn;
     int                 rc;
 
-    rc = fab_av_wait_send(&conn->fab_conn, data->fi_addr, retry_none, NULL);
+    rc = fab_av_wait_send(fab_conn, data->fi_addr, retry_none, NULL);
     if (rc < 0) {
-        data->status = rc;
-        return 0;
+        work->status = rc;
+        return false;
     }
     if (!rc)
-        work->worker = conn_av_recv;
+        work->worker = worker_av_op_recv;
 
-    return 1;
+    return true;
 }
 
-static int conn_av_insert(struct lfab_work *work)
+static bool worker_av_op_insert(struct zhpeu_work_head *head,
+                                struct zhpeu_work *work)
 {
-    struct lfab_work_eng_data *data = work->data;
+    struct lfab_work_av_op *data = work->data;
     struct stuff        *conn = data->conn;
+    struct fab_conn     *fab_conn = conn->fab_plus->fab_conn;
     int                 rc;
 
-    rc = fab_av_insert(conn->fab_conn.dom, &data->ep_addr, &data->fi_addr);
-    if (rc >= 0 && rc != 1)
-        rc = -FI_EIO;
-    if (rc < 0) {
-        data->status = rc;
-        return 0;
+    rc = fab_av_insert(fab_conn->dom, &data->ep_addr, &data->fi_addr);
+    if (rc) {
+        work->status = (rc > 0 ? 0 : rc);
+        return false;
     }
-    work->worker = conn_av_send;
+    work->worker = worker_av_op_send;
 
-    return 1;
-}
-
-static inline void eng_signal(struct engine *eng, bool locked)
-{
-    bool                broadcast;
-
-    if (!locked)
-        mutex_lock(&eng->mutex);
-    broadcast = (eng->signal == eng->signal_seen);
-    if (broadcast)
-        eng->signal++;
-    if (!locked)
-        mutex_unlock(&eng->mutex);
-    if (broadcast)
-        cond_broadcast(&eng->cond);
-}
-
-static void lfab_work_eng_signal(void *sigdata)
-{
-    struct engine       *eng = sigdata;
-
-    smp_wmb();
-    eng_signal(eng, true);
+    return true;
 }
 
 static int stuff_free(struct stuff *stuff)
 {
     int                 ret = 0;
-    struct lfab_work    work;
-    struct lfab_work_eng_data data;
-    struct engine       *eng;
+    int                 rc;
 
     if (!stuff)
         goto done;
 
-    if ((eng = stuff->eng)) {
-        data.eng = eng;
-        data.conn = stuff;
-        data.status = 1;
-        lfab_work_init(&work);
-        lfab_work_queue(&eng->work_list, &eng->mutex, false,
-                        lfab_work_eng_signal, eng,
-                        &work, conn_eng_remove, &data, true);
-        lfab_work_destroy(&work);
-        ret = data.status;
-    }
-    do_free(stuff->context);
-    if (stuff->results_mr)
-        fi_close(&stuff->results_mr->fid);
-    do_free(stuff->results);
-    fab_conn_free(&stuff->fab_conn);
+    rc = fab_conn_free(stuff->fab_plus->fab_conn);
+    ret = (ret >= 0 ? rc : ret);
 
     if (stuff->allocated)
-        do_free(stuff);
+        free(stuff);
 
  done:
     return ret;
+}
+
+static bool worker_domain_free(struct zhpeu_work_head *head,
+                               struct zhpeu_work *work)
+{
+    struct zdom_data    *bdom = work->data;
+
+    work->status = fab_dom_free(bdom->fab_dom);
+    free(bdom->lcl_mr);
+    free(bdom->rkey);
+    free(bdom);
+
+    return false;
 }
 
 static int lfab_domain_free(struct zhpeq_dom *zdom)
@@ -415,37 +455,55 @@ static int lfab_domain_free(struct zhpeq_dom *zdom)
     int                 ret = 0;
     struct zdom_data    *bdom = zdom->backend_data;
 
-    if (!bdom)
-        goto done;
+    if (zdom->backend_data) {
+        zdom->backend_data = NULL;
+        ret = lfab_eng_work_queue(&eng, worker_domain_free, bdom);
+    }
 
-    do_free(bdom->lcl_mr);
-    do_free(bdom->rkey);
-    fab_dom_free(&bdom->fab_dom);
-    do_free(bdom);
-    zdom->backend_data = NULL;
-
- done:
     return ret;
 }
 
-static int lfab_domain(struct zhpeq_dom *zdom)
+static void onfree_one_dom(struct fab_dom *dom, void *data)
+{
+    *(void **)data = NULL;
+    free(dom);
+}
+
+static void onfree_one_conn(struct fab_conn *conn, void *data)
+{
+    struct fab_conn_plus *fab_plus = data;
+
+    FI_CLOSE(fab_plus->results_mr);
+    fab_plus->results_mr = NULL;
+    free(fab_plus->context);
+    fab_plus->context = NULL;
+    free(fab_plus->results);
+    fab_plus->results = NULL;
+    free(fab_plus->fab_conn);
+    fab_plus->fab_conn = NULL;
+}
+
+static bool worker_domain(struct zhpeu_work_head *head,
+                          struct zhpeu_work *work)
 {
     int                 ret = -ENOMEM;
+    struct zhpeq_dom    *zdom = work->data;
     struct zdom_data    *bdom;
     size_t              i;
 
-    bdom = zdom->backend_data = do_calloc(1, sizeof(*bdom));
+    bdom = zdom->backend_data = calloc_cachealigned(1, sizeof(*bdom));
     if (!bdom)
         goto done;
-    fab_dom_init(&bdom->fab_dom);
-    bdom->lcl_mr = do_calloc(KEYTAB_SIZE, sizeof(*bdom->lcl_mr));
+
+    bdom->lcl_mr = calloc_cachealigned(KEYTAB_SIZE, sizeof(*bdom->lcl_mr));
     if (!bdom->lcl_mr)
         goto done;
     bdom->lcl_mr_free.index = 1;
     for (i = 0; i < KEYTAB_SIZE - 1; i++)
         bdom->lcl_mr[i] = TO_PTR(((i + 1) << 1) | 1);
-    bdom->lcl_mr[i] = TO_PTR(-1);
-    bdom->rkey = do_calloc(KEYTAB_SIZE, sizeof(*bdom->rkey));
+    bdom->lcl_mr[i] = TO_PTR(FREE_END);
+
+    bdom->rkey = calloc_cachealigned(KEYTAB_SIZE, sizeof(*bdom->rkey));
     if (!bdom->rkey)
         goto done;
     bdom->rkey_free.index = 0;
@@ -453,24 +511,42 @@ static int lfab_domain(struct zhpeq_dom *zdom)
         bdom->rkey[i].rkey = i + 1;
     bdom->rkey[i].rkey = FI_KEY_NOTAVAIL;
 
-    ret = fab_dom_setup(NULL, NULL, false, backend_prov, backend_dom, FI_EP_RDM,
-                        &bdom->fab_dom);
+    if (one_dom) {
+        bdom->fab_dom = one_dom;
+        atm_inc(&one_dom->use_count);
+        ret = 0;
+        goto done;
+    }
+
+    one_dom = fab_dom_alloc(onfree_one_dom, &one_dom);
+    if (!one_dom)
+            goto done;
+    bdom->fab_dom = one_dom;
+    ret = fab_dom_setup(NULL, NULL, false, backend_prov, backend_dom,
+                        FI_EP_RDM, one_dom);
+    if (ret < 0)
+        goto done;
 
  done:
+    work->status = ret;
 
-    return ret;
+    return false;
 }
 
-static struct stuff *stuff_alloc(struct fab_dom *dom)
+static int lfab_domain(struct zhpeq_dom *zdom)
+{
+    return lfab_eng_work_queue(&eng, worker_domain, zdom);
+}
+
+static struct stuff *stuff_alloc(void)
 {
     struct stuff        *ret = NULL;
     int                 err = 0;
 
-    ret = do_calloc(1, sizeof(*ret));
+    ret = calloc_cachealigned(1, sizeof(*ret));
     if (!ret)
         goto done;
     ret->allocated = true;
-    fab_conn_init(dom, &ret->fab_conn);
 
     ret->msg.msg_iov = &ret->msg_iov;
     ret->msg.desc = &ret->ldsc;
@@ -516,134 +592,117 @@ static int lfab_qalloc(struct zhpeq *zq, int cmd_qlen, int cmp_qlen,
     return 0;
 }
 
-static int lfab_qalloc_post(struct zhpeq *zq)
+static bool worker_qalloc_post(struct zhpeu_work_head *head,
+                               struct zhpeu_work *work)
 {
     int                 ret = -ENOMEM;
+    struct zhpeq        *zq = work->data;
     struct zhpeq_dom    *zdom = zq->zdom;
     struct zdom_data    *bdom = zdom->backend_data;
+    struct engine       *eng = container_of(head, struct engine, work_head);
     struct stuff        *conn;
-    struct fab_conn     *fab_conn;
+    struct fab_conn_plus *fab_plus;
     size_t              req;
-    struct lfab_work    work;
-    struct lfab_work_eng_data data;
+    struct context      *context;
 
-    conn = stuff_alloc(&bdom->fab_dom);
+    conn = stuff_alloc();
     if (!conn)
         goto done;
     zq->backend_data = conn;
     conn->zq = zq;
-    fab_conn = &conn->fab_conn;
+    fab_plus = conn->fab_plus = &one_conn;
 
-    ret = fab_ep_setup(fab_conn, NULL, 0, 0);
+    if (fab_plus->fab_conn) {
+        ret = 0;
+        atm_inc(&fab_plus->fab_conn->use_count);
+        goto link;
+    }
+    fab_plus->fab_conn = fab_conn_alloc(bdom->fab_dom, onfree_one_conn,
+                                        fab_plus);
+    if (!fab_plus->fab_conn)
+        goto done;
+    ret = fab_ep_setup(fab_plus->fab_conn, NULL, 0, 0);
     if (ret < 0)
         goto done;
 
-    ret = -ENOMEM;
     /* Build free list of context structures big enough for all I/Os. */
-#if 1
-    req = fab_conn->dom->finfo.info->tx_attr->size;
-    if (req > zq->xqinfo.cmdq.ent)
-        req = zq->xqinfo.cmdq.ent;
-#else
-    /* FIXME: Looks like per-AV limit of 7. Need to handle this. */
-    req = 7;
-#endif
-    conn->context = do_malloc(req * sizeof(*conn->context));
-    if (!conn->context)
+    ret = -ENOMEM;
+    fab_plus->context_entries =
+        fab_plus->fab_conn->dom->finfo.info->tx_attr->size;
+
+    req = fab_plus->context_entries * sizeof(*fab_plus->context);
+    fab_plus->context = malloc_cachealigned(req);
+    if (!fab_plus->context)
         goto done;
-    while (req > 0) {
-        req--;
-        conn->context[req].opaque.internal[0] = conn->context_free;
-        conn->context_free = &conn->context[req];
-    }
-    req = zq->xqinfo.cmplq.ent * sizeof(*conn->results);
-    conn->results = do_malloc(req);
-    if (!conn->results)
+
+    req = fab_plus->context_entries * sizeof(*fab_plus->results);
+    fab_plus->results = malloc_cachealigned(req);
+    if (!fab_plus->results)
         goto done;
-    ret = fi_mr_reg(fab_conn->dom->domain, conn->results, req,
-                    FI_READ | FI_WRITE, 0, 0, 0, &conn->results_mr, NULL);
+    ret = fi_mr_reg(fab_plus->fab_conn->dom->domain, fab_plus->results, req,
+                    FI_READ | FI_WRITE, 0, 0, 0, &fab_plus->results_mr, NULL);
     if (ret < 0) {
-        conn->results_mr = NULL;
+        fab_plus->results_mr = NULL;
         print_func_fi_err(__FUNCTION__, __LINE__, "fi_mr_req", "", ret);
         goto done;
     }
-    conn->results_desc = fi_mr_desc(conn->results_mr);
+    fab_plus->results_desc = fi_mr_desc(fab_plus->results_mr);
 
-    mutex_lock(&eng.mutex);
-    if (eng.state == ENGINE_HALTING) {
-        ret = -pthread_join(eng.thread, NULL);
-        if (ret >= 0)
-            eng.state = ENGINE_STOPPED;
-        else
-            print_func_err(__FUNCTION__, __LINE__, "pthread_join", "eng", ret);
+    /* Initial contexts and free lists. */
+    STAILQ_INIT(&fab_plus->context_free);
+    for (req = 0, context = fab_plus->context;
+         req < fab_plus->context_entries; req++, context++) {
+        context->fab_plus = fab_plus;
+        context->result = &fab_plus->results[req];
+        context->result_len = 0;
+        STAILQ_INSERT_TAIL(&fab_plus->context_free,
+                           &context->free_lentry, ptrs);
     }
-    if (eng.state == ENGINE_STOPPED) {
-        ret = -pthread_create(&eng.thread, NULL, lfab_eng_thread, &eng);
-        if (ret >= 0)
-            eng.state = ENGINE_RUNNING;
-        else
-            print_func_err(__FUNCTION__, __LINE__, "pthread_create",
-                           "eng", ret);
-    }
-    if (ret >= 0) {
-        data.eng = &eng;
-        data.conn = conn;
-        lfab_work_init(&work);
-        lfab_work_queue(&eng.work_list, &eng.mutex, true,
-                        lfab_work_eng_signal, &eng,
-                        &work, conn_eng_add, &data, true);
-        lfab_work_destroy(&work);
-    } else
-        mutex_unlock(&eng.mutex);
+
+ link:
+    CIRCLEQ_INSERT_TAIL(&eng->zq_head, &conn->lentry, ptrs);
 
  done:
+    if (ret < 0) {
+        stuff_free(conn);
+        zq->backend_data = NULL;
+    }
+    work->status = ret;
 
-    return ret;
+    return false;
 }
 
-static inline int do_av_op(struct lfab_work_eng_data *data,
-                           lfab_worker worker)
+static int lfab_qalloc_post(struct zhpeq *zq)
 {
-    struct lfab_work    work;
-
-    /* Do the work on the engine thread so it is single-threaded. */
-    data->status = 0;
-    lfab_work_init(&work);
-    lfab_work_queue(&data->eng->work_list, &data->eng->mutex, false,
-                    lfab_work_eng_signal, data->eng,
-                    &work, worker, data, true);
-    lfab_work_destroy(&work);
-
-    return data->status;
+    return lfab_eng_work_queue(&eng, worker_qalloc_post, zq);
 }
+
 
 static int lfab_open(struct zhpeq *zq, int sock_fd)
 {
     int                 ret;
     struct stuff        *conn = zq->backend_data;
-    struct fab_conn     *fab_conn = &conn->fab_conn;
-    struct lfab_work_eng_data av_op = {
-        .eng            = &eng,
+    struct fab_conn     *fab_conn = conn->fab_plus->fab_conn;
+    struct lfab_work_av_op data = {
         .conn           = conn,
         .fi_addr        = FI_ADDR_UNSPEC,
     };
 
-    ret = fab_av_xchg_addr(fab_conn, sock_fd, &av_op.ep_addr);
+    ret = fab_av_xchg_addr(fab_conn, sock_fd, &data.ep_addr);
     if (ret < 0)
         goto done;
-    ret = do_av_op(&av_op, conn_av_insert);
-    if (ret >= 0) {
-        ret = av_op.fi_addr;
-        if (av_op.fi_addr > AV_MAX) {
-            print_err("%s,%u:av %lu exceeds AV_MAX %u\n",
-                      __FUNCTION__, __LINE__, av_op.fi_addr, AV_MAX);
-            ret = -ENOSPC;
-         }
-     }
+    ret = lfab_eng_work_queue(&eng, worker_av_op_insert, &data);
+    if (ret < 0)
+        goto done;
+    ret = data.fi_addr;
+    if (data.fi_addr > AV_MAX) {
+        print_err("%s,%u:av %lu exceeds AV_MAX %u\n",
+                  __FUNCTION__, __LINE__, data.fi_addr, AV_MAX);
+        (void)lfab_eng_work_queue(&eng, worker_av_op_remove, &data);
+        ret = -ENOSPC;
+    }
 
  done:
-    if (ret < 0 && av_op.fi_addr != FI_ADDR_UNSPEC)
-        (void)do_av_op(&av_op, conn_av_remove);
 
     return ret;
 }
@@ -651,40 +710,52 @@ static int lfab_open(struct zhpeq *zq, int sock_fd)
 static int lfab_close(struct zhpeq *zq, int open_idx)
 {
     struct stuff        *conn = zq->backend_data;
-    struct lfab_work_eng_data av_op = {
-        .eng            = &eng,
+    struct lfab_work_av_op data = {
         .conn           = conn,
         .fi_addr        = open_idx,
     };
 
-    return do_av_op(&av_op, conn_av_remove);
+    return lfab_eng_work_queue(&eng, worker_av_op_remove, &data);
 }
 
-static inline void cq_write(struct zhpeq *zq, void *vcontext, int status)
+static inline void cq_write(void *vcontext, int status)
 {
-    struct stuff        *conn = zq->backend_data;
     struct context      *context = vcontext;
-    uint32_t            qmask = zq->xqinfo.cmplq.ent - 1;
-    union zhpe_hw_cq_entry *cqe = zq->cq + (conn->cq_tail & qmask);
+    struct stuff        *conn;
+    struct zhpeq        *zq;
+    uint32_t            qmask;
+    union zhpe_hw_cq_entry *cqe;
+
+    record_io_done(context);
+
+    conn = context->conn;
+    if (!conn)
+        goto done;
+
+    zq = conn->zq;
+    qmask = zq->xqinfo.cmplq.ent - 1;
+    cqe = zq->cq + (conn->cq_tail & qmask);
 
     conn->tx_completed++;
-    lfabt_cmddone(context, cqe);
 
     cqe->entry.index = context->cmp_index;
     cqe->entry.status = (status < 0 ? ZHPEQ_CQ_STATUS_FABRIC_UNRECOVERABLE :
                          ZHPEQ_CQ_STATUS_SUCCESS);
-    if (context->result)
+    if (context->result_len) {
         memcpy(cqe->entry.result.data, context->result->data,
                context->result_len);
+        context->result_len = 0;
+    }
     smp_wmb();
     /* The following two events can be seen out of order: don't care. */
     cqe->entry.valid = cq_valid(conn->cq_tail, qmask);
     conn->cq_tail++;
     iowrite64(conn->cq_tail & qmask,
               zq->qcm + ZHPE_XDM_QCM_CMPL_QUEUE_TAIL_TOGGLE_OFFSET);
+ done:
     /* Place context on free list. */
-    context->opaque.internal[0] = conn->context_free;
-    conn->context_free = context;
+    STAILQ_INSERT_TAIL(&context->fab_plus->context_free,
+                       &context->free_lentry, ptrs);
 }
 
 static void cq_update(void *arg, void *vcqe, bool err)
@@ -694,32 +765,28 @@ static void cq_update(void *arg, void *vcqe, bool err)
 
     if (err) {
         cqerr = vcqe;
-        cq_write(arg, cqerr->op_context, -cqerr->err);
+        cq_write(cqerr->op_context, -cqerr->err);
     } else {
         cqe = vcqe;
-        cq_write(arg, cqe->op_context, 0);
+        cq_write(cqe->op_context, 0);
     }
 }
 
-static inline void cleanup_eagain(struct stuff *conn, struct context *context,
-                                  uint64_t *tx_queued)
+static inline void cleanup_eagain(struct stuff *conn, struct context *context)
 {
-    /* Nothing got queued, but we don't want the engine to sleep. */
     conn->tx_queued--;
-    if (conn->tx_queued == *tx_queued)
-        (*tx_queued)--;
-    /* Return context to free list. */
-    context->opaque.internal[0] = conn->context_free;
-    conn->context_free = context;
+    /* Return context to head of free list. */
+    STAILQ_INSERT_HEAD(&context->fab_plus->context_free,
+                       &context->free_lentry, ptrs);
 }
 
 static bool lfab_zq(struct stuff *conn)
 {
     struct zhpeq        *zq = conn->zq;
-    struct fab_conn     *fab_conn = &conn->fab_conn;
+    struct fab_conn_plus *fab_plus = conn->fab_plus;
+    struct fab_conn     *fab_conn = fab_plus->fab_conn;
     struct zdom_data    *bdom = zq->zdom->backend_data;
     struct fid_mr       **lcl_mr = bdom->lcl_mr;
-    uint64_t            tx_queued = conn->tx_queued;
     uint16_t            qmask = zq->xqinfo.cmdq.ent - 1;
     uint16_t            wq_head;
     uint16_t            wq_tail;
@@ -731,16 +798,12 @@ static bool lfab_zq(struct stuff *conn)
     uint64_t            flags;
     struct context      *context;
     char                *sendbuf;
-    ZHPEQ_TIMING_CODE(struct zhpe_timing_stamp lfabt_new);
+    struct stailq_entry *stailq_entry;
 
     wq_head = ioread64(zq->qcm + ZHPE_XDM_QCM_CMD_QUEUE_HEAD_OFFSET) & qmask;
     smp_rmb();
     wq_tail = ioread64(zq->qcm + ZHPE_XDM_QCM_CMD_QUEUE_TAIL_OFFSET) & qmask;
-    for (; (context = conn->context_free) && wq_head != wq_tail;
-         wq_head = (wq_head + 1) & qmask) {
-
-        /* We never expect to timestamp a fence. */
-        ZHPEQ_TIMING_UPDATE_STAMP(&lfabt_new);
+    for (; wq_head != wq_tail; wq_head = (wq_head + 1) & qmask) {
 
         wqe = zq->wq + wq_head;
 
@@ -759,14 +822,18 @@ static bool lfab_zq(struct stuff *conn)
             flags = FI_FENCE;
             /* Wait for all outstanding operations to complete. */
             if (conn->tx_queued != conn->tx_completed) {
-                (void)fab_completions(fab_conn->tx_cq, 0, cq_update, zq);
+                (void)fab_completions(fab_conn->tx_cq, 0, cq_update, NULL);
                 if (conn->tx_queued != conn->tx_completed)
                     goto done;
             }
         }
 
-        conn->context_free = context->opaque.internal[0];
-        context->result = NULL;
+        if (STAILQ_EMPTY(&fab_plus->context_free))
+            break;
+        stailq_entry = STAILQ_FIRST(&fab_plus->context_free);
+        STAILQ_REMOVE_HEAD(&fab_plus->context_free, ptrs);
+        context = container_of(stailq_entry, struct context, free_lentry);
+        context->conn = conn;
         context->cmp_index = wqe->hdr.cmp_index;
 
         conn->tx_queued++;
@@ -774,8 +841,7 @@ static bool lfab_zq(struct stuff *conn)
         switch (wqe->hdr.opcode & ~ZHPE_HW_OPCODE_FENCE) {
 
         case ZHPE_HW_OPCODE_NOP:
-            lfabt_cmdpost(nop, wqe, context);
-            cq_write(zq, context, 0);
+            cq_write(context, 0);
             break;
 
         case ZHPE_HW_OPCODE_PUT:
@@ -784,7 +850,7 @@ static bool lfab_zq(struct stuff *conn)
             mr = lcl_mr[TO_KEYIDX(laddr)];
             /* Check if key unregistered. (Race handling.) */
             if ((uintptr_t)mr & 1) {
-                cq_write(zq, conn->msg.context, -EINVAL);
+                cq_write(context, -EINVAL);
                 break;
             }
             conn->ldsc = fi_mr_desc(mr);
@@ -795,16 +861,19 @@ static bool lfab_zq(struct stuff *conn)
             conn->rma_iov.addr = TO_ADDR(raddr);
             conn->rma_iov.key = bdom->rkey[TO_KEYIDX(raddr)].rkey;
             conn->msg.addr = bdom->rkey[TO_KEYIDX(raddr)].av_idx;
-            lfabt_cmdpost(dma, wqe, context);
             rc = fi_writemsg(fab_conn->ep, &conn->msg, flags);
-            if (rc < 0) {
+            record_io_start(rc, conn, wqe->hdr.opcode, conn->msg.addr,
+                            conn->msg.msg_iov[0].iov_base, conn->msg.desc[0],
+                            conn->msg.rma_iov[0].addr, conn->msg.rma_iov[0].key,
+                            conn->msg.msg_iov[0].iov_len, conn->msg.context);
+            if (unlikely(rc < 0)) {
                 if (rc == -FI_EAGAIN) {
-                    cleanup_eagain(conn, context, &tx_queued);
+                    cleanup_eagain(conn, context);
                     goto eagain;
                 }
                 print_func_fi_err(__FUNCTION__, __LINE__,
                                   "fi_writemsg", "", rc);
-                cq_write(zq, context, rc);
+                cq_write(context, rc);
                 break;
             }
             break;
@@ -815,7 +884,7 @@ static bool lfab_zq(struct stuff *conn)
             mr = lcl_mr[TO_KEYIDX(laddr)];
             /* Check if key unregistered. (Race handling.) */
             if ((uintptr_t)mr & 1) {
-                cq_write(zq, context, -EINVAL);
+                cq_write(context, -EINVAL);
                 break;
             }
             conn->ldsc = fi_mr_desc(mr);
@@ -826,16 +895,19 @@ static bool lfab_zq(struct stuff *conn)
             conn->rma_iov.addr = TO_ADDR(raddr);
             conn->rma_iov.key = bdom->rkey[TO_KEYIDX(raddr)].rkey;
             conn->msg.addr = bdom->rkey[TO_KEYIDX(raddr)].av_idx;
-            lfabt_cmdpost(dma, wqe, context);
             rc = fi_readmsg(fab_conn->ep, &conn->msg, flags);
-            if (rc < 0) {
+            record_io_start(rc, conn, wqe->hdr.opcode, conn->msg.addr,
+                            conn->msg.msg_iov[0].iov_base, conn->msg.desc[0],
+                            conn->msg.rma_iov[0].addr, conn->msg.rma_iov[0].key,
+                            conn->msg.msg_iov[0].iov_len, conn->msg.context);
+            if (unlikely(rc < 0)) {
                 if (rc == -FI_EAGAIN) {
-                    cleanup_eagain(conn, context, &tx_queued);
+                    cleanup_eagain(conn, context);
                     goto eagain;
                 }
                 print_func_fi_err(__FUNCTION__, __LINE__,
                                   "fi_readmsg", "", rc);
-                cq_write(zq, context, rc);
+                cq_write(context, rc);
                 break;
             }
             break;
@@ -843,10 +915,10 @@ static bool lfab_zq(struct stuff *conn)
         case ZHPE_HW_OPCODE_PUTIMM:
             conn->msg.context = context;
             /* No NULL descriptors! Use results buffer for sent data. */
-            sendbuf = conn->results[context->cmp_index].data;
+            sendbuf = context->result->data;
             memcpy(sendbuf, wqe->imm.data, wqe->imm.len);
             laddr = (uintptr_t)sendbuf;
-            conn->ldsc = conn->results_desc;
+            conn->ldsc = fab_plus->results_desc;
             conn->msg_iov.iov_base = TO_PTR(TO_ADDR(laddr));
             conn->msg_iov.iov_len = wqe->imm.len;
             conn->rma_iov.len = wqe->imm.len;
@@ -854,16 +926,19 @@ static bool lfab_zq(struct stuff *conn)
             conn->rma_iov.addr = TO_ADDR(raddr);
             conn->rma_iov.key = bdom->rkey[TO_KEYIDX(raddr)].rkey;
             conn->msg.addr = bdom->rkey[TO_KEYIDX(raddr)].av_idx;
-            lfabt_cmdpost(imm, wqe, context);
             rc = fi_writemsg(fab_conn->ep, &conn->msg, flags);
-            if (rc < 0) {
+            record_io_start(rc, conn, wqe->hdr.opcode, conn->msg.addr,
+                            conn->msg.msg_iov[0].iov_base, conn->msg.desc[0],
+                            conn->msg.rma_iov[0].addr, conn->msg.rma_iov[0].key,
+                            conn->msg.msg_iov[0].iov_len, conn->msg.context);
+            if (unlikely(rc < 0)) {
                 if (rc == -FI_EAGAIN) {
-                    cleanup_eagain(conn, context, &tx_queued);
+                    cleanup_eagain(conn, context);
                     goto eagain;
                 }
                 print_func_fi_err(__FUNCTION__, __LINE__,
                                   "fi_writemsg", "", rc);
-                cq_write(zq, context, rc);
+                cq_write(context, rc);
                 break;
             }
             break;
@@ -871,10 +946,9 @@ static bool lfab_zq(struct stuff *conn)
         case ZHPE_HW_OPCODE_GETIMM:
             conn->msg.context = context;
             /* Return data in local results buffer. */
-            context->result = &conn->results[context->cmp_index];
             context->result_len = wqe->imm.len;
             laddr = (uintptr_t)context->result->data;
-            conn->ldsc = conn->results_desc;
+            conn->ldsc = fab_plus->results_desc;
             conn->msg_iov.iov_base = TO_PTR(TO_ADDR(laddr));
             conn->msg_iov.iov_len = wqe->imm.len;
             conn->rma_iov.len = wqe->imm.len;
@@ -882,16 +956,19 @@ static bool lfab_zq(struct stuff *conn)
             conn->rma_iov.addr = TO_ADDR(raddr);
             conn->rma_iov.key = bdom->rkey[TO_KEYIDX(raddr)].rkey;
             conn->msg.addr = bdom->rkey[TO_KEYIDX(raddr)].av_idx;
-            lfabt_cmdpost(imm, wqe, context);
             rc = fi_readmsg(fab_conn->ep, &conn->msg, flags);
-            if (rc < 0) {
+            record_io_start(rc, conn, wqe->hdr.opcode, conn->msg.addr,
+                            conn->msg.msg_iov[0].iov_base, conn->msg.desc[0],
+                            conn->msg.rma_iov[0].addr, conn->msg.rma_iov[0].key,
+                            conn->msg.msg_iov[0].iov_len, conn->msg.context);
+            if (unlikely(rc < 0)) {
                 if (rc == -FI_EAGAIN) {
-                    cleanup_eagain(conn, context, &tx_queued);
+                    cleanup_eagain(conn, context);
                     goto eagain;
                 }
                 print_func_fi_err(__FUNCTION__, __LINE__,
                                   "fi_readmsg", "", rc);
-                cq_write(zq, context, rc);
+                cq_write(context, rc);
                 break;
             }
             break;
@@ -902,7 +979,6 @@ static bool lfab_zq(struct stuff *conn)
             /* Return data in local results buffer.
              * No NULL descriptors! Use results buffer for sent data, too.
              */
-            context->result = &conn->results[context->cmp_index];
             sendbuf = context->result->data;
             if ((wqe->atm.size & ZHPE_HW_ATOMIC_SIZE_MASK) ==
                 ZHPE_HW_ATOMIC_SIZE_64) {
@@ -914,7 +990,7 @@ static bool lfab_zq(struct stuff *conn)
             }
             memcpy(sendbuf, wqe->atm.operands, sizeof(wqe->atm.operands));
             laddr = (uintptr_t)sendbuf;
-            conn->ldsc = conn->results_desc;
+            conn->ldsc = fab_plus->results_desc;
             conn->atm_op_ioc.addr = TO_PTR(TO_ADDR(laddr));
             conn->atm_res_ioc.addr = conn->atm_op_ioc.addr;
             conn->atm_cmp_ioc.addr =
@@ -923,34 +999,39 @@ static bool lfab_zq(struct stuff *conn)
             conn->atm_rma_ioc.addr = TO_ADDR(raddr);
             conn->atm_rma_ioc.key = bdom->rkey[TO_KEYIDX(raddr)].rkey;
             conn->atm_msg.addr = bdom->rkey[TO_KEYIDX(raddr)].av_idx;
-            lfabt_cmdpost(atm, wqe, context);
             if ((wqe->hdr.opcode & ~ZHPE_HW_OPCODE_FENCE) !=
                 ZHPE_HW_OPCODE_ATM_ADD) {
                 conn->atm_msg.op = FI_CSWAP;
                 rc = fi_compare_atomicmsg(fab_conn->ep, &conn->atm_msg,
                                           &conn->atm_cmp_ioc, &conn->ldsc, 1,
                                           &conn->atm_res_ioc,
-                                          &conn->results_desc, 1, flags);
+                                          &fab_plus->results_desc, 1, flags);
             } else {
                 conn->atm_msg.op = FI_SUM;
                 rc = fi_fetch_atomicmsg(fab_conn->ep, &conn->atm_msg,
                                         &conn->atm_res_ioc,
-                                        &conn->results_desc, 1, flags);
+                                        &fab_plus->results_desc, 1, flags);
             }
+            record_io_start(rc, conn, wqe->hdr.opcode, conn->atm_msg.addr,
+                            conn->atm_msg.msg_iov[0].addr,
+                            conn->atm_msg.desc[0],
+                            conn->atm_msg.rma_iov[0].addr,
+                            conn->atm_msg.rma_iov[0].key,
+                            context->result_len, conn->msg.context);
             if (rc < 0) {
                 if (rc == -FI_EAGAIN) {
-                    cleanup_eagain(conn, context, &tx_queued);
+                    cleanup_eagain(conn, context);
                     goto eagain;
                 }
                 print_func_fi_errn(__FUNCTION__, __LINE__,
                                    "fi_atomicmsg", conn->atm_msg.op, true, rc);
-                cq_write(zq, context, rc);
+                cq_write(context, rc);
                 break;
             }
             break;
 
         default:
-            cq_write(zq, context, -EINVAL);
+            cq_write(context, -EINVAL);
             print_err("%s,%u:Unexpected opcode 0x%02x\n",
                       __FUNCTION__, __LINE__, wqe->hdr.opcode);
             goto done;
@@ -967,78 +1048,54 @@ static bool lfab_zq(struct stuff *conn)
      * av processing.
      */
 
-    return (conn->tx_queued != tx_queued);
+    return (conn->tx_queued != conn->tx_completed || wq_head != wq_tail);
 }
 
 static void *lfab_eng_thread(void *veng)
 {
     struct engine       *eng = veng;
-    struct timespec     ts_beg = { 0, 0 };
+    bool                locked = false;
+    struct timespec     ts_beg = { .tv_sec = 0 };
     struct timespec     ts_end;
-    struct stailq_entry *stailq_entry;
     struct circleq_entry *circleq_entry;
-    struct lfab_work    *work;
     struct stuff        *conn;
-    bool                queued;
     bool                outstanding;
 
     for (;;) {
-
-        queued = false;
         outstanding = false;
         /* Handle per-engine work. */
-        if (STAILQ_FIRST(&eng->work_list)) {
-            mutex_lock(&eng->mutex);
-            while ((stailq_entry = STAILQ_FIRST(&eng->work_list))) {
-                work = container_of(stailq_entry, struct lfab_work, lentry);
-                if (work->worker(work) > 0) {
-                    outstanding = true;
-                    break;
-                }
-                STAILQ_REMOVE_HEAD(&eng->work_list, ptrs);
-                work->worker = NULL;
-                cond_broadcast(&work->cond);
-            }
-            /* Exit on idle. */
-            if (STAILQ_EMPTY(&eng->work_list) && CIRCLEQ_EMPTY(&eng->zq_head))
-                eng->state = ENGINE_HALTING;
-            mutex_unlock(&eng->mutex);
-            if (eng->state == ENGINE_HALTING)
-                goto done;
+        if (locked || zhpeu_work_queued(&eng->work_head)) {
+            outstanding |= zhpeu_work_process(&eng->work_head, !locked, true);
+            locked = false;
         }
         /* Process all queues. */
         CIRCLEQ_FOREACH(circleq_entry, &eng->zq_head, ptrs) {
             conn = container_of(circleq_entry, struct stuff, lentry);
-            queued |= lfab_zq(conn);
-            outstanding |= (conn->tx_queued != conn->tx_completed);
+            outstanding |= lfab_zq(conn);
         }
-        /* Dont' sleep if there are outstanding I/Os. */
-        if (outstanding)
+        /* Don't sleep if there is outstanding work. */
+        if (outstanding) {
+            ts_beg.tv_sec = 0;
             continue;
+        }
         /* Time to sleep? */
         clock_gettime_monotonic(&ts_end);
-        /* Reset the sleep clock if operations were started. */
-        if (queued) {
+        if (!ts_beg.tv_sec) {
+            /* Clock starts when we don't have any work. */
             ts_beg = ts_end;
             continue;
         }
         if (ts_delta(&ts_beg, &ts_end) < SLEEP_THRESHOLD_NS)
             continue;
-
-        /* Go to sleep on the cond/mutex. */
-        mutex_lock(&eng->mutex);
-        if (eng->signal == eng->signal_seen) {
-            ZHPEQ_TIMING_UPDATE_COUNT(&zhpeq_timing_tx_sleep);
-            while (eng->signal == eng->signal_seen)
-                cond_wait(&eng->cond, &eng->mutex);
-        }
-        eng->signal_seen = eng->signal;
-        mutex_unlock(&eng->mutex);
-        /* Reset the sleep clock. */
-        clock_gettime_monotonic(&ts_beg);
+        /* Signaled? */
+        if (!zhpeu_thr_wait_sleep_fast(&eng->work_head.thr_wait))
+            continue;
+        /* Time to sleep. */
+        (void)zhpeu_thr_wait_sleep_slow(&eng->work_head.thr_wait, -1,
+                                        true, false);
+        locked = true;
+        ts_beg.tv_sec = 0;
     }
-
-done:
 
     return NULL;
 }
@@ -1052,9 +1109,7 @@ static int lfab_lib_init(struct zhpeq_attr *attr)
     attr->z.max_sw_qlen  = 65535;
     attr->z.max_dma_len  = (1U << 31);
 
-    mutex_init(&eng.mutex, NULL);
-    cond_init(&eng.cond, NULL);
-    STAILQ_INIT(&eng.work_list);
+    zhpeu_work_head_init(&eng.work_head);
     CIRCLEQ_INIT(&eng.zq_head);
 
     return 0;
@@ -1062,11 +1117,16 @@ static int lfab_lib_init(struct zhpeq_attr *attr)
 
 static int lfab_qfree_pre(struct zhpeq *zq)
 {
-    struct stuff        *conn = zq->backend_data;
+    int                 ret = 0;
+    struct lfab_work_qfree_pre data = {
+        .conn           = zq->backend_data,
+    };
 
+    if (data.conn)
+        ret = lfab_eng_work_queue(&eng, worker_qfree_pre, &data);
     zq->backend_data = NULL;
 
-    return stuff_free(conn);
+    return ret;
 }
 
 static int lfab_qfree(struct zhpeq *zq)
@@ -1076,9 +1136,20 @@ static int lfab_qfree(struct zhpeq *zq)
 
 static int lfab_wq_signal(struct zhpeq *zq)
 {
-    struct stuff        *conn = zq->backend_data;
+    struct circleq_entry *circleq_entry;
+    struct stuff        *conn;
 
-    eng_signal(conn->eng, false);
+    if (eng.do_auto)
+        zhpeu_thr_wait_signal(&eng.work_head.thr_wait);
+    else {
+        /* Process all queues. */
+        mutex_lock(&eng.work_head.thr_wait.mutex);
+        CIRCLEQ_FOREACH(circleq_entry, &eng.zq_head, ptrs) {
+            conn = container_of(circleq_entry, struct stuff, lentry);
+            lfab_zq(conn);
+        }
+        mutex_unlock(&eng.work_head.thr_wait.mutex);
+    }
 
     return 0;
 }
@@ -1090,19 +1161,39 @@ static ssize_t lfab_cq_poll(struct zhpeq *zq, size_t hint)
 
 static void free_lcl_mr(struct zdom_data *bdom, uint32_t index)
 {
-    union free_index    old;
-    union free_index    new;
+    struct free_index   old;
+    struct free_index   new;
 
-    for (old.blob = bdom->lcl_mr_free.blob;;) {
+    for (old = atm_load_rlx(&bdom->lcl_mr_free);;) {
         bdom->lcl_mr[index] = TO_PTR(old.index);
         new.index = (index << 1) | 1;
         new.seq = old.seq + 1;
-        new.blob = __sync_val_compare_and_swap(&bdom->lcl_mr_free.blob,
-                                               old.blob, new.blob);
-        if (old.blob == new.blob)
+        if (atm_cmpxchg(&bdom->lcl_mr_free, &old, new))
             break;
-        old.blob = new.blob;
     }
+}
+
+static bool worker_fi_close(struct zhpeu_work_head *head,
+                            struct zhpeu_work *work)
+{
+    struct fid          *fid = work->data;
+
+    work->status = fi_close(fid);
+
+    return false;
+}
+
+static bool worker_fi_mr_reg(struct zhpeu_work_head *head,
+                             struct zhpeu_work *work)
+{
+    struct lfab_work_fi_mr_reg *data = work->data;
+
+    work->status = fi_mr_reg(data->domain, data->buf, data->len, data->access,
+                             0, 0, 0, data->mr_out, NULL);
+    if (work->status < 0)
+        *data->mr_out = NULL;
+
+    return false;
 }
 
 static int lfab_mr_reg(struct zhpeq_dom *zdom,
@@ -1111,42 +1202,43 @@ static int lfab_mr_reg(struct zhpeq_dom *zdom,
 {
     int                 ret = -ENOMEM;
     struct zdom_data    *bdom = zdom->backend_data;
-    struct fab_dom      *fab_dom = &bdom->fab_dom;
+    struct fab_dom      *fab_dom = bdom->fab_dom;
     struct zhpeq_mr_desc_v1 *desc = NULL;
-    uint64_t            fi_access = 0;
     struct fid_mr       *mr = NULL;
-    union free_index    old;
-    union free_index    new;
+    struct lfab_work_fi_mr_reg data = {
+        .domain         = fab_dom->domain,
+        .buf            = buf,
+        .len            = len,
+        .mr_out         = &mr,
+    };
+    struct free_index   old;
+    struct free_index   new;
     uint32_t            index;
 
-    desc = do_malloc(sizeof(*desc));
+    desc = malloc(sizeof(*desc));
     if (!desc)
         goto done;
     if (access & ZHPEQ_MR_GET)
-        fi_access |= FI_READ;
+       data.access |= FI_READ;
     if (access & ZHPEQ_MR_PUT)
-        fi_access |= FI_WRITE;
+        data.access |= FI_WRITE;
     if (access & ZHPEQ_MR_GET_REMOTE)
-        fi_access |= FI_REMOTE_READ;
+        data.access |= FI_REMOTE_READ;
     if (access & ZHPEQ_MR_PUT_REMOTE)
-        fi_access |= FI_REMOTE_WRITE;
-    ret = fi_mr_reg(fab_dom->domain, buf, len, fi_access, 0, 0, 0, &mr, NULL);
-    if (ret < 0) {
-        mr = NULL;
+        data.access |= FI_REMOTE_WRITE;
+    ret = lfab_eng_work_queue(&eng, worker_fi_mr_reg, &data);
+    if (ret < 0)
         goto done;
-    }
+
     ret = -ENOSPC;
-    for (old.blob = bdom->lcl_mr_free.blob;;) {
+    for (old = atm_load_rlx(&bdom->lcl_mr_free) ;;) {
         if (old.index == FREE_END)
             goto done;
         index = old.index >> 1;
         new.index = (uintptr_t)bdom->lcl_mr[index];
         new.seq = old.seq + 1;
-        new.blob = __sync_val_compare_and_swap(&bdom->lcl_mr_free.blob,
-                                               old.blob, new.blob);
-        if (old.blob == new.blob)
+        if (atm_cmpxchg(&bdom->lcl_mr_free, &old, new))
             break;
-        old.blob = new.blob;
     }
     bdom->lcl_mr[index] = mr;
     desc->hdr.magic = ZHPE_MAGIC;
@@ -1164,8 +1256,8 @@ static int lfab_mr_reg(struct zhpeq_dom *zdom,
  done:
     if (ret < 0) {
         if (mr)
-            fi_close(&mr->fid);
-        do_free(desc);
+            (void)lfab_eng_work_queue(&eng, worker_fi_close, &mr->fid);
+        free(desc);
     }
 
     return ret;
@@ -1183,9 +1275,9 @@ static int lfab_mr_free(struct zhpeq_dom *zdom, struct zhpeq_key_data *qkdata)
     if (desc->hdr.magic != ZHPE_MAGIC || desc->hdr.version != ZHPEQ_MR_V1)
         goto done;
 
-    ret = fi_close(&bdom->lcl_mr[index]->fid);
+    ret = lfab_eng_work_queue(&eng, worker_fi_close, &bdom->lcl_mr[index]->fid);
     free_lcl_mr(bdom, index);
-    do_free(desc);
+    free(desc);
 
  done:
     return ret;
@@ -1193,18 +1285,15 @@ static int lfab_mr_free(struct zhpeq_dom *zdom, struct zhpeq_key_data *qkdata)
 
 static void free_rkey(struct zdom_data *bdom, uint32_t index)
 {
-    union free_index    old;
-    union free_index    new;
+    struct free_index   old;
+    struct free_index   new;
 
-    for (old.blob = bdom->rkey_free.blob;;) {
+    for (old = atm_load_rlx(&bdom->rkey_free) ;;) {
         bdom->rkey[index].rkey = old.index;
         new.index = index;
         new.seq = old.seq + 1;
-        new.blob = __sync_val_compare_and_swap(&bdom->rkey_free.blob, old.blob,
-                                               new.blob);
-        if (old.blob == new.blob)
+        if (atm_cmpxchg(&bdom->rkey_free, &old, new))
             break;
-        old.blob = new.blob;
     }
 }
 
@@ -1217,14 +1306,14 @@ static int lfab_zmmu_import(struct zhpeq_dom *zdom, int open_idx,
     struct zdom_data    *bdom = zdom->backend_data;
     const struct key_data_packed *pdata = blob;
     struct zhpeq_mr_desc_v1 *desc = NULL;
-    union free_index    old;
-    union free_index    new;
+    struct free_index   old;
+    struct free_index   new;
 
     if (blob_len != sizeof(*pdata) || cpu_visible)
         goto done;
 
     ret = -ENOMEM;
-    desc = do_malloc(sizeof(*desc));
+    desc = malloc(sizeof(*desc));
     if (!desc)
         goto done;
     desc->hdr.magic = ZHPE_MAGIC;
@@ -1232,16 +1321,13 @@ static int lfab_zmmu_import(struct zhpeq_dom *zdom, int open_idx,
     unpack_kdata(pdata, &desc->qkdata);
 
     ret = -ENOSPC;
-    for (old.blob = bdom->rkey_free.blob;;) {
+    for (old = atm_load_rlx(&bdom->rkey_free) ;;) {
         if (old.index == FREE_END)
             goto done;
         new.index = bdom->rkey[old.index].rkey;
         new.seq = old.seq + 1;
-        new.blob = __sync_val_compare_and_swap(&bdom->rkey_free.blob, old.blob,
-                                               new.blob);
-        if (old.blob == new.blob)
+        if (atm_cmpxchg(&bdom->rkey_free, &old, new))
             break;
-        old.blob = new.blob;
     }
     bdom->rkey[old.index].rkey = desc->qkdata.z.zaddr;
     bdom->rkey[old.index].av_idx = open_idx;
@@ -1253,7 +1339,7 @@ static int lfab_zmmu_import(struct zhpeq_dom *zdom, int open_idx,
 
  done:
     if (ret < 0)
-        do_free(desc);
+        free(desc);
 
     return ret;
 }
@@ -1272,7 +1358,7 @@ static int lfab_zmmu_free(struct zhpeq_dom *zdom, struct zhpeq_key_data *qkdata)
         goto done;
 
     free_rkey(bdom, index);
-    do_free(desc);
+    free(desc);
     ret = 0;
 
  done:
@@ -1302,19 +1388,34 @@ static void lfab_print_info(struct zhpeq *zq)
 
     if (zq) {
         conn = zq->backend_data;
-        fab_conn = &conn->fab_conn;
+        fab_conn = conn->fab_plus->fab_conn;
     }
     fab_print_info(fab_conn);
+}
+
+static bool worker_fi_getname(struct zhpeu_work_head *head,
+                              struct zhpeu_work *work)
+{
+    struct lfab_work_fi_getname *data = work->data;
+
+    work->status = fi_getname(data->fid, data->buf, data->len_inout);
+
+    return false;
 }
 
 static int lfab_getaddr(struct zhpeq *zq, union sockaddr_in46 *sa)
 {
     int                 ret;
     struct stuff        *conn = zq->backend_data;
-    struct fab_conn     *fab_conn = &conn->fab_conn;
-    size_t              sa_len;
+    struct fab_conn     *fab_conn = conn->fab_plus->fab_conn;
+    size_t              sa_len = sizeof(*sa);
+    struct lfab_work_fi_getname data = {
+        .fid            = &fab_conn->ep->fid,
+        .buf            = sa,
+        .len_inout      = &sa_len,
+    };
 
-    ret = fi_getname(&fab_conn->ep->fid, sa, &sa_len);
+    ret = lfab_eng_work_queue(&eng, worker_fi_getname, &data);
     if (ret >= 0 && !sockaddr_valid(sa, sa_len, true))
         ret = -EAFNOSUPPORT;
 
@@ -1346,6 +1447,7 @@ void zhpeq_backend_libfabric_init(int fd)
 {
     backend_prov = getenv("ZHPE_BACKEND_LIBFABRIC_PROV");
     backend_dom = getenv("ZHPE_BACKEND_LIBFABRIC_DOM");
+    eng.do_auto = !!getenv("ZHPE_BACKEND_LIBFABRIC_AUTO");
 
     if (fd != -1)
         return;

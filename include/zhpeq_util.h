@@ -37,6 +37,7 @@
 #ifndef _ZHPEQ_UTIL_H_
 #define _ZHPEQ_UTIL_H_
 
+#include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <netdb.h>
@@ -55,6 +56,7 @@
 #include <arpa/inet.h>
 
 #include <sys/mman.h>
+#include <sys/queue.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -75,18 +77,22 @@
 
 _EXTERN_C_BEG
 
+#ifndef likely
+#define likely(_x)      __builtin_expect(!!(_x), 1)
+#endif
+#ifndef unlikely
+#define unlikely(_x)    __builtin_expect(!!(_x), 0)
+#endif
 #ifndef container_of
 #define container_of(_ptr, _type, _field)                       \
     ((_type *)((char *)(_ptr) - offsetof(_type, _field)))
 #endif
 
-#define NOOPTIMIZE      asm volatile("")
-
 #define ARRAY_SIZE(_x)  (sizeof(_x) / sizeof(_x[0]))
 
 #define TO_PTR(_int)    (void *)(uintptr_t)(_int)
 
-#define FREE(_ptr,_free)                                        \
+#define FREE_IF(_ptr,_free)                                     \
 do {                                                            \
     if (_ptr) {                                                 \
         _free(_ptr);                                            \
@@ -109,10 +115,10 @@ typedef unsigned char   uchar;
 extern const char       *appname;
 extern size_t           page_size;
 
-/* Borrow AF_UNIX since it should never be seen. */
-#define AF_ZHPE         AF_UNIX
+/* Borrow AF_APPLETALK since it should never be seen. */
+#define AF_ZHPE         AF_APPLETALK
 #define ZHPE_ADDRSTRLEN (37)
-#define ZHPE_QUEUEINVAL (0xFFFFFFFFUL)
+#define ZHPE_QUEUEINVAL (~(uint32_t)0)
 
 struct sockaddr_zhpe {
     sa_family_t         sz_family;
@@ -131,6 +137,275 @@ union sockaddr_in46 {
     struct sockaddr_in6 addr6;
     struct sockaddr_zhpe zhpe;
 };
+
+int zhpeu_posix_memalign(void **memptr, size_t alignment, size_t size,
+                         const char *callf, uint line);
+
+#define posix_memalign(...) \
+    zhpeu_posix_memalign(__VA_ARGS__, __func__, __LINE__)
+
+void *zhpeu_malloc(size_t size, const char *callf, uint line);
+
+#define malloc(...) \
+    zhpeu_malloc(__VA_ARGS__, __func__, __LINE__)
+
+void *zhpeu_realloc(void *ptr, size_t size, const char *callf, uint line);
+
+#define realloc(...) \
+    zhpeu_realloc(__VA_ARGS__, __func__, __LINE__)
+
+void *zhpeu_calloc(size_t nmemb, size_t size, const char *callf, uint line);
+
+#define calloc(...) \
+    zhpeu_calloc(__VA_ARGS__, __func__, __LINE__)
+
+void *zhpeu_malloc_aligned(size_t alignment, size_t size,
+                           const char *callf, uint line);
+
+#define malloc_aligned(...) \
+    zhpeu_malloc_aligned(__VA_ARGS__, __func__, __LINE__)
+
+#define malloc_cachealigned(...) \
+    zhpeu_malloc_aligned(L1_CACHE_BYTES, __VA_ARGS__, __func__, __LINE__)
+
+void *zhpeu_calloc_aligned(size_t alignment, size_t nmemb, size_t size,
+                           const char *callf, uint line);
+
+#define calloc_aligned(...) \
+    zhpeu_calloc_aligned(__VA_ARGS__, __func__, __LINE__)
+
+#define calloc_cachealigned(...) \
+    zhpeu_calloc_aligned(L1_CACHE_BYTES, __VA_ARGS__, __func__, __LINE__)
+
+void zhpeu_free(void *ptr, const char *callf, uint line);
+
+#define free(...) \
+    zhpeu_free(__VA_ARGS__, __func__, __LINE__)
+
+/* Just a call to free for things that need a function pointer. */
+void zhpeu_free_ptr(void *ptr);
+
+/* Trying to rely on stdatomic.h with less verbosity.
+ * I'm not at all convinced they do the right thing with fences, in general,
+ * but on x86 atomic adds and cmpxchg are full barriers. So the only relaxed
+ * thing I use are loads/stores.
+ */
+
+#define atm_load(_p) \
+    atomic_load_explicit(_p, memory_order_acquire)
+#define atm_load_rlx(_p) \
+    atomic_load_explicit(_p, memory_order_relaxed)
+
+#define atm_store(_p, _v)  \
+    atomic_store_explicit(_p, _v, memory_order_release)
+#define atm_store_rlx(_p, _v) \
+    atomic_store_explicit(_p, _v, memory_order_relaxed)
+
+#define atm_add(_p, _v) \
+    atomic_fetch_add_explicit(_p, _v, memory_order_acq_rel)
+
+#define atm_and(_p, _v) \
+    atomic_fetch_and_explicit(_p, _v, memory_order_acq_rel)
+
+#define atm_or(_p, _v) \
+    atomic_fetch_or_explicit(_p, _v, memory_order_acq_rel)
+
+#define atm_sub(_p, _v) \
+    atomic_fetch_sub_explicit(_p, _v, memory_order_acq_rel)
+
+#define atm_xor(_p, _v) \
+    atomic_fetch_xor_explicit(_p, _v, memory_order_acq_rel)
+
+#define atm_cmpxchg(_p, _oldp, _new) \
+    atomic_compare_exchange_strong_explicit( \
+        _p, _oldp, _new, memory_order_acq_rel, memory_order_acquire)
+
+#define atm_inc(_p)     atm_add(_p, 1)
+#define atm_dec(_p)     atm_sub(_p, 1)
+
+#ifdef _BARRIER_DEFINED
+#warning _BARRIER_DEFINED already defined
+#undef _BARRIER_DEFINED
+#endif
+
+#if defined(__x86_32__) || defined( __x86_64__)
+
+#define _BARRIER_DEFINED
+
+/* But atomic_thread_fence() didn't generate the fences I wanted when I
+ * tested it.
+ */
+
+static inline void smp_mb(void)
+{
+    asm volatile("mfence":::"memory");
+}
+
+static inline void smp_rmb(void)
+{
+    asm volatile("lfence":::"memory");
+}
+
+static inline void smp_wmb(void)
+{
+    asm volatile("sfence":::"memory");
+}
+
+static inline void io_wmb(void)
+{
+    asm volatile("sfence":::"memory");
+}
+
+#define L1_CACHE_BYTES  (64U)
+
+#endif
+
+#ifndef _BARRIER_DEFINED
+#error No barrier support for this architecture
+#endif
+
+#undef _BARRIED_DEFINED
+
+#define barrier()       __compiler_barrier()
+#define INT32_ALIGNED   __attribute__ ((aligned (__alignof__(int32_t))));
+#define INT64_ALIGNED   __attribute__ ((aligned (__alignof__(int64_t))));
+#define INT128_ALIGNED  __attribute__ ((aligned (__alignof__(__int128_t))));
+#define CACHE_ALIGNED   __attribute__ ((aligned (L1_CACHE_BYTES)))
+
+/* Two simple atomic lists:
+ * "lifo" for free lists and a "snatch" list with multiple-producers and
+ * one consumer that snatches the entire list for processing at once: this
+ * avoids most of the complexities with enqeue and dequeue around A-B-A, but
+ * the tail must be handled carefully.
+ */
+
+struct zhpeu_atm_list_ptr {
+    struct zhpeu_atm_list_next *ptr;
+    uintptr_t            seq;
+} INT128_ALIGNED;
+
+struct zhpeu_atm_list_next {
+    struct zhpeu_atm_list_next *next;
+} INT64_ALIGNED;
+
+struct zhpeu_atm_snatch_head {
+    struct zhpeu_atm_list_next *head;
+    struct zhpeu_atm_list_next *tail;
+} INT128_ALIGNED;
+
+#define ZHPEU_ATM_LIST_END      ((struct zhpeu_atm_list_next *)(intptr_t)-1)
+
+static inline void zhpeu_atm_snatch_insert(struct zhpeu_atm_snatch_head *head,
+                                           struct zhpeu_atm_list_next *new)
+{
+    struct zhpeu_atm_snatch_head oldh;
+    struct zhpeu_atm_snatch_head newh;
+    struct zhpeu_atm_list_next oldn;
+
+    new->next = NULL;
+    for (oldh = atm_load_rlx(head);;) {
+        if (oldh.head) {
+            newh.head = oldh.head;
+            /* Try to link new into list. */
+            oldn.next = NULL;
+            if (!atm_cmpxchg(&oldh.tail->next, &oldn, new)) {
+                /* Failed: advance the tail ourselves and retry. */
+                newh.tail = oldn.next;
+                if (atm_cmpxchg(head, &oldh, newh))
+                    oldh = newh;
+                continue;
+            }
+            /* Try to update the head; succeed or fail, we're done.
+             * If we fail, it is up to the other threads to deal with it.
+             */
+            newh.tail = new;
+            atm_cmpxchg(head, &oldh, newh);
+            break;
+        }
+        /* List was empty. */
+        newh.head = new;
+        newh.tail = new;
+        if (atm_cmpxchg(head, &oldh, newh))
+            break;
+    }
+}
+
+static inline void zhpeu_atm_snatch_list(struct zhpeu_atm_snatch_head *head,
+                                         struct zhpeu_atm_snatch_head *oldh)
+{
+    struct zhpeu_atm_snatch_head newh;
+    struct zhpeu_atm_list_next oldn;
+
+    for (*oldh = atm_load_rlx(head);;) {
+        if (!oldh->head)
+            return;
+        newh.head = NULL;
+        newh.tail = NULL;
+        if (atm_cmpxchg(head, oldh, newh))
+            break;
+    }
+    /* Worst case: another thread has copied the head and went to sleep
+     * before updating the next pointer and will wake up at some point far
+     * in the future and do so. Or another thread could have successfully
+     * updated next, but the tail update failed. We update the final next
+     * pointer with ZHPEU_ATM_LIST_END to deal with some of this, but the
+     * potential for a thread lurking demands a more structural
+     * solution. The fifo list will also use ZHPEU_ATM_LIST_END, instead of
+     * NULL and the assumption is that items will be bounced between
+     * snatch lists and fifos as free lists; items will never be returned
+     * to a general allocation pool unless some broader guarantee that
+     * it is safe to do so.
+     */
+    for (;;) {
+        oldn.next = NULL;
+        if (atm_cmpxchg(&oldh->tail->next, &oldn, ZHPEU_ATM_LIST_END))
+            break;
+        oldh->tail = oldn.next;
+    }
+}
+
+static inline void zhpeu_atm_fifo_init(struct zhpeu_atm_list_ptr *head)
+{
+    head->ptr = ZHPEU_ATM_LIST_END;
+    head->seq = 0;
+}
+
+static inline void zhpeu_atm_fifo_push(struct zhpeu_atm_list_ptr *head,
+                                       struct zhpeu_atm_list_next *new)
+{
+    struct zhpeu_atm_list_ptr oldh;
+    struct zhpeu_atm_list_ptr newh;
+
+    newh.ptr = new;
+    for (oldh = atm_load_rlx(head);;) {
+        new->next = oldh.ptr;
+        newh.seq = oldh.seq + 1;
+        if (atm_cmpxchg(head, &oldh, newh))
+            break;
+    }
+}
+
+static inline struct zhpeu_atm_list_next *
+zhpeu_atm_fifo_pop(struct zhpeu_atm_list_ptr *head)
+{
+    struct zhpeu_atm_list_next *ret;
+    struct zhpeu_atm_list_ptr oldh;
+    struct zhpeu_atm_list_ptr newh;
+
+    for (oldh = atm_load_rlx(head);;) {
+        ret = oldh.ptr;
+        if (ret == ZHPEU_ATM_LIST_END) {
+            ret = NULL;
+            break;
+        }
+        newh.ptr = ret->next;
+        newh.seq = oldh.seq + 1;
+        if (atm_cmpxchg(head, &oldh, newh))
+            break;
+    }
+
+    return ret;
+}
 
 static inline size_t sockaddr_len(const void *addr)
 {
@@ -184,44 +459,61 @@ static inline union sockaddr_in46 *sockaddr_dup(const void *addr)
 int sockaddr_cmpx(const union sockaddr_in46 *sa1,
                   const union sockaddr_in46 *sa2, bool noport);
 
-static inline int sockaddr_cmp(const void *addr1, const void *addr2,
-                               bool noport)
+static inline int sockaddr_portcmp(const void *addr1, const void *addr2)
+{
+    int                 ret;
+    const union sockaddr_in46 *sa1 = addr1;
+    const union sockaddr_in46 *sa2 = addr2;
+
+    assert(sa1->sa_family == sa2->sa_family);
+
+    /* Use memcmp for -1, 0, 1 behavior. */
+    switch (sa1->sa_family) {
+
+    case AF_INET:
+    case AF_INET6:
+        ret = memcmp(&sa1->sin_port, &sa2->sin_port, sizeof(sa1->sin_port));
+        break;
+
+    case AF_ZHPE:
+        ret = memcmp(&sa1->zhpe.sz_queue, &sa2->zhpe.sz_queue,
+                     sizeof(sa1->zhpe.sz_queue));
+        break;
+
+    default:
+        ret = -1;
+        break;
+    }
+
+    return ret;
+}
+
+static inline int sockaddr_cmp_noport(const void *addr1, const void *addr2)
 {
     int                 ret;
     const union sockaddr_in46 *sa1 = addr1;
     const union sockaddr_in46 *sa2 = addr2;
 
     if (sa1->sa_family != sa2->sa_family) {
-        ret = sockaddr_cmpx(sa1, sa2, noport);
+        ret = sockaddr_cmpx(sa1, sa2, true);
         goto done;
     }
 
-    /* Use memcmp everywhere for -1, 0, 1 behavior. */
+    /* Use memcmp for -1, 0, 1 behavior. */
     switch (sa1->sa_family) {
 
     case AF_INET:
         ret = memcmp(&sa1->addr4.sin_addr, &sa2->addr4.sin_addr,
                      sizeof(sa1->addr4.sin_addr));
-        if (ret || noport)
-            goto done;
-        ret = memcmp(&sa1->sin_port, &sa2->sin_port, sizeof(sa1->sin_port));
         break;
 
     case AF_INET6:
         ret = memcmp(&sa1->addr6.sin6_addr, &sa2->addr6.sin6_addr,
                      sizeof(sa1->addr6.sin6_addr));
-        if (ret || noport)
-            goto done;
-        ret = memcmp(&sa1->sin_port, &sa2->sin_port, sizeof(sa1->sin_port));
         break;
 
     case AF_ZHPE:
-        ret = memcmp(&sa1->zhpe.sz_uuid, &sa2->zhpe.sz_uuid,
-                     sizeof(sa1->zhpe.sz_uuid));
-        if (ret || noport)
-            goto done;
-        ret = memcmp(&sa1->zhpe.sz_queue, &sa2->zhpe.sz_queue,
-                     sizeof(sa1->zhpe.sz_queue));
+        ret = uuid_compare(sa1->zhpe.sz_uuid, sa2->zhpe.sz_uuid);
         break;
 
     default:
@@ -233,7 +525,25 @@ static inline int sockaddr_cmp(const void *addr1, const void *addr2,
     return ret;
 }
 
-const char *sockaddr_ntop(const void *addr, char *buf, size_t len);
+static inline int sockaddr_cmp(const void *addr1, const void *addr2)
+{
+    int                 ret;
+    const union sockaddr_in46 *sa1 = addr1;
+    const union sockaddr_in46 *sa2 = addr2;
+
+    if (sa1->sa_family != sa2->sa_family) {
+        ret = sockaddr_cmpx(sa1, sa2, false);
+        goto done;
+    }
+
+    ret = sockaddr_cmp_noport(sa1, sa2);
+    if (ret)
+        goto done;
+    ret = sockaddr_portcmp(sa1, sa2);
+
+ done:
+    return ret;
+}
 
 static inline bool sockaddr_wildcard6(const struct sockaddr_in6 *sa)
 {
@@ -323,6 +633,52 @@ static inline void sockaddr_6to4(void *addr)
     return;
 }
 
+static_assert(INET6_ADDRSTRLEN >= ZHPE_ADDRSTRLEN, "ZHPE_ADDRSTRLEN");
+
+const char *sockaddr_ntop(const void *addr, char *buf, size_t len);
+
+int zhpeu_asprintf(char **strp, const char *fmt, ...)
+    __attribute__ ((format (printf, 2, 3)));
+
+static inline char *sockaddr_str(const void *addr)
+{
+    char                *ret = NULL;
+    const union sockaddr_in46 *sa = addr;
+    const char          *family;
+    char                ntop[INET6_ADDRSTRLEN];
+    uint                port;
+
+    if (!sockaddr_ntop(sa, ntop, sizeof(ntop)))
+        return NULL;
+
+    switch (sa->sa_family) {
+
+    case AF_INET:
+        family = "ipv4";
+        port = ntohs(sa->sin_port);
+        break;
+
+    case AF_INET6:
+        family = "ipv6";
+        port = ntohs(sa->sin_port);
+        break;
+
+    case AF_ZHPE:
+        family = "zhpe";
+        port = htonl(sa->zhpe.sz_queue);
+        break;
+
+    default:
+        break;
+    }
+    if (zhpeu_asprintf(&ret, "%s:%s:%u", family, ntop, port) == -1)
+            ret = NULL;
+
+    return ret;
+}
+
+void zhpeq_util_init(char *argv0, int default_log_level, bool use_syslog);
+
 void print_dbg(const char *fmt, ...)
     __attribute__ ((format (printf, 1, 2)));
 
@@ -331,33 +687,6 @@ void print_info(const char *fmt, ...)
 
 void print_err(const char *fmt, ...)
     __attribute__ ((format (printf, 1, 2)));
-
-static inline void sockaddr_print(const char *func, uint line, const void *addr)
-{
-    const union sockaddr_in46 *sa = addr;
-    const char          *family = "";
-    char                ntop[INET6_ADDRSTRLEN];
-
-    switch (sa->sa_family) {
-
-    case AF_INET:
-        family = "ipv4";
-        break;
-
-    case AF_INET6:
-        family = "ipv6";
-        break;
-
-    default:
-        break;
-    }
-
-    print_info("%s,%u:%s:%s:%d\n",
-               func, line, family, sockaddr_ntop(sa, ntop, sizeof(ntop)),
-               sa->sin_port);
-}
-
-void zhpeq_util_init(char *argv0, int default_log_level, bool use_syslog);
 
 char *errf_str(const char *fmt, ...)
     __attribute__ ((format (printf, 1, 2)));
@@ -404,18 +733,45 @@ static inline uint64_t get_cycles(volatile uint32_t *cpup)
     return ((uint64_t)hi << 32 | lo);
 }
 
-static inline void abort_if_minus1(int ret, const char *callf, uint line)
-{
-    if (ret == -1) {
-        ret = errno;
-        print_err("%s,%u:returned error %d:%s\n",
-                  callf, line, ret, strerror(ret));
-        abort();
-    }
-}
+#define abort_syscall(_func, ...)                               \
+do {                                                            \
+    int                 __ret = _func(__VA_ARGS__);             \
+                                                                \
+    if (unlikely(__ret == -1)) {                                \
+        __ret = errno;                                          \
+        print_func_err(__func__, __LINE__,  #_func, "", __ret); \
+        abort();                                                \
+    }                                                           \
+} while (0)
+
+#define abort_posix(_func, ...)                                 \
+do {                                                            \
+    int                 __ret = _func(__VA_ARGS__);             \
+                                                                \
+    if (unlikely(__ret)) {                                      \
+        print_func_err(__func__, __LINE__,  #_func, "", __ret); \
+        abort();                                                \
+    }                                                           \
+} while (0)
+
+#define abort_posix_errorok(_func, _err, ...)                   \
+({                                                              \
+    int                 __ret = _func(__VA_ARGS__);             \
+    int                 __err = (_err);                         \
+                                                                \
+    if (unlikely(__ret)) {                                      \
+        if (unlikely(__ret != __err || __ret < 0)) {            \
+            print_func_err(__func__, __LINE__,  #_func, "",     \
+                           __ret);                              \
+            abort();                                            \
+        }                                                       \
+        __ret = -__ret;                                         \
+    }                                                           \
+    __ret;                                                      \
+})
 
 #define clock_gettime(...) \
-    abort_if_minus1(clock_gettime(__VA_ARGS__), __FUNCTION__, __LINE__)
+    abort_syscall(clock_gettime, __VA_ARGS__)
 
 #define clock_gettime_monotonic(...) \
     clock_gettime(CLOCK_MONOTONIC, __VA_ARGS__)
@@ -462,72 +818,52 @@ uint random_range(uint start, uint end);
 
 uint *random_array(uint *array, uint entries);
 
-void *_do_malloc(const char *callf, uint line, size_t size);
-
-#define do_malloc(...) \
-    _do_malloc(__FUNCTION__, __LINE__, __VA_ARGS__)
-
-void *_do_realloc(const char *callf, uint line, void *ptr, size_t size);
-
-#define do_realloc(...) \
-    _do_realloc(__FUNCTION__, __LINE__, __VA_ARGS__)
-
-void *_do_calloc(const char *callf, uint line, size_t nmemb, size_t size);
-
-#define do_calloc(...) \
-    _do_calloc(__FUNCTION__, __LINE__, __VA_ARGS__)
-
-void _do_free(const char *callf, uint line, void *ptr);
-
-#define do_free(...) \
-    _do_free(__FUNCTION__, __LINE__, __VA_ARGS__)
-
 bool _expected_saw(const char *callf, uint line,
                    const char *label, uintptr_t expected, uintptr_t saw);
 
 #define expected_saw(...) \
-    _expected_saw(__FUNCTION__, __LINE__, __VA_ARGS__)
+    _expected_saw(__func__, __LINE__, __VA_ARGS__)
 
 char *_sockaddr_port_str(const char *callf, uint line, const void *addr);
 
 #define sockaddr_port_str(...) \
-    _sockaddr_port_str(__FUNCTION__, __LINE__, __VA_ARGS__)
+    _sockaddr_port_str(__func__, __LINE__, __VA_ARGS__)
 
 char *_sockaddr_str(const char *callf, uint line, const void *addr);
 
 #define sockaddr_str(...) \
-    _sockaddr_str(__FUNCTION__, __LINE__, __VA_ARGS__)
+    _sockaddr_str(__func__, __LINE__, __VA_ARGS__)
 
 int _do_getsockname(const char *callf, uint line,
                     int fd, union sockaddr_in46 *sa);
 
 #define do_getsockname(...) \
-    _do_getsockname(__FUNCTION__, __LINE__, __VA_ARGS__)
+    _do_getsockname(__func__, __LINE__, __VA_ARGS__)
 
 int _do_getpeername(const char *callf, uint line,
                     int fd, union sockaddr_in46 *da);
 
 #define do_getpeername(...) \
-    _do_getpeername(__FUNCTION__, __LINE__, __VA_ARGS__)
+    _do_getpeername(__func__, __LINE__, __VA_ARGS__)
 
 int _sock_send_blob(const char *callf, uint line, int fd,
                     const void *blob, size_t blob_len);
 
 #define sock_send_blob(...) \
-    _sock_send_blob(__FUNCTION__, __LINE__, __VA_ARGS__)
+    _sock_send_blob(__func__, __LINE__, __VA_ARGS__)
 
 int _sock_recv_fixed_blob(const char *callf, uint line,
                           int fd, void *blob, size_t blob_len);
 
 #define sock_recv_fixed_blob(...) \
-    _sock_recv_fixed_blob(__FUNCTION__, __LINE__, __VA_ARGS__)
+    _sock_recv_fixed_blob(__func__, __LINE__, __VA_ARGS__)
 
 int _sock_recv_var_blob(const char *callf, uint line,
                         int fd, size_t extra_len,
                         void **blob, size_t *blob_len);
 
 #define sock_recv_var_blob(...) \
-    _sock_recv_var_blob(__FUNCTION__, __LINE__, __VA_ARGS__)
+    _sock_recv_var_blob(__func__, __LINE__, __VA_ARGS__)
 
 static inline int sock_send_string(int fd, const char *s)
 {
@@ -558,99 +894,68 @@ static inline char *_strdup_or_null(const char *callf, uint line,
 }
 
 #define strdup_or_null(...) \
-    _strdup_or_null(__FUNCTION__, __LINE__, __VA_ARGS__)
-
-#define fab_cq_read(...) \
-    _fab_cq_read(__FUNCTION__, __LINE__, __VA_ARGS__)
-
-static void inline abort_if_nonzero(int ret, const char *callf, uint line)
-{
-    if (ret) {
-        print_err("%s,%u:returned unexpected value %d\n", callf, line, ret);
-        abort();
-    }
-}
+    _strdup_or_null(__func__, __LINE__, __VA_ARGS__)
 
 #define cond_init(...) \
-    abort_if_nonzero(pthread_cond_init(__VA_ARGS__), __FUNCTION__, __LINE__)
+    abort_posix(pthread_cond_init, __VA_ARGS__)
 
 #define cond_destroy(...) \
-    abort_if_nonzero(pthread_cond_destroy(__VA_ARGS__), __FUNCTION__, __LINE__)
+    abort_posix(pthread_cond_destroy, __VA_ARGS__)
 
 #define cond_signal(...) \
-    abort_if_nonzero(pthread_cond_signal(__VA_ARGS__), __FUNCTION__, __LINE__)
+    abort_posix(pthread_cond_signal, __VA_ARGS__)
 
 #define cond_broadcast(...) \
-    abort_if_nonzero(pthread_cond_broadcast(__VA_ARGS__), \
-                     __FUNCTION__, __LINE__)
+    abort_posix(pthread_cond_broadcast, __VA_ARGS__)
 
 #define cond_wait(...) \
-    abort_if_nonzero(pthread_cond_wait(__VA_ARGS__), __FUNCTION__, __LINE__)
+    abort_posix(pthread_cond_wait, __VA_ARGS__)
+
+#define cond_timedwait(...) \
+    abort_posix_errorok(pthread_cond_timedwait, ETIMEDOUT, __VA_ARGS__)
+
+#define mutexattr_settype(...) \
+	abort_posix(pthread_mutexattr_settype, __VA_ARGS__)
+
+#define mutexattr_init(...) \
+	abort_posix(pthread_mutexattr_init, __VA_ARGS__)
+
+#define mutexattr_destroy(...) \
+	abort_posix(pthread_mutexattr_destroy, __VA_ARGS__)
 
 #define mutex_init(...) \
-    abort_if_nonzero(pthread_mutex_init(__VA_ARGS__), __FUNCTION__, __LINE__)
+    abort_posix(pthread_mutex_init, __VA_ARGS__)
 
 #define mutex_destroy(...) \
-    abort_if_nonzero(pthread_mutex_destroy(__VA_ARGS__), \
-                     __FUNCTION__, __LINE__)
+    abort_posix(pthread_mutex_destroy, __VA_ARGS__)
 
 #define mutex_lock(...) \
-    abort_if_nonzero(pthread_mutex_lock(__VA_ARGS__), __FUNCTION__, __LINE__)
+    abort_posix(pthread_mutex_lock, __VA_ARGS__)
+
+#define mutex_trylock(...) \
+    abort_posix_errorok(pthread_mutex_trylock, EBUSY, __VA_ARGS__)
 
 #define mutex_unlock(...) \
-    abort_if_nonzero(pthread_mutex_unlock(__VA_ARGS__), __FUNCTION__, __LINE__)
+    abort_posix(pthread_mutex_unlock, __VA_ARGS__)
 
 #define spin_init(...) \
-    abort_if_nonzero(pthread_spin_init(__VA_ARGS__), __FUNCTION__, __LINE__)
+    abort_posix(pthread_spin_init, __VA_ARGS__)
 
 #define spin_destroy(...) \
-    abort_if_nonzero(pthread_spin_destroy(__VA_ARGS__), __FUNCTION__, __LINE__)
+    abort_posix(pthread_spin_destroy, __VA_ARGS__)
 
 #define spin_lock(...) \
-    abort_if_nonzero(pthread_spin_lock(__VA_ARGS__), __FUNCTION__, __LINE__)
+    abort_posix(pthread_spin_lock, __VA_ARGS__)
 
 #define spin_unlock(...) \
-    abort_if_nonzero(pthread_spin_unlock(__VA_ARGS__), __FUNCTION__, __LINE__)
+    abort_posix(pthread_spin_unlock, __VA_ARGS__)
 
-
-#ifdef _BARRIER_DEFINED
-#warning _BARRIER_DEFINED already defined
-#undef _BARRIER_DEFINED
-#endif
-
-#if defined(__x86_32__) || defined( __x86_64__)
-
-#define _BARRIER_DEFINED
-
-static inline void smp_mb(void)
-{
-    asm volatile("mfence":::"memory");
-}
-
-static inline void smp_rmb(void)
-{
-    asm volatile("lfence":::"memory");
-}
-
-static inline void smp_wmb(void)
-{
-    asm volatile("sfence":::"memory");
-}
-
-#endif
-
-#ifndef _BARRIER_DEFINED
-#error No barrier support for this architecture
-#endif
-
-#undef _BARRIED_DEFINED
-
-static inline int _do_munmap(const char *callf, uint line,
-                             void *addr, size_t length)
+static inline int do_munmap(void *addr, size_t length,
+                            const char *callf, uint line)
 {
     int                 ret = 0;
 
-    if (!addr && !length)
+    if (!addr)
         return 0;
 
     if (munmap(addr, length) == -1) {
@@ -662,11 +967,11 @@ static inline int _do_munmap(const char *callf, uint line,
 }
 
 #define do_munmap(...) \
-    _do_munmap(__FUNCTION__, __LINE__, __VA_ARGS__)
+    do_munmap(__VA_ARGS__, __func__, __LINE__)
 
-static inline void *_do_mmap(const char *callf, uint line,
-                             void *addr, size_t length, int prot, int flags,
-                             int fd, off_t offset, int *error)
+static inline void *do_mmap(void *addr, size_t length, int prot, int flags,
+                            int fd, off_t offset, int *error,
+                            const char *callf, uint line)
 {
     void                *ret;
     int                 err = 0;
@@ -684,7 +989,7 @@ static inline void *_do_mmap(const char *callf, uint line,
 }
 
 #define do_mmap(...) \
-    _do_mmap(__FUNCTION__, __LINE__, __VA_ARGS__)
+    do_mmap(__VA_ARGS__, __func__, __LINE__)
 
 static inline int fls64(uint64_t v)
 {
@@ -706,6 +1011,226 @@ static inline uint64_t roundup_pow_of_2(uint64_t val)
         return val;
 
     return ((uint64_t)1 << (fls64(val + 1)));
+}
+
+struct zhpeu_thr_wait {
+    int32_t             state;
+    pthread_mutex_t     mutex;
+    pthread_cond_t      cond;
+} CACHE_ALIGNED;
+
+#define MS_PER_SEC      (1000UL)
+#define US_PER_SEC      (1000000UL)
+#define NS_PER_SEC      (1000000000UL)
+
+enum {
+    ZHPEU_THR_WAIT_IDLE,
+    ZHPEU_THR_WAIT_SLEEP,
+    ZHPEU_THR_WAIT_SIGNAL,
+};
+
+static inline void zhpeu_thr_wait_init(struct zhpeu_thr_wait *thr_wait)
+{
+    memset(thr_wait, 0, sizeof(*thr_wait));
+    mutex_init(&thr_wait->mutex, NULL);
+    cond_init(&thr_wait->cond, NULL);
+    atm_store_rlx(&thr_wait->state, ZHPEU_THR_WAIT_IDLE);
+}
+
+static inline void zhpeu_thr_wait_destroy(struct zhpeu_thr_wait *thr_wait)
+{
+    mutex_destroy(&thr_wait->mutex);
+    cond_destroy(&thr_wait->cond);
+}
+
+static inline bool zhpeu_thr_wait_signal_fast(struct zhpeu_thr_wait *thr_wait)
+{
+    int32_t             old = ZHPEU_THR_WAIT_IDLE;
+    int32_t             new = ZHPEU_THR_WAIT_SIGNAL;
+
+    /* One sleeper, many wakers. */
+    if (atm_cmpxchg(&thr_wait->state, &old, new) || old == new)
+        /* Done! */
+        return false;
+
+    /* Need slow path. */
+    assert(old == ZHPEU_THR_WAIT_SLEEP);
+
+    return true;
+}
+
+static inline void zhpeu_thr_wait_signal_slow(struct zhpeu_thr_wait *thr_wait,
+                                              bool lock, bool unlock)
+{
+    int32_t             old = ZHPEU_THR_WAIT_SLEEP;
+    int32_t             new = ZHPEU_THR_WAIT_IDLE;
+
+    /* One sleeper, many wakers. */
+    assert(old == ZHPEU_THR_WAIT_SLEEP);
+
+    if (lock)
+            mutex_lock(&thr_wait->mutex);
+    new = ZHPEU_THR_WAIT_IDLE;
+    atm_cmpxchg(&thr_wait->state, &old, new);
+    if (unlock)
+            mutex_unlock(&thr_wait->mutex);
+    cond_broadcast(&thr_wait->cond);
+}
+
+static inline void zhpeu_thr_wait_signal(struct zhpeu_thr_wait *thr_wait)
+{
+    if (zhpeu_thr_wait_signal_fast(thr_wait))
+        zhpeu_thr_wait_signal_slow(thr_wait, true, true);
+}
+
+static inline bool zhpeu_thr_wait_sleep_fast(struct zhpeu_thr_wait *thr_wait)
+{
+    int32_t             old = ZHPEU_THR_WAIT_IDLE;
+    int32_t             new = ZHPEU_THR_WAIT_SLEEP;
+
+    /* One sleeper, many wakers. */
+    if (atm_cmpxchg(&thr_wait->state, &old, new))
+        /* Need to call slow. */
+        return true;
+
+    /* Reset SIGNAL to IDLE. */
+    assert(old == ZHPEU_THR_WAIT_SIGNAL);
+    new = ZHPEU_THR_WAIT_IDLE;
+    atm_cmpxchg(&thr_wait->state, &old, new);
+
+    /* Fast path succeeded. */
+    return false;
+}
+
+static inline int
+zhpeu_thr_wait_sleep_slow(struct zhpeu_thr_wait *thr_wait, int64_t timeout_us,
+                          bool lock, bool unlock)
+{
+    int                 ret = 0;
+    int32_t             old = ZHPEU_THR_WAIT_SLEEP;
+    int32_t             new = ZHPEU_THR_WAIT_IDLE;
+    struct timespec     timeout;
+
+    /* One sleeper, many wakers. */
+    if (lock)
+        mutex_lock(&thr_wait->mutex);
+    if (timeout_us < 0) {
+        while (atm_load_rlx(&thr_wait->state) == old)
+            cond_wait(&thr_wait->cond, &thr_wait->mutex);
+    } else {
+        clock_gettime(CLOCK_REALTIME, &timeout);
+        timeout.tv_nsec += timeout_us * US_PER_SEC;
+        if (timeout.tv_nsec >= NS_PER_SEC) {
+            timeout.tv_sec += timeout.tv_nsec / NS_PER_SEC;
+            timeout.tv_nsec = timeout.tv_nsec % NS_PER_SEC;
+        }
+        while (atm_load_rlx(&thr_wait->state) == old) {
+            ret = cond_timedwait(&thr_wait->cond, &thr_wait->mutex, &timeout);
+            if (ret < 0) {
+                atm_cmpxchg(&thr_wait->state, &old, new);
+                break;
+            }
+        }
+    }
+    if (unlock)
+        mutex_unlock(&thr_wait->mutex);
+
+    return ret;
+}
+
+struct zhpeu_work_head {
+    struct zhpeu_thr_wait thr_wait;
+    STAILQ_HEAD(, zhpeu_work) work_list;
+};
+
+/* Worker returns true if it needs to be retried later. */
+typedef bool (*zhpeu_worker)(struct zhpeu_work_head *head,
+                             struct zhpeu_work *work);
+
+struct zhpeu_work {
+    STAILQ_ENTRY(zhpeu_work) lentry;
+    zhpeu_worker        worker;
+    void                *data;
+    pthread_cond_t      cond;
+    int                 status;
+};
+
+static inline void zhpeu_work_head_init(struct zhpeu_work_head *head)
+{
+    zhpeu_thr_wait_init(&head->thr_wait);
+    STAILQ_INIT(&head->work_list);
+}
+
+static inline void zhpeu_work_head_destroy(struct zhpeu_work_head *head)
+{
+    zhpeu_thr_wait_destroy(&head->thr_wait);
+}
+
+static inline void zhpeu_work_init(struct zhpeu_work *work)
+{
+    work->status = 0;
+    work->worker = NULL;
+    cond_init(&work->cond, NULL);
+}
+
+static inline void zhpeu_work_destroy(struct zhpeu_work *work)
+{
+    cond_destroy(&work->cond);
+}
+
+static inline void zhpeu_work_wait(struct zhpeu_work_head *head,
+                                   struct zhpeu_work *work, bool lock,
+                                   bool unlock)
+{
+    if (lock)
+        mutex_lock(&head->thr_wait.mutex);
+    while (work->worker)
+        cond_wait(&work->cond, &head->thr_wait.mutex);
+    if (unlock)
+        mutex_unlock(&head->thr_wait.mutex);
+}
+
+static inline bool zhpeu_work_queued(struct zhpeu_work_head *head)
+{
+    return unlikely(!!STAILQ_FIRST(&head->work_list));
+}
+
+static inline void zhpeu_work_queue(struct zhpeu_work_head *head,
+                                    struct zhpeu_work *work,
+                                    zhpeu_worker worker, void *data,
+                                    bool signal, bool lock, bool unlock)
+{
+    if (lock)
+        mutex_lock(&head->thr_wait.mutex);
+    work->worker = worker;
+    work->data = data;
+    STAILQ_INSERT_TAIL(&head->work_list, work, lentry);
+    if (signal && zhpeu_thr_wait_signal_fast(&head->thr_wait))
+        zhpeu_thr_wait_signal_slow(&head->thr_wait, false, unlock);
+    else if (unlock)
+        mutex_unlock(&head->thr_wait.mutex);
+}
+
+static inline bool zhpeu_work_process(struct zhpeu_work_head *head,
+                                      bool lock, bool unlock)
+{
+    bool                ret = false;
+    struct zhpeu_work   *work;
+
+    if (lock)
+        mutex_lock(&head->thr_wait.mutex);
+    while ((work = STAILQ_FIRST(&head->work_list))) {
+        ret = work->worker(head, work);
+        if (ret)
+            break;
+        STAILQ_REMOVE_HEAD(&head->work_list, lentry);
+        work->worker = NULL;
+        cond_broadcast(&work->cond);
+    }
+    if (unlock)
+        mutex_unlock(&head->thr_wait.mutex);
+
+    return ret;
 }
 
 _EXTERN_C_END

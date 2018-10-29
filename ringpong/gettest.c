@@ -155,14 +155,14 @@ static void stuff_free(struct stuff *stuff)
     fab_conn_free(&stuff->fab_listener);
     fab_dom_free(&stuff->fab_dom);
 
-    do_free(stuff->rx_rcv);
-    do_free(stuff->ring_timestamps);
-    do_free(stuff->ctx);
+    free(stuff->rx_rcv);
+    free(stuff->ring_timestamps);
+    free(stuff->ctx);
 
     FD_CLOSE(stuff->sock_fd);
 
     if (stuff->allocated)
-        do_free(stuff);
+        free(stuff);
 }
 
 static int do_mem_setup(struct stuff *conn)
@@ -242,25 +242,41 @@ static int do_mem_xchg(struct stuff *conn)
     return ret;
 }
 
-static inline int
-do_fab_completions(const char *callf, uint line, struct fid_cq *cq)
+static ssize_t do_progress(struct fab_conn *fab_conn,
+                           size_t *tx_cmp, size_t *rx_cmp)
 {
-    int                 ret;
+    ssize_t             ret = 0;
+    ssize_t             rc;
 
-    ret = _fab_completions(callf, line, cq, 0, NULL, NULL);
-    if (ret < 0)
-        print_func_fi_err(callf, line, __FUNCTION__, "", ret);
+    /* Check both tx and rx sides to make progress.
+     * FIXME: Should rx be necessary for one-sided?
+     */
+    rc = fab_completions(fab_conn->tx_cq, 0, NULL, NULL);
+    if (ret >= 0) {
+        if (tx_cmp)
+            *tx_cmp += rc;
+        else
+            assert(!rc);
+    } else
+        ret = rc;
+
+    rc = fab_completions(fab_conn->rx_cq, 0, NULL, NULL);
+    if (rc >= 0) {
+        if (rx_cmp)
+            *rx_cmp += rc;
+        else
+            assert(!rc);
+    } else if (ret >= 0)
+        ret = rc;
 
     return ret;
 }
-
-#define do_fab_completions(...) \
-    do_fab_completions(__FUNCTION__, __LINE__, __VA_ARGS__)
 
 static int do_server_source(struct stuff *conn)
 {
     int                 ret = 0;
     struct fab_conn     *fab_conn = &conn->fab_conn;
+    size_t              rx_avail;
 
     /* Do a send-receive for the final handshake. */
     ret = fi_recv(fab_conn->ep, NULL, 0, NULL, 0, &conn->ctx[0]);
@@ -268,7 +284,11 @@ static int do_server_source(struct stuff *conn)
         print_func_fi_err(__FUNCTION__, __LINE__, "fi_recv", "", ret);
         goto done;
     }
-    while (!(ret = do_fab_completions(fab_conn->rx_cq)));
+    for (rx_avail = 0; !rx_avail;) {
+        ret = do_progress(fab_conn, NULL, &rx_avail);
+        if (ret < 0)
+            goto done;
+    }
 
     fab_print_info(fab_conn);
 
@@ -306,10 +326,9 @@ static int do_client_get(struct stuff *conn)
         now = get_cycles(NULL);
         /* Check for tx slots. */
         while (!tx_avail) {
-            ret = do_fab_completions(fab_conn->tx_cq);
+            ret = do_progress(fab_conn, &tx_avail, NULL);
             if (ret < 0)
                 goto done;
-            tx_avail += ret;
         }
         lat_comp += get_cycles(NULL) - now;
 
@@ -362,8 +381,7 @@ static int do_client_get(struct stuff *conn)
     }
     while (tx_avail != conn->tx_avail) {
         now = get_cycles(NULL);
-        ret = do_fab_completions(fab_conn->tx_cq);
-        lat_comp += get_cycles(NULL) - now;
+        ret = do_progress(fab_conn, &tx_avail, NULL);
         if (ret < 0)
             goto done;
         tx_avail += ret;
@@ -374,9 +392,11 @@ static int do_client_get(struct stuff *conn)
     ret = fi_send(fab_conn->ep, NULL, 0, NULL, 0, &conn->ctx[0]);
     if (ret < 0)
         goto done;
-    while (!(ret = do_fab_completions(fab_conn->tx_cq)));
-    if (ret < 0)
-        goto done;
+    for (tx_avail = 0; !tx_avail;) {
+            ret = do_progress(fab_conn, &tx_avail, NULL);
+            if (ret < 0)
+                goto done;
+    }
 
     op_count = tx_count - warmup_count;
     fab_print_info(fab_conn);
@@ -512,7 +532,7 @@ static int do_server(const struct args *args)
         print_func_err(__FUNCTION__, __LINE__, "socket", "", ret);
         goto done;
     }
-    if (setsockopt(listener_fd, SOL_SOCKET, SO_REUSEPORT,
+    if (setsockopt(listener_fd, SOL_SOCKET, SO_REUSEADDR,
                    &oflags, sizeof(oflags)) == -1) {
         ret = -errno;
         print_func_err(__FUNCTION__, __LINE__, "setsockopt", "", ret);

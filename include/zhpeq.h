@@ -44,18 +44,6 @@
 
 #include <zhpe_uapi.h>
 
-/* Do extern "C" without goofing up emacs. */
-#ifndef _EXTERN_C_SET
-#define _EXTERN_C_SET
-#ifdef  __cplusplus
-#define _EXTERN_C_BEG extern "C" {
-#define _EXTERN_C_END }
-#else
-#define _EXTERN_C_BEG
-#define _EXTERN_C_END
-#endif
-#endif
-
 _EXTERN_C_BEG
 
 #define ZHPEQ_API_VERSION       (1)
@@ -253,11 +241,5 @@ void zhpeq_print_qkdata(const char *func, uint line, struct zhpeq_dom *zdom,
 void zhpeq_print_qcm(const char *func, uint line, const struct zhpeq *zq);
 
 _EXTERN_C_END
-
-#ifdef _EXTERN_C_SET
-#undef _EXTERN_C_SET
-#undef _EXTERN_C_BEG
-#undef _EXTERN_C_END
-#endif
 
 #endif /* _ZHPEQ_H_ */

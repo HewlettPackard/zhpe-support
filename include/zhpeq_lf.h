@@ -50,18 +50,6 @@
 
 #include <zhpeq_util_fab.h>
 
-/* Do extern "C" without goofing up emacs. */
-#ifndef _EXTERN_C_SET
-#define _EXTERN_C_SET
-#ifdef  __cplusplus
-#define _EXTERN_C_BEG extern "C" {
-#define _EXTERN_C_END }
-#else
-#define _EXTERN_C_BEG
-#define _EXTERN_C_END
-#endif
-#endif
-
 _EXTERN_C_BEG
 
 void zhpel_mpi_exit(int status) __attribute__ ((__noreturn__));
@@ -195,11 +183,5 @@ void zhpel_init(struct zhpel_data *lf_data, const char *provider,
 void zhpel_destroy(struct zhpel_data *lf_data);
 
 _EXTERN_C_END
-
-#ifdef _EXTERN_C_SET
-#undef _EXTERN_C_SET
-#undef _EXTERN_C_BEG
-#undef _EXTERN_C_END
-#endif
 
 #endif /* _ZHPEQ_LF_H_ */

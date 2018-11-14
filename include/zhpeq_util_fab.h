@@ -50,18 +50,6 @@
 #include <rdma/fi_tagged.h>
 #include <rdma/fi_trigger.h>
 
-/* Do extern "C" without goofing up emacs. */
-#ifndef _EXTERN_C_SET
-#define _EXTERN_C_SET
-#ifdef  __cplusplus
-#define _EXTERN_C_BEG extern "C" {
-#define _EXTERN_C_END }
-#else
-#define _EXTERN_C_BEG
-#define _EXTERN_C_END
-#endif
-#endif
-
 _EXTERN_C_BEG
 
 #define FAB_FIVERSION       FI_VERSION(1, 5)
@@ -302,11 +290,5 @@ static inline struct fi_info *fab_conn_info(struct fab_conn *conn)
 }
 
 _EXTERN_C_END
-
-#ifdef _EXTERN_C_SET
-#undef _EXTERN_C_SET
-#undef _EXTERN_C_BEG
-#undef _EXTERN_C_END
-#endif
 
 #endif /* _ZHPEQ_UTIL_FAB_H_ */

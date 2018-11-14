@@ -46,18 +46,6 @@
 
 #include <uuid/uuid.h>
 
-/* Do extern "C" without goofing up emacs. */
-#ifndef _EXTERN_C_SET
-#define _EXTERN_C_SET
-#ifdef  __cplusplus
-#define _EXTERN_C_BEG extern "C" {
-#define _EXTERN_C_END }
-#else
-#define _EXTERN_C_BEG
-#define _EXTERN_C_END
-#endif
-#endif
-
 _EXTERN_C_BEG
 
 #define DEV_NAME        "/dev/"DRIVER_NAME
@@ -214,11 +202,5 @@ union rdm_rcv_tail {
 };
 
 _EXTERN_C_END
-
-#ifdef _EXTERN_C_SET
-#undef _EXTERN_C_SET
-#undef _EXTERN_C_BEG
-#undef _EXTERN_C_END
-#endif
 
 #endif /* _LIBZHPEQ_INTERNAL_H */

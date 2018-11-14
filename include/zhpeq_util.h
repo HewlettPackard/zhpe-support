@@ -63,17 +63,7 @@
 
 #include <uuid/uuid.h>
 
-/* Do extern "C" without goofing up emacs. */
-#ifndef _EXTERN_C_SET
-#define _EXTERN_C_SET
-#ifdef  __cplusplus
-#define _EXTERN_C_BEG extern "C" {
-#define _EXTERN_C_END }
-#else
-#define _EXTERN_C_BEG
-#define _EXTERN_C_END
-#endif
-#endif
+#include <zhpe_externc.h>
 
 _EXTERN_C_BEG
 
@@ -1234,11 +1224,5 @@ static inline bool zhpeu_work_process(struct zhpeu_work_head *head,
 }
 
 _EXTERN_C_END
-
-#ifdef _EXTERN_C_SET
-#undef _EXTERN_C_SET
-#undef _EXTERN_C_BEG
-#undef _EXTERN_C_END
-#endif
 
 #endif /* _ZHPEQ_UTIL_H_ */

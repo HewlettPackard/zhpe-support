@@ -6,5 +6,6 @@ install(
   FILES
   ${CMAKE_SOURCE_DIR}/include/zhpeq.h
   ${CMAKE_SOURCE_DIR}/asic/include/zhpe_uapi.h
+  ${CMAKE_SOURCE_DIR}/asic/include/zhpe_externc.h
   DESTINATION include
 )

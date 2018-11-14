@@ -244,6 +244,8 @@ static int zhpe_open(struct zhpeq *zq, int sock_fd)
 
     req->hdr.opcode = ZHPE_OP_UUID_IMPORT;
     memcpy(req->uuid_import.uuid, uuid, sizeof(req->uuid_import.uuid));
+    memset(req->uuid_import.mgr_uuid, 0, sizeof(req->uuid_import.mgr_uuid));
+    req->uuid_import.uu_flags = 0;
     ret = driver_cmd(&op, sizeof(req->uuid_import), sizeof(rsp->uuid_import));
     if (ret < 0)
         goto done;

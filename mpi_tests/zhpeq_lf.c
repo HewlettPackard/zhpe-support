@@ -81,16 +81,14 @@ static void ep_init(struct zhpel_data *lf_data, struct zhpel_eps *lf_eps, int i)
                   (lf_data->domain, lf_data->fi, &lf_eps->eps[i], NULL));
         FI_ERRCHK(fi_ep_bind, (lf_eps->eps[i], &lf_data->av->fid, 0));
     }
-    if (lf_eps->tx || lf_data->use_rma_events) {
-        FI_ERRCHK(fi_cntr_open,
-                  (lf_data->domain, &cntr_attr, &lf_eps->rcnts[i], NULL));
-        flags = FI_READ | (lf_data->use_rma_events ? FI_REMOTE_READ : 0);
-        FI_ERRCHK(fi_ep_bind, (lf_eps->eps[i], &lf_eps->rcnts[i]->fid, flags));
-        FI_ERRCHK(fi_cntr_open,
-                  (lf_data->domain, &cntr_attr, &lf_eps->wcnts[i], NULL));
-        flags = FI_WRITE | (lf_data->use_rma_events ? FI_REMOTE_WRITE : 0);
-        FI_ERRCHK(fi_ep_bind, (lf_eps->eps[i], &lf_eps->wcnts[i]->fid, flags));
-    }
+    FI_ERRCHK(fi_cntr_open,
+              (lf_data->domain, &cntr_attr, &lf_eps->rcnts[i], NULL));
+    flags = FI_READ | (lf_data->use_rma_events ? FI_REMOTE_READ : 0);
+    FI_ERRCHK(fi_ep_bind, (lf_eps->eps[i], &lf_eps->rcnts[i]->fid, flags));
+    FI_ERRCHK(fi_cntr_open,
+              (lf_data->domain, &cntr_attr, &lf_eps->wcnts[i], NULL));
+    flags = FI_WRITE | (lf_data->use_rma_events ? FI_REMOTE_WRITE : 0);
+    FI_ERRCHK(fi_ep_bind, (lf_eps->eps[i], &lf_eps->wcnts[i]->fid, flags));
     /* Enable the endpoint, if not using sep */
     if (!lf_data->sep)
         FI_ERRCHK(fi_enable, (lf_eps->eps[i]));
@@ -129,6 +127,7 @@ void zhpel_init(struct zhpel_data *lf_data, const char *provider,
     int                 rc;
     struct fid_ep       *ep;
     struct fid_cntr     *rcnt;
+    struct fid_cntr     *scnt;
 
     /* Initialize lf_data. */
     memset(lf_data, 0, sizeof(*lf_data));
@@ -145,7 +144,7 @@ void zhpel_init(struct zhpel_data *lf_data, const char *provider,
     hints->domain_attr->mr_mode = FI_MR_LOCAL | FI_MR_ALLOCATED;
     /* Assume provider can always just lie and give us thread-safe behavior. */
     hints->domain_attr->threading = FI_THREAD_COMPLETION;
-    hints->domain_attr->data_progress = FI_PROGRESS_AUTO;
+    /* hints->domain_attr->data_progress = FI_PROGRESS_AUTO; */
     hints->ep_attr->type = FI_EP_RDM;
     if (use_sep) {
         hints->domain_attr->tx_ctx_cnt  = lf_data->cli.n_eps;
@@ -217,6 +216,7 @@ void zhpel_init(struct zhpel_data *lf_data, const char *provider,
      * is finished while we are single threaded. This is a workaround
      * for ugliness in the IB backend.
      */
+    scnt = lf_data->svr.rcnts[0];
     for (r = 0; r < n_ranks; r++) {
         /* Do addresses one at a time because packing assumed. */
         rc = FI_ERRCHK(fi_av_insert,
@@ -234,13 +234,28 @@ void zhpel_init(struct zhpel_data *lf_data, const char *provider,
         FI_EAGAINOK(fi_read,
                     (ep, lf_data->mem, 1, fi_mr_desc(lf_data->mr), r,
                      0, ZHPEL_RKEY, NULL), rcnt);
-        FI_ERRCHK(fi_cntr_wait, (rcnt, 1, -1));
+        /* Read client and server counters to drive progress. */
+        while (fi_cntr_read(rcnt) < 1) {
+            if (fi_cntr_readerr(rcnt) > 0) {
+                print_err("%s,%u:fi_cntr_readerr indicates error\n",
+                             __func__, __LINE__);
+               zhpel_mpi_exit(1);
+            }
+            (void)fi_cntr_read(scnt);
+        }
         FI_ERRCHK(fi_cntr_set, (rcnt, 0));
     }
     if (use_rma_events) {
-        rcnt = lf_data->svr.rcnts[0];
-        FI_ERRCHK(fi_cntr_wait, (rcnt, n_ranks, -1));
-        FI_ERRCHK(fi_cntr_set, (rcnt, 0));
+        while (fi_cntr_read(scnt) < n_ranks) {
+            if (fi_cntr_readerr(scnt) > 0) {
+                print_err("%s,%u:fi_cntr_readerr indicates error\n",
+                             __func__, __LINE__);
+               zhpel_mpi_exit(1);
+            }
+            for (r = 0; r < n_ranks; r++)
+                (void)fi_cntr_read(lf_data->cli.rcnts[r]);
+        }
+        FI_ERRCHK(fi_cntr_set, (scnt, 0));
     }
 
     fi_freeinfo(hints);

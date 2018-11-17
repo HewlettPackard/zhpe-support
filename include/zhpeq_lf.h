@@ -68,11 +68,11 @@ void zhpel_mpi_exit(int status) __attribute__ ((__noreturn__));
 
 #define FI_ERRCHK(_func, _args)                                         \
 ({                                                                      \
-    int                 __rc = _func _args;                             \
+    ssize_t             __rc = _func _args;                             \
                                                                         \
     if (__rc < 0) {                                                     \
-        print_err("%s,%u:%s returned %d:%s\n",                          \
-                  __func__, __LINE__, #_func, __rc,                     \
+        print_err("%s,%u:%s returned %Ld:%s\n",                         \
+                  __func__, __LINE__, #_func, (llong)__rc,              \
                   fi_strerror(-__rc));                                  \
         zhpel_mpi_exit(1);                                              \
     }                                                                   \
@@ -81,30 +81,20 @@ void zhpel_mpi_exit(int status) __attribute__ ((__noreturn__));
 
 #define FI_EAGAINOK(_func, _args, _cntr)                                \
 ({                                                                      \
-    struct fid_cntr     *__cntr = (_cntr);                              \
-    uint64_t            __cval;                                         \
-    int                 __rc;                                           \
+    ssize_t             __rc;                                           \
                                                                         \
     for (;;) {                                                          \
         __rc = _func _args;                                             \
         if (__rc >= 0)                                                  \
             break;                                                      \
         if (__rc != -FI_EAGAIN) {                                       \
-            print_err("%s,%u:%s returned %d:%s\n",                      \
-                      __func__, __LINE__, #_func, __rc,                 \
+            print_err("%s,%u:%s returned %Ld:%s\n",                     \
+                      __func__, __LINE__, #_func, (llong)__rc,          \
                       fi_strerror(-__rc));                              \
             zhpel_mpi_exit(1);                                          \
         }                                                               \
-        __cval = fi_cntr_read(__cntr);                                  \
-        /* Try to drive progress forward. */                            \
-        __rc = fi_cntr_wait(__cntr, __cval + 1, 1);                     \
-        if (__rc < 0 && __rc != -FI_ETIMEDOUT) {                        \
-            __rc = fi_cntr_wait(__cntr, __cval + 1, 1);                 \
-            print_err("%s,%u:%s returned %d:%s\n",                      \
-                      __func__, __LINE__, "fi_cntr_wait", __rc,         \
-                      fi_strerror(-__rc));                              \
-            zhpel_mpi_exit(1);                                          \
-        }                                                               \
+        /* Read counter to cause progress. */                           \
+        (void)fi_cntr_read(_cntr);                                      \
     }                                                                   \
     __rc;                                                               \
 })
@@ -151,6 +141,7 @@ void zhpel_mpi_exit(int status) __attribute__ ((__noreturn__));
 struct zhpel_eps {
     size_t              n_eps;
     size_t              per_thr_size;
+    size_t              per_node_size;
     void                *mem;
     struct fid_ep       **eps;
     struct fid_cntr     **rcnts;

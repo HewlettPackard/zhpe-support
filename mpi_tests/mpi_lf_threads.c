@@ -48,6 +48,7 @@ struct args {
     uint64_t            loops;
     bool                rma_events;
     bool                sep;
+    bool                exclude_self;
     bool                verbose;
 };
 
@@ -58,6 +59,8 @@ struct cli_thr {
     struct zhpel_data   *lf_data;
     void                *retval;
 };
+
+static uint             cli_done;
 
 static void usage(bool error) __attribute__ ((__noreturn__));
 
@@ -72,6 +75,7 @@ static void usage(bool use_stdout)
                 " -d : domain for libfabric provider\n"
                 " -e : use RMA_EVENTs\n"
                 " -s : use scalable ep for client\n"
+                " -x : exclude self (don't send to self)\n"
                 " -v : verbose mode\n",
                 appname);
 
@@ -92,7 +96,7 @@ static void *cli_func(void *vcli_thr)
     struct fid_ep       *ep = lf_eps->eps[cli_thr->rank];
     struct fid_cntr     *rcnt = lf_eps->rcnts[cli_thr->rank];
     struct fid_cntr     *wcnt = lf_eps->wcnts[cli_thr->rank];
-    size_t              per_node_size = args->stripe_size / lf_eps->n_eps;
+    size_t              per_node_size;
     char                *lstripe;
     size_t              roff;
     size_t              l;
@@ -100,18 +104,27 @@ static void *cli_func(void *vcli_thr)
     size_t              r;
     size_t              rops;
     size_t              wops;
+    size_t              n_srv;
 
+    n_srv = lf_eps->n_eps;
+    if (args->exclude_self)
+        n_srv--;
+    per_node_size = args->stripe_size / n_srv;
     for (l = 0, rops = 0, wops = 0 ; l < args->loops; l++) {
         lstripe = lf_eps->mem + cli_thr->rank * lf_eps->per_thr_size;
-        roff = (lf_data->rank * lf_eps->per_thr_size +
-                cli_thr->rank * args->stripes * per_node_size);
+        roff = ((lf_data->rank * lf_eps->n_eps +
+                 cli_thr->rank) *
+                lf_eps->per_thr_size / n_srv);
         for (s = 0 ; s < args->stripes ; s++, roff += per_node_size) {
-            for (r = 0 ; r < lf_eps->n_eps ; r++, lstripe += per_node_size) {
+            for (r = 0 ; r < lf_eps->n_eps ; r++) {
+                if (args->exclude_self && r == lf_data->rank)
+                    continue;
                 FI_EAGAINOK(fi_write,
                             (ep, lstripe, per_node_size,
                              fi_mr_desc(lf_data->mr), r_addr(r, lf_eps), roff,
                              ZHPEL_RKEY, NULL), wcnt);
                 wops++;
+                lstripe += per_node_size;
             }
             FI_ERRCHK(fi_cntr_wait, (wcnt, wops, -1));
         }
@@ -120,15 +133,18 @@ static void *cli_func(void *vcli_thr)
                        __func__, __LINE__, lf_data->rank, cli_thr->rank, l + 1);
 
         lstripe = lf_eps->mem + cli_thr->rank * lf_eps->per_thr_size;
-        roff = (lf_data->rank * lf_eps->per_thr_size +
-                cli_thr->rank * args->stripes * per_node_size);
+        roff = ((lf_data->rank * lf_eps->n_eps + cli_thr->rank) *
+                lf_eps->per_thr_size / n_srv);
         for (s = 0 ; s < args->stripes ; s++, roff += per_node_size) {
-            for (r = 0 ; r < lf_eps->n_eps ; r++, lstripe += per_node_size) {
+            for (r = 0 ; r < lf_eps->n_eps ; r++) {
+                if (args->exclude_self && r == lf_data->rank)
+                    continue;
                 FI_EAGAINOK(fi_read,
                             (ep, lstripe, per_node_size,
                              fi_mr_desc(lf_data->mr), r_addr(r, lf_eps), roff,
                              ZHPEL_RKEY, NULL), rcnt);
                 rops++;
+                lstripe += per_node_size;
             }
             FI_ERRCHK(fi_cntr_wait, (rcnt, rops, -1));
         }
@@ -136,6 +152,7 @@ static void *cli_func(void *vcli_thr)
             print_info("%s,%u:rank %ld thr %ld loop %ld, reads complete\n",
                        __func__, __LINE__, lf_data->rank, cli_thr->rank, l + 1);
     }
+    atm_inc(&cli_done);
 
     return NULL;
 }
@@ -143,7 +160,7 @@ static void *cli_func(void *vcli_thr)
 
 int main(int argc, char **argv)
 {
-    int                 ret = 1;
+    int                 ret = 255;
     struct args         args = { NULL };
     struct zhpel_data   lf_data = { 0 };
     struct cli_thr      *cli_thr = NULL;
@@ -152,6 +169,7 @@ int main(int argc, char **argv)
     int                 opt;
     size_t              rank;
     size_t              n_ranks;
+    size_t              n_srv;
     size_t              cli_per_thr_size;
     size_t              svr_per_thr_size;
     size_t              ops_per_loop;
@@ -165,17 +183,18 @@ int main(int argc, char **argv)
     if (provided < MPI_THREAD_FUNNELED) {
         fprintf (stderr, "%s:%s,%u:MPI_Init_thread returned provided %d\n",
                  appname, __func__, __LINE__, provided);
-        zhpel_mpi_exit(1);
+        zhpel_mpi_exit(ret);
     }
     MPI_ERRCHK(MPI_Comm_size, (MPI_COMM_WORLD, &ival));
     n_ranks = ival;
+    n_srv = ival;
     MPI_ERRCHK(MPI_Comm_rank, (MPI_COMM_WORLD, &ival));
     rank = ival;
 
     if (argc == 1)
         usage(true);
 
-    while ((opt = getopt(argc, argv, "d:esv")) != -1) {
+    while ((opt = getopt(argc, argv, "d:esxv")) != -1) {
 
         switch (opt) {
 
@@ -195,6 +214,17 @@ int main(int argc, char **argv)
             if (args.sep)
                 usage(false);
             args.sep = true;
+            break;
+
+        case 'x':
+            if (args.exclude_self)
+                usage(false);
+            if (n_srv == 1) {
+                print_err("%s:-x requires more than one rank\n", __func__);
+                zhpel_mpi_exit(ret);
+            }
+            n_srv--;
+            args.exclude_self = true;
             break;
 
         case 'v':
@@ -225,14 +255,15 @@ int main(int argc, char **argv)
                           PARSE_KB | PARSE_KIB) < 0)
                           usage(false);
 
-    if (args.stripe_size % (page_size * n_ranks)) {
-        print_err("%s,%u:stripe_size %lu not divisible by\n"
-                  "    ranks %lu * page_size %lu\n",
-                  __func__, __LINE__, args.stripe_size, n_ranks, page_size);
-        zhpel_mpi_exit(255);
+    if (args.stripe_size % n_srv) {
+        print_err("%s,%u:stripe_size %lu not divisible by servers %lu\n",
+                  __func__, __LINE__, args.stripe_size, n_srv);
+        zhpel_mpi_exit(ret);
     }
     cli_per_thr_size = args.stripe_size * args.stripes;
-    svr_per_thr_size = cli_per_thr_size * n_ranks * n_ranks;
+    svr_per_thr_size = cli_per_thr_size * n_ranks;
+
+    ret = 1;
 
     zhpel_init(&lf_data, args.provider, args.domain, args.sep, args.rma_events,
                rank, n_ranks, cli_per_thr_size, svr_per_thr_size);
@@ -251,7 +282,7 @@ int main(int argc, char **argv)
 
     /* Server in main thread; wait for all events. */
     if (args.rma_events) {
-        ops_per_loop = args.stripes * n_ranks * n_ranks;
+        ops_per_loop = args.stripes * n_srv * n_srv;
         for (l = 0, ops = 0; l < args.loops; l++) {
             ops += ops_per_loop;
             FI_ERRCHK(fi_cntr_wait, (lf_data.svr.wcnts[0], ops, -1));
@@ -264,6 +295,10 @@ int main(int argc, char **argv)
                            __func__, __LINE__, rank, l + 1);
         }
     }
+
+    /* Poll sever counter to guarantee progress. */
+    while (atm_load_rlx(&cli_done) != n_ranks)
+        (void)fi_cntr_read(lf_data.svr.rcnts[0]);
 
     /* Wait for clients to exit. */
     for (r = 0; r < n_ranks; r++)

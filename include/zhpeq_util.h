@@ -110,6 +110,11 @@ extern size_t           page_size;
 #define ZHPE_ADDRSTRLEN (37)
 #define ZHPE_QUEUEINVAL (~(uint32_t)0)
 
+#define ZHPE_SA_TYPE_SHIFT      (24)
+#define ZHPE_SA_XID_MASK        ((1U << ZHPE_SA_TYPE_SHIFT) - 1)
+#define ZHPE_SA_TYPE_MASK       (0xFFU << ZHPE_SA_TYPE_SHIFT)
+#define ZHPE_SA_TYPE_FAM        (1U << ZHPE_SA_TYPE_SHIFT)
+
 struct sockaddr_zhpe {
     sa_family_t         sz_family;
     uuid_t              sz_uuid;
@@ -117,7 +122,6 @@ struct sockaddr_zhpe {
 };
 
 union sockaddr_in46 {
-    uint64_t            alignment;
     /* sa_family common to all, sin_port common to IPv4/6. */
     struct {
         sa_family_t     sa_family;
@@ -127,6 +131,9 @@ union sockaddr_in46 {
     struct sockaddr_in6 addr6;
     struct sockaddr_zhpe zhpe;
 };
+
+static_assert(sizeof(union sockaddr_in46) <= sizeof(struct sockaddr_in6),
+              "sockaddr_in46 len");
 
 int zhpeu_posix_memalign(void **memptr, size_t alignment, size_t size,
                          const char *callf, uint line);

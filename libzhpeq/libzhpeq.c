@@ -52,6 +52,7 @@ static_assert(sizeof(union zhpe_hw_cq_entry) ==  ZHPE_ENTRY_LEN,
 
 static pthread_mutex_t  init_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+static bool             b_zhpe;
 static struct backend_ops *b_ops;
 static struct zhpeq_attr b_attr;
 
@@ -77,7 +78,11 @@ void zhpeq_register_backend(enum zhpe_backend backend, struct backend_ops *ops)
     switch (backend) {
 
     case ZHPEQ_BACKEND_LIBFABRIC:
+        b_ops = ops;
+        break;
+
     case ZHPEQ_BACKEND_ZHPE:
+        b_zhpe = true;
         b_ops = ops;
         break;
 
@@ -297,16 +302,28 @@ int zhpeq_alloc(struct zhpeq_dom *zdom, int cmd_qlen, int cmp_qlen,
     return ret;
 }
 
-int zhpeq_backend_open(struct zhpeq *zq, int sock_fd)
+int zhpeq_backend_exchange(struct zhpeq *zq, int sock_fd,
+                           void *sa, size_t *sa_len)
+{
+    int                 ret = -EINVAL;
+
+    if (!zq || !sa || !sa_len)
+        goto done;
+
+    ret = b_ops->exchange(zq, sock_fd, sa, sa_len);
+
+ done:
+    return ret;
+}
+
+int zhpeq_backend_open(struct zhpeq *zq, void *sa)
 {
     int                 ret = -EINVAL;
 
     if (!zq)
         goto done;
 
-    ret = 0;
-    if (b_ops->open)
-        ret = b_ops->open(zq, sock_fd);
+    ret = b_ops->open(zq, sa);
  done:
 
     return ret;
@@ -319,9 +336,7 @@ int zhpeq_backend_close(struct zhpeq *zq, int open_idx)
     if (!zq)
         goto done;
 
-    ret = 0;
-    if (b_ops->close)
-        ret = b_ops->close(zq, open_idx);
+    ret = b_ops->close(zq, open_idx);
  done:
 
     return ret;
@@ -676,6 +691,31 @@ int zhpeq_zmmu_import(struct zhpeq_dom *zdom, int open_idx, const void *blob,
     return ret;
 }
 
+int zhpeq_zmmu_fam_import(struct zhpeq_dom *zdom, int open_idx,
+                          bool cpu_visible, struct zhpeq_key_data **qkdata_out)
+{
+    int                 ret = -EINVAL;
+
+    if (!qkdata_out)
+        goto done;
+    *qkdata_out = NULL;
+    if (!zdom)
+        goto done;
+
+    if (b_ops->zmmu_fam_import)
+        ret = b_ops->zmmu_fam_import(zdom, open_idx, cpu_visible,  qkdata_out);
+    else
+        ret = -ENOSYS;
+
+#if QKDATA_DUMP
+    if (ret >= 0)
+        zhpeq_print_qkdata(__FUNCTION__, __LINE__, zdom, *qkdata_out);
+#endif
+
+ done:
+    return ret;
+}
+
 int zhpeq_zmmu_export(struct zhpeq_dom *zdom,
                       const struct zhpeq_key_data *qkdata,
                       void *blob, size_t *blob_len)
@@ -797,14 +837,14 @@ struct zhpeq_dom *zhpeq_dom(struct zhpeq *zq)
     return zq->zdom;
 }
 
-int zhpeq_getaddr(struct zhpeq *zq, union sockaddr_in46 *sa)
+int zhpeq_getaddr(struct zhpeq *zq, void *sa, size_t *sa_len)
 {
     ssize_t             ret = -EINVAL;
 
-    if (!zq || !sa)
+    if (!zq || !sa || !sa_len)
         goto done;
 
-    ret = b_ops->getaddr(zq, sa);
+    ret = b_ops->getaddr(zq, sa, sa_len);
  done:
 
     return ret;
@@ -828,17 +868,22 @@ void zhpeq_print_qkdata(const char *func, uint line, struct zhpeq_dom *zdom,
 static void print_qcm1(const char *func, uint line, const volatile void *qcm,
                       uint offset)
 {
-        printf("%s,%u:qcm[0x%03x] = 0x%lx\n",
-               func, line, offset, ioread64(qcm + offset));
+    printf("%s,%u:qcm[0x%03x] = 0x%lx\n",
+           func, line, offset, ioread64(qcm + offset));
 }
 
 void zhpeq_print_qcm(const char *func, uint line, const struct zhpeq *zq)
 {
-        uint            i;
+    uint                i;
 
-        printf("%s,%u:%s %p\n", func, line, __FUNCTION__, zq->qcm);
-        for (i = 0x00; i < 0x30; i += 0x08)
-            print_qcm1(func, line, zq->qcm, i);
-        for (i = 0x40; i < 0x108; i += 0x40)
-            print_qcm1(func, line, zq->qcm, i);
+    printf("%s,%u:%s %p\n", func, line, __FUNCTION__, zq->qcm);
+    for (i = 0x00; i < 0x30; i += 0x08)
+        print_qcm1(func, line, zq->qcm, i);
+    for (i = 0x40; i < 0x108; i += 0x40)
+        print_qcm1(func, line, zq->qcm, i);
+}
+
+bool zhpeq_is_asic(void)
+{
+    return b_zhpe;
 }

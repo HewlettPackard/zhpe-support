@@ -178,7 +178,10 @@ int zhpeq_alloc(struct zhpeq_dom *zdom, int cmd_qlen, int cmp_qlen,
 
 int zhpeq_free(struct zhpeq *zq);
 
-int zhpeq_backend_open(struct zhpeq *zq, int sock_fd);
+int zhpeq_backend_exchange(struct zhpeq *zq, int sock_fd,
+                           void *sa, size_t *sa_len);
+
+int zhpeq_backend_open(struct zhpeq *zq, void *sa);
 
 int zhpeq_backend_close(struct zhpeq *zq, int open_idx);
 
@@ -194,9 +197,12 @@ int zhpeq_zmmu_export(struct zhpeq_dom *zdom,
                       const struct zhpeq_key_data *qkdata,
                       void *blob, size_t *blob_len);
 
+int zhpeq_zmmu_fam_import(struct zhpeq_dom *zdom, int open_idx,
+                          bool cpu_visible, struct zhpeq_key_data **qkdata_out);
+
 int zhpeq_zmmu_import(struct zhpeq_dom *zdom, int open_idx,
                       const void *blob, size_t blob_len, bool cpu_visible,
-                      struct zhpeq_key_data **kdata_out);
+                      struct zhpeq_key_data **qkdata_out);
 
 int zhpeq_zmmu_free(struct zhpeq_dom *zdom, struct zhpeq_key_data *qkdata);
 
@@ -239,6 +245,10 @@ void zhpeq_print_qkdata(const char *func, uint line, struct zhpeq_dom *zdom,
                         const struct zhpeq_key_data *qkdata);
 
 void zhpeq_print_qcm(const char *func, uint line, const struct zhpeq *zq);
+
+bool zhpeq_is_asic(void);
+
+int zhpeq_getaddr(struct zhpeq *zq, void *sa, size_t *sa_len);
 
 _EXTERN_C_END
 

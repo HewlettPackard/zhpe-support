@@ -571,6 +571,8 @@ static int do_client_op(struct stuff *conn, size_t coff, size_t soff,
 int do_zq_setup(struct stuff *conn)
 {
     int                 ret;
+    union sockaddr_in46 sa;
+    size_t              sa_len = sizeof(sa);
     struct zhpeq_attr   zq_attr;
 
     ret = zhpeq_query_attr(&zq_attr);
@@ -596,7 +598,13 @@ int do_zq_setup(struct stuff *conn)
     if (conn->args->qcm)
         zhpeq_print_qcm(__FUNCTION__, __LINE__, conn->zq);
     /* Get address index. */
-    ret = zhpeq_backend_open(conn->zq, conn->sock_fd);
+    ret = zhpeq_backend_exchange(conn->zq, conn->sock_fd, &sa, &sa_len);
+    if (ret < 0) {
+        print_func_err(__FUNCTION__, __LINE__, "zhpeq_backend_exchange",
+                       "", ret);
+        goto done;
+    }
+    ret = zhpeq_backend_open(conn->zq, &sa);
     if (ret < 0) {
         print_func_err(__FUNCTION__, __LINE__, "zhpeq_backend_open", "", ret);
         goto done;

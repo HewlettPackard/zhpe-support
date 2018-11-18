@@ -677,20 +677,30 @@ static int lfab_qalloc_post(struct zhpeq *zq)
     return lfab_eng_work_queue(&eng, worker_qalloc_post, zq);
 }
 
-
-static int lfab_open(struct zhpeq *zq, int sock_fd)
+static int lfab_exchange(struct zhpeq *zq, int sock_fd, void *sa,
+                         size_t *sa_len)
 {
     int                 ret;
     struct stuff        *conn = zq->backend_data;
     struct fab_conn     *fab_conn = conn->fab_plus->fab_conn;
+
+    ret = fab_av_xchg_addr(fab_conn, sock_fd, sa);
+    if (ret >= 0)
+        *sa_len = sockaddr_len(sa);
+
+    return ret;
+}
+
+static int lfab_open(struct zhpeq *zq, void *sa)
+{
+    int                 ret;
+    struct stuff        *conn = zq->backend_data;
     struct lfab_work_av_op data = {
         .conn           = conn,
         .fi_addr        = FI_ADDR_UNSPEC,
     };
 
-    ret = fab_av_xchg_addr(fab_conn, sock_fd, &data.ep_addr);
-    if (ret < 0)
-        goto done;
+    sockaddr_cpy(&data.ep_addr, sa);
     ret = lfab_eng_work_queue(&eng, worker_av_op_insert, &data);
     if (ret < 0)
         goto done;
@@ -1369,16 +1379,20 @@ static int lfab_zmmu_export(struct zhpeq_dom *zdom,
                             const struct zhpeq_key_data *qkdata,
                             void *blob, size_t *blob_len)
 {
+    int                 ret = -EOVERFLOW;
     struct zdom_data    *bdom = zdom->backend_data;
 
     if (*blob_len < sizeof(struct key_data_packed))
-        return -EINVAL;
+        goto done;
 
-    *blob_len = sizeof(struct key_data_packed);
     pack_kdata(qkdata, blob,
                fi_mr_key(bdom->lcl_mr[TO_KEYIDX(qkdata->z.zaddr)]));
+    ret = 0;
 
-    return 0;
+ done:
+    *blob_len = sizeof(struct key_data_packed);
+
+    return ret;
 }
 
 static void lfab_print_info(struct zhpeq *zq)
@@ -1403,21 +1417,25 @@ static bool worker_fi_getname(struct zhpeu_work_head *head,
     return false;
 }
 
-static int lfab_getaddr(struct zhpeq *zq, union sockaddr_in46 *sa)
+static int lfab_getaddr(struct zhpeq *zq, void *sa, size_t *sa_len)
 {
     int                 ret;
     struct stuff        *conn = zq->backend_data;
     struct fab_conn     *fab_conn = conn->fab_plus->fab_conn;
-    size_t              sa_len = sizeof(*sa);
     struct lfab_work_fi_getname data = {
         .fid            = &fab_conn->ep->fid,
         .buf            = sa,
-        .len_inout      = &sa_len,
+        .len_inout      = sa_len,
     };
+    size_t              olen = *sa_len;
 
     ret = lfab_eng_work_queue(&eng, worker_fi_getname, &data);
-    if (ret >= 0 && !sockaddr_valid(sa, sa_len, true))
-        ret = -EAFNOSUPPORT;
+    if (ret >= 0) {
+        if (!sockaddr_valid(sa, *sa_len, true))
+            ret = -EAFNOSUPPORT;
+        else if (*sa_len > olen)
+            ret = -EOVERFLOW;
+    }
 
     return ret;
 }
@@ -1430,6 +1448,7 @@ static struct backend_ops ops = {
     .qalloc_post        = lfab_qalloc_post,
     .qfree_pre          = lfab_qfree_pre,
     .qfree              = lfab_qfree,
+    .exchange           = lfab_exchange,
     .open               = lfab_open,
     .close              = lfab_close,
     .wq_signal          = lfab_wq_signal,

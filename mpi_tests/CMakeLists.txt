@@ -5,7 +5,7 @@ project (mpi_tests)
 set(CMAKE_INSTALL_PREFIX ${INSD})
 
 # Ugly hack: turn space separate options into CMake list
-string(STRIP ${COPT} COPT)
+string(STRIP "${COPT}" COPT)
 string(REPLACE " " ";" COPT ${COPT})
 add_compile_options(${COPT})
 
@@ -13,15 +13,15 @@ if (CMAKE_COMPILER_IS_GNUCC)
   add_compile_options(-g -Wall -Werror)
 endif (CMAKE_COMPILER_IS_GNUCC)
 
-include_directories(../include ../asic/include)
+include_directories(../include ../asic/include ${INSD}/include)
+link_directories(${INSD}/lib)
 
 if (MPID)
   set(MPI_C_COMPILER ${MPID}/bin/mpicc)
 endif (MPID)
 
 include(FindMPI)
-include_directories(${MPI_C_INCLUDE_PATH})
-link_directories(${INSD}/lib)
+include_directories(AFTER ${MPI_C_INCLUDE_PATH})
 
 set(THREADS_PREFER_PTHREAD_FLAG TRUE)
 find_package(Threads REQUIRED)

@@ -5,7 +5,7 @@ project (libzhpeq)
 set(CMAKE_INSTALL_PREFIX ${INSD})
 
 # Ugly hack: turn space separate options into CMake list
-string(STRIP ${COPT} COPT)
+string(STRIP "${COPT}" COPT)
 string(REPLACE " " ";" COPT ${COPT})
 add_compile_options(${COPT})
 

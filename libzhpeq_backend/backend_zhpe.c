@@ -256,7 +256,7 @@ static int zhpe_open(struct zhpeq *zq, void *sa)
 
     req->hdr.opcode = ZHPE_OP_UUID_IMPORT;
     memcpy(req->uuid_import.uuid, sz->sz_uuid, sizeof(req->uuid_import.uuid));
-    if (sz->sz_queue == ZHPE_SA_TYPE_FAM) {
+    if ((sz->sz_queue & ZHPE_SA_TYPE_MASK) == ZHPE_SA_TYPE_FAM) {
         memcpy(req->uuid_import.mgr_uuid, sz[1].sz_uuid,
                sizeof(req->uuid_import.mgr_uuid));
         req->uuid_import.uu_flags = UUID_IS_FAM;

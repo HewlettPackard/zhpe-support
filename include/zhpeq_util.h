@@ -404,6 +404,31 @@ zhpeu_atm_fifo_pop(struct zhpeu_atm_list_ptr *head)
     return ret;
 }
 
+static inline sa_family_t sockaddr_family(const void *addr)
+{
+    const union sockaddr_in46 *sa = addr;
+
+    return sa->sa_family;
+}
+
+static inline uint32_t sockaddr_porth(const void *addr)
+{
+    const union sockaddr_in46 *sa = addr;
+
+    switch (sa->sa_family) {
+
+    case AF_INET:
+    case AF_INET6:
+        return ntohs(sa->sin_port);
+
+    case AF_ZHPE:
+        return sa->zhpe.sz_queue;
+
+    default:
+        return 0;
+    }
+}
+
 static inline size_t sockaddr_len(const void *addr)
 {
     const union sockaddr_in46 *sa = addr;

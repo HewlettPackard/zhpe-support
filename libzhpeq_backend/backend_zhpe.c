@@ -39,6 +39,7 @@
 #define NODE_CHUNKS     (128)
 
 static int              dev_fd = -1;
+static pthread_mutex_t  dev_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static struct zhpe_global_shared_data *shared_global;
 static struct zhpe_local_shared_data *shared_local;
@@ -61,6 +62,8 @@ static int driver_cmd(union zhpe_op *op, size_t req_len, size_t rsp_len)
 
     op->hdr.version = ZHPE_OP_VERSION;
     op->hdr.index = 0;
+
+    mutex_lock(&dev_mutex);
 
     res = write(dev_fd, op, req_len);
     ret = check_func_io(__FUNCTION__, __LINE__, "write", DEV_NAME,
@@ -93,6 +96,8 @@ static int driver_cmd(union zhpe_op *op, size_t req_len, size_t rsp_len)
                   -ret, strerror(-ret));
 
  done:
+    mutex_unlock(&dev_mutex);
+
     return ret;
 }
 

@@ -34,12 +34,22 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#define _GNU_SOURCE
+#include <search.h>
+
 #include <internal.h>
 
 #define NODE_CHUNKS     (128)
 
 static int              dev_fd = -1;
 static pthread_mutex_t  dev_mutex = PTHREAD_MUTEX_INITIALIZER;
+static void             *dev_uuid_tree;
+
+struct dev_uuid_tree_entry {
+    uuid_t              uuid;
+    int32_t             use_count;
+    bool                fam;
+};
 
 static struct zhpe_global_shared_data *shared_global;
 static struct zhpe_local_shared_data *shared_local;
@@ -48,13 +58,14 @@ struct zdom_data {
     pthread_mutex_t     node_mutex;
     int32_t             node_idx;
     struct zdom_node {
-        struct sockaddr_zhpe sz;
-    }                   *nodes;
+        struct dev_uuid_tree_entry *uue;
+        uint32_t        sz_queue;
+    } *nodes;
 };
 
 /* For the moment, we will do all driver I/O synchronously.*/
 
-static int driver_cmd(union zhpe_op *op, size_t req_len, size_t rsp_len)
+static int __driver_cmd(union zhpe_op *op, size_t req_len, size_t rsp_len)
 {
     int                 ret = 0;
     int                 opcode = op->hdr.opcode;
@@ -62,8 +73,6 @@ static int driver_cmd(union zhpe_op *op, size_t req_len, size_t rsp_len)
 
     op->hdr.version = ZHPE_OP_VERSION;
     op->hdr.index = 0;
-
-    mutex_lock(&dev_mutex);
 
     res = write(dev_fd, op, req_len);
     ret = check_func_io(__func__, __LINE__, "write", DEV_NAME,
@@ -96,6 +105,16 @@ static int driver_cmd(union zhpe_op *op, size_t req_len, size_t rsp_len)
                   -ret, strerror(-ret));
 
  done:
+
+    return ret;
+}
+
+static int driver_cmd(union zhpe_op *op, size_t req_len, size_t rsp_len)
+{
+    int                 ret;
+
+    mutex_lock(&dev_mutex);
+    ret = __driver_cmd(op, req_len, rsp_len);
     mutex_unlock(&dev_mutex);
 
     return ret;
@@ -152,36 +171,67 @@ static int zhpe_lib_init(struct zhpeq_attr *attr)
     return ret;
 }
 
-static void uuid_free(uuid_t uuid)
+static int compare_uuid(const void *key1, const void *key2)
 {
+    const uuid_t        *u1 = key1;
+    const uuid_t        *u2 = key2;
+
+    return uuid_compare(*u1, *u2);
+}
+
+static int uuid_free(uuid_t *uu)
+{
+    int                 ret;
     union zhpe_op       op;
     union zhpe_req      *req = &op.req;
     union zhpe_rsp      *rsp = &op.rsp;
+    void                **tval;
+    struct dev_uuid_tree_entry *uue;
 
-    if (uuid_is_null(uuid))
-        return;
-    req->hdr.opcode = ZHPE_OP_UUID_FREE;
-    memcpy(req->uuid_free.uuid, uuid, sizeof(req->uuid_free.uuid));
-    (void)driver_cmd(&op, sizeof(req->uuid_free), sizeof(rsp->uuid_free));
-    uuid_clear(uuid);
+    mutex_lock(&dev_mutex);
+    tval = tfind(uu, &dev_uuid_tree, compare_uuid);
+    if (tval) {
+        uue = *tval;
+        if (!--(uue->use_count)) {
+            (void)tdelete(uu, &dev_uuid_tree, compare_uuid);
+            req->hdr.opcode = ZHPE_OP_UUID_FREE;
+            memcpy(req->uuid_free.uuid, *uu, sizeof(req->uuid_free.uuid));
+            ret =__driver_cmd(&op, sizeof(req->uuid_free),
+                              sizeof(rsp->uuid_free));
+            free(uue);
+        }
+    } else
+        ret = -ENOENT;
+    mutex_unlock(&dev_mutex);
+
+    return ret;
 }
 
 static int zhpe_domain_free(struct zhpeq_dom *zdom)
 {
+    int                 ret = 0;
     struct zdom_data    *bdom = zdom->backend_data;
+    struct dev_uuid_tree_entry *uue;
     uint32_t            i;
+    int                 rc;
 
     if (!bdom)
-        return 0;
+        goto done;
 
     zdom->backend_data = NULL;
     mutex_destroy(&bdom->node_mutex);
-    for (i = 0; i < bdom->node_idx; i++)
-        uuid_free(bdom->nodes[i].sz.sz_uuid);
+    for (i = 0; i < bdom->node_idx; i++) {
+        uue = bdom->nodes[i].uue;
+        if (uue) {
+            rc = uuid_free(&uue->uuid);
+            ret = (ret >= 0 ? rc : ret);
+        }
+    }
     free(bdom->nodes);
     free(bdom);
 
-    return 0;
+ done:
+    return ret;
 }
 
 static int zhpe_domain(struct zhpeq_dom *zdom)
@@ -248,31 +298,65 @@ static int zhpe_exchange(struct zhpeq *zq, int sock_fd, void *sa,
 
 static int zhpe_open(struct zhpeq *zq, void *sa)
 {
-    int                 ret;
+    int                 ret = 0;
     struct zdom_data    *bdom = zq->zdom->backend_data;
     struct sockaddr_zhpe *sz = sa;
     union zhpe_op       op;
     union zhpe_req      *req = &op.req;
     union zhpe_rsp      *rsp = &op.rsp;
-    uuid_t              uuid;
     struct zdom_node    *node;
+    void                **tval;
+    struct dev_uuid_tree_entry *uue;
 
-    mutex_lock(&bdom->node_mutex);
+    if (sz->sz_family != AF_ZHPE)
+        return -EINVAL;
 
-    req->hdr.opcode = ZHPE_OP_UUID_IMPORT;
-    memcpy(req->uuid_import.uuid, sz->sz_uuid, sizeof(req->uuid_import.uuid));
-    if ((sz->sz_queue & ZHPE_SA_TYPE_MASK) == ZHPE_SA_TYPE_FAM) {
-        memcpy(req->uuid_import.mgr_uuid, sz[1].sz_uuid,
-               sizeof(req->uuid_import.mgr_uuid));
-        req->uuid_import.uu_flags = UUID_IS_FAM;
+    mutex_lock(&dev_mutex);
+    tval = tsearch(&sz->sz_uuid, &dev_uuid_tree, compare_uuid);
+    if (tval) {
+        uue = *tval;
+        if (uue != (void *)&sz->sz_uuid)
+            uue->use_count++;
+        else {
+            uue = malloc(sizeof(*uue));
+            if (!uue)
+                ret = -ENOMEM;
+            if (ret >= 0) {
+                *tval = uue;
+                memcpy(uue->uuid, sz->sz_uuid, sizeof(uue->uuid));
+                uue->use_count = 1;
+                uue->fam = ((sz->sz_queue & ZHPE_SA_TYPE_MASK) ==
+                            ZHPE_SA_TYPE_FAM);
+
+                req->hdr.opcode = ZHPE_OP_UUID_IMPORT;
+                memcpy(req->uuid_import.uuid, sz->sz_uuid,
+                       sizeof(req->uuid_import.uuid));
+                if (uue->fam) {
+                    memcpy(req->uuid_import.mgr_uuid, sz[1].sz_uuid,
+                           sizeof(req->uuid_import.mgr_uuid));
+                    req->uuid_import.uu_flags = UUID_IS_FAM;
+                } else {
+                    memset(req->uuid_import.mgr_uuid, 0,
+                           sizeof(req->uuid_import.mgr_uuid));
+                    req->uuid_import.uu_flags = 0;
+                }
+                ret = __driver_cmd(&op, sizeof(req->uuid_import),
+                                   sizeof(rsp->uuid_import));
+            }
+            if (ret < 0) {
+                (void)tdelete(&sz->sz_uuid, &dev_uuid_tree, compare_uuid);
+                free(uue);
+            }
+        }
     } else {
-        memset(req->uuid_import.mgr_uuid, 0, sizeof(req->uuid_import.mgr_uuid));
-        req->uuid_import.uu_flags = 0;
+        ret = -ENOMEM;
+        print_func_err(__func__, __LINE__, "tsearch", "", ret);
     }
-    ret = driver_cmd(&op, sizeof(req->uuid_import), sizeof(rsp->uuid_import));
+    mutex_unlock(&dev_mutex);
     if (ret < 0)
         goto done;
 
+    mutex_lock(&bdom->node_mutex);
     if ((bdom->node_idx % NODE_CHUNKS) == 0) {
         bdom->nodes = realloc(
             bdom->nodes, (bdom->node_idx + NODE_CHUNKS) * sizeof(*bdom->nodes));
@@ -283,16 +367,15 @@ static int zhpe_open(struct zhpeq *zq, void *sa)
         if (bdom->node_idx < INT32_MAX) {
             ret = bdom->node_idx++;
             node = &bdom->nodes[ret];
-            memcpy(&node->sz, sz, sizeof(node->sz));
+            node->uue = uue;
+            node->sz_queue = sz->sz_queue;
         } else
             ret = -ENOSPC;
-    }
-    if (ret <  0)
-        uuid_free(uuid);
-
- done:
+    } else
+        (void)uuid_free(&sz->sz_uuid);
     mutex_unlock(&bdom->node_mutex);
 
+ done:
     return ret;
 }
 
@@ -301,15 +384,17 @@ static int zhpe_close(struct zhpeq *zq, int open_idx)
     int                 ret = -EINVAL;
     struct zdom_data    *bdom = zq->zdom->backend_data;
     struct zdom_node    *node;
+    struct dev_uuid_tree_entry *uue;
 
     if (open_idx < 0 || open_idx >= bdom->node_idx)
         goto done;
 
-    node = &bdom->nodes[open_idx];
     mutex_lock(&bdom->node_mutex);
-    uuid_free(node->sz.sz_uuid);
+    node = &bdom->nodes[open_idx];
+    uue = node->uue;
+    node->uue = NULL;
     mutex_unlock(&bdom->node_mutex);
-    ret = 0;
+    ret = (uue ? uuid_free(&uue->uuid) : -ENOENT);
 
  done:
     return ret;
@@ -408,7 +493,6 @@ static int zhpe_zmmu_import(struct zhpeq_dom *zdom, int open_idx,
     struct zdom_data    *bdom = zdom->backend_data;
     const struct key_data_packed *pdata = blob;
     struct zhpeq_mr_desc_v1 *desc = NULL;
-    uuid_t              *uuidp;
     union zhpe_op       op;
     union zhpe_req      *req = &op.req;
     union zhpe_rsp      *rsp = &op.rsp;
@@ -418,8 +502,7 @@ static int zhpe_zmmu_import(struct zhpeq_dom *zdom, int open_idx,
         open_idx < 0 || open_idx >= bdom->node_idx)
         goto done;
     node = &bdom->nodes[open_idx];
-    uuidp = &node->sz.sz_uuid;
-    if (uuid_is_null(*uuidp))
+    if (!node->uue || node->uue->fam)
         goto done;
 
     ret = -ENOMEM;
@@ -435,7 +518,7 @@ static int zhpe_zmmu_import(struct zhpeq_dom *zdom, int open_idx,
     desc->uuid_idx = open_idx;
 
     req->hdr.opcode = ZHPE_OP_RMR_IMPORT;
-    memcpy(req->rmr_import.uuid, *uuidp, sizeof(req->rmr_import.uuid));
+    memcpy(req->rmr_import.uuid, node->uue->uuid, sizeof(req->rmr_import.uuid));
     req->rmr_import.rsp_zaddr = desc->qkdata.rsp_zaddr;
     req->rmr_import.len = desc->qkdata.z.len;
     req->rmr_import.access = desc->access_plus;
@@ -459,7 +542,6 @@ static int zhpe_zmmu_fam_import(struct zhpeq_dom *zdom, int open_idx,
     int                 ret = -EINVAL;
     struct zdom_data    *bdom = zdom->backend_data;
     struct zhpeq_mr_desc_v1 *desc = NULL;
-    uuid_t              *uuidp;
     union zhpe_op       op;
     union zhpe_req      *req = &op.req;
     union zhpe_rsp      *rsp = &op.rsp;
@@ -468,10 +550,7 @@ static int zhpe_zmmu_fam_import(struct zhpeq_dom *zdom, int open_idx,
     if (cpu_visible || open_idx < 0 || open_idx >= bdom->node_idx)
         goto done;
     node = &bdom->nodes[open_idx];
-    uuidp = &node->sz.sz_uuid;
-    if (uuid_is_null(*uuidp))
-        goto done;
-    if ((node->sz.sz_queue & ZHPE_SA_TYPE_MASK) != ZHPE_SA_TYPE_FAM)
+    if (!node->uue || !node->uue->fam)
         goto done;
 
     ret = -ENOMEM;
@@ -484,7 +563,7 @@ static int zhpe_zmmu_fam_import(struct zhpeq_dom *zdom, int open_idx,
     desc->qkdata.z.vaddr = 0;
     desc->qkdata.rsp_zaddr = 0;
     /* FAM size in GiB in XID portion of sz_queue. */
-    desc->qkdata.z.len = node->sz.sz_queue & ZHPE_SA_XID_MASK;
+    desc->qkdata.z.len = node->sz_queue & ZHPE_SA_XID_MASK;
     desc->qkdata.z.len *= (1ULL << 30);
     desc->qkdata.z.access = (ZHPEQ_MR_GET_REMOTE | ZHPEQ_MR_PUT_REMOTE |
                              ZHPEQ_MR_KEY_ZERO_OFF);
@@ -492,7 +571,7 @@ static int zhpe_zmmu_fam_import(struct zhpeq_dom *zdom, int open_idx,
     desc->uuid_idx = open_idx;
 
     req->hdr.opcode = ZHPE_OP_RMR_IMPORT;
-    memcpy(req->rmr_import.uuid, *uuidp, sizeof(req->rmr_import.uuid));
+    memcpy(req->rmr_import.uuid, node->uue->uuid, sizeof(req->rmr_import.uuid));
     req->rmr_import.rsp_zaddr = desc->qkdata.rsp_zaddr;
     req->rmr_import.len = desc->qkdata.z.len;
     req->rmr_import.access = desc->access_plus;
@@ -525,7 +604,7 @@ static int zhpe_zmmu_free(struct zhpeq_dom *zdom, struct zhpeq_key_data *qkdata)
         goto done;
 
     req->hdr.opcode = ZHPE_OP_RMR_FREE;
-    memcpy(req->rmr_free.uuid, bdom->nodes[desc->uuid_idx].sz.sz_uuid,
+    memcpy(req->rmr_free.uuid, bdom->nodes[desc->uuid_idx].uue->uuid,
            sizeof(req->rmr_free.uuid));
     req->rmr_free.req_addr = qkdata->z.zaddr;
     req->rmr_free.len = qkdata->z.len;
@@ -593,7 +672,7 @@ char *zhpe_qkdata_id_str(struct zhpeq_dom *zdom,
     if (!(desc->hdr.version & ZHPEQ_MR_REMOTE))
         goto done;
 
-    uuid_unparse_upper(bdom->nodes[desc->uuid_idx].sz.sz_uuid, uuid_str);
+    uuid_unparse_upper(bdom->nodes[desc->uuid_idx].uue->uuid, uuid_str);
     if (zhpeu_asprintf(&ret, "%d %s", desc->uuid_idx, uuid_str) == -1)
         ret = NULL;
  done:

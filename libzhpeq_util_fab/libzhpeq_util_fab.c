@@ -910,7 +910,7 @@ int _fab_av_insert(const char *callf, uint line, struct fab_dom *dom,
 {
     int                 ret;
     struct av_tree_entry *ave = NULL;
-    void                **tval;
+    void                **tval = NULL;
 
     mutex_lock(&dom->av_mutex);
     if (!sockaddr_len(saddr)) {
@@ -929,16 +929,17 @@ int _fab_av_insert(const char *callf, uint line, struct fab_dom *dom,
         *fi_addr = ave->fi_addr;
         ave->use_count++;
         goto done;
-    } else {
-        ave = *tval = zhpeu_malloc(sizeof(*ave), callf, line);
-        if (!ave) {
-            ret = -FI_ENOMEM;
-            goto done;
-        }
-        sockaddr_cpy(&ave->sa, saddr);
-        ave->fi_addr = FI_ADDR_UNSPEC;
-        ave->use_count = 1;
     }
+    ave = zhpeu_malloc(sizeof(*ave), callf, line);
+    if (!ave) {
+        ret = -FI_ENOMEM;
+        goto done;
+    }
+    *tval = ave;
+    sockaddr_cpy(&ave->sa, saddr);
+    ave->fi_addr = FI_ADDR_UNSPEC;
+    ave->use_count = 1;
+
     ret = fi_av_insert(dom->av, saddr, 1,  fi_addr, 0, NULL);
     if (ret < 0) {
 	print_func_fi_err(callf, line, "fi_av_insert", "", ret);
@@ -948,6 +949,7 @@ int _fab_av_insert(const char *callf, uint line, struct fab_dom *dom,
         goto done;
     }
     ave->fi_addr = *fi_addr;
+
     /* Going to use a tree, since it will be more general and
      * we don't really just don't want o(n) in the worst case.
      */
@@ -962,10 +964,9 @@ int _fab_av_insert(const char *callf, uint line, struct fab_dom *dom,
 
  done:
     if (ret < 0) {
-        if (ave) {
-            (void)tdelete(ave, &dom->av_sa_tree, compare_sa);
-            free(ave);
-        }
+        if (tval)
+            (void)tdelete(saddr, &dom->av_sa_tree, compare_sa);
+        free(ave);
         *fi_addr = FI_ADDR_UNSPEC;
     }
     mutex_unlock(&dom->av_mutex);
@@ -986,7 +987,6 @@ int _fab_av_remove(const char *callf, uint line, struct fab_dom *dom,
         ret = -FI_ENOENT;
         goto done;
     }
-    assert(*tval != &fi_addr);
     ave = container_of((fi_addr_t *)*tval, struct av_tree_entry, fi_addr);
     if (--(ave->use_count)) {
         ret = 0;

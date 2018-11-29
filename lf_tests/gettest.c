@@ -201,7 +201,7 @@ static int do_mem_setup(struct stuff *conn)
     ret = -posix_memalign((void **)&conn->ctx, page_size, req);
     if (ret < 0) {
         conn->ctx = NULL;
-        print_func_errn(__FUNCTION__, __LINE__, "posix_memalign", true,
+        print_func_errn(__func__, __LINE__, "posix_memalign", true,
                         req, ret);
         goto done;
     }
@@ -210,7 +210,7 @@ static int do_mem_setup(struct stuff *conn)
     ret = -posix_memalign((void **)&conn->ring_timestamps, page_size, req);
     if (ret < 0) {
         conn->ring_timestamps = NULL;
-        print_func_errn(__FUNCTION__, __LINE__, "posix_memalign", true,
+        print_func_errn(__func__, __LINE__, "posix_memalign", true,
                         req, ret);
         goto done;
     }
@@ -281,7 +281,7 @@ static int do_server_source(struct stuff *conn)
     /* Do a send-receive for the final handshake. */
     ret = fi_recv(fab_conn->ep, NULL, 0, NULL, 0, &conn->ctx[0]);
     if (ret < 0) {
-        print_func_fi_err(__FUNCTION__, __LINE__, "fi_recv", "", ret);
+        print_func_fi_err(__func__, __LINE__, "fi_recv", "", ret);
         goto done;
     }
     for (rx_avail = 0; !rx_avail;) {
@@ -360,7 +360,7 @@ static int do_client_get(struct stuff *conn)
 
         default:
             print_err("%s,%u:Unexpected state %d\n",
-                      __FUNCTION__, __LINE__, tx_flag_out);
+                      __func__, __LINE__, tx_flag_out);
             ret = -EINVAL;
             goto done;
         }
@@ -375,7 +375,7 @@ static int do_client_get(struct stuff *conn)
                       &conn->ctx[tx_ctx]);
         lat_write += get_cycles(NULL) - now;
         if (ret < 0) {
-            print_func_fi_err(__FUNCTION__, __LINE__, "fi_read", "", ret);
+            print_func_fi_err(__func__, __LINE__, "fi_read", "", ret);
             goto done;
         }
     }
@@ -477,7 +477,7 @@ static int do_server_one(const struct args *oargs, int conn_fd)
         if (ret >= 0 && !sockaddr_valid(&addr, addr_len, true))
             ret = -EAFNOSUPPORT;
         if (ret < 0) {
-            print_func_fi_err(__FUNCTION__, __LINE__, "fi_getname", "", ret);
+            print_func_fi_err(__func__, __LINE__, "fi_getname", "", ret);
             goto done;
         }
         svr_msg.port = addr.sin_port;
@@ -529,31 +529,31 @@ static int do_server(const struct args *args)
                          resp->ai_protocol);
     if (listener_fd == -1) {
         ret = -errno;
-        print_func_err(__FUNCTION__, __LINE__, "socket", "", ret);
+        print_func_err(__func__, __LINE__, "socket", "", ret);
         goto done;
     }
     if (setsockopt(listener_fd, SOL_SOCKET, SO_REUSEADDR,
                    &oflags, sizeof(oflags)) == -1) {
         ret = -errno;
-        print_func_err(__FUNCTION__, __LINE__, "setsockopt", "", ret);
+        print_func_err(__func__, __LINE__, "setsockopt", "", ret);
         goto done;
     }
     /* None of the usual: no polling; no threads; no cloexec; no nonblock. */
     if (bind(listener_fd, resp->ai_addr, resp->ai_addrlen) == -1) {
         ret = -errno;
-        print_func_err(__FUNCTION__, __LINE__, "bind", "", ret);
+        print_func_err(__func__, __LINE__, "bind", "", ret);
         goto done;
     }
     if (listen(listener_fd, BACKLOG) == -1) {
         ret = -errno;
-        print_func_err(__FUNCTION__, __LINE__, "listen", "", ret);
+        print_func_err(__func__, __LINE__, "listen", "", ret);
         goto done;
     }
     for (ret = 0; !ret;) {
         conn_fd = accept(listener_fd, NULL, NULL);
         if (conn_fd == -1) {
             ret = -errno;
-            print_func_err(__FUNCTION__, __LINE__, "accept", "", ret);
+            print_func_err(__func__, __LINE__, "accept", "", ret);
             goto done;
         }
         ret = do_server_one(args, conn_fd);
@@ -770,7 +770,7 @@ int main(int argc, char **argv)
         case 't':
             if (args.tx_avail)
                 usage(false);
-            if (parse_kb_uint64_t(__FUNCTION__, __LINE__, "tx_avail",
+            if (parse_kb_uint64_t(__func__, __LINE__, "tx_avail",
                                   optarg, &args.tx_avail, 0, 1,
                                   SIZE_MAX, PARSE_KB | PARSE_KIB) < 0)
                 usage(false);
@@ -779,7 +779,7 @@ int main(int argc, char **argv)
         case 'w':
             if (args.warmup != SIZE_MAX)
                 usage(false);
-            if (parse_kb_uint64_t(__FUNCTION__, __LINE__, "warmup",
+            if (parse_kb_uint64_t(__func__, __LINE__, "warmup",
                                   optarg, &args.warmup, 0, 0,
                                   SIZE_MAX - 1, PARSE_KB | PARSE_KIB) < 0)
                 usage(false);
@@ -802,13 +802,13 @@ int main(int argc, char **argv)
     } else if (opt == 5) {
         args.service = argv[optind++];
         args.node = argv[optind++];
-        if (parse_kb_uint64_t(__FUNCTION__, __LINE__, "entry_len",
+        if (parse_kb_uint64_t(__func__, __LINE__, "entry_len",
                               argv[optind++], &args.ring_entry_len, 0, 1,
                               SIZE_MAX, PARSE_KB | PARSE_KIB) < 0 ||
-            parse_kb_uint64_t(__FUNCTION__, __LINE__, "ring_entries",
+            parse_kb_uint64_t(__func__, __LINE__, "ring_entries",
                               argv[optind++], &args.ring_entries, 0, 1,
                               SIZE_MAX, PARSE_KB | PARSE_KIB) < 0 ||
-            parse_kb_uint64_t(__FUNCTION__, __LINE__,
+            parse_kb_uint64_t(__func__, __LINE__,
                               (args.seconds_mode ? "seconds" : "op_counts"),
                               argv[optind++], &args.ring_ops, 0, 1,
                               (args.seconds_mode ? 1000000 : SIZE_MAX),

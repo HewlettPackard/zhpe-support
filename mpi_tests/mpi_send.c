@@ -58,12 +58,12 @@ int main(int argc, char **argv)
         goto done;
     }
 
-    if (parse_kb_uint64_t(__FUNCTION__, __LINE__, "loops",
+    if (parse_kb_uint64_t(__func__, __LINE__, "loops",
                           argv[1], &loops, 0, 1, SIZE_MAX,
                           PARSE_KB | PARSE_KIB) < 0)
         goto done;
     if (argc == 3 &&
-        parse_kb_uint64_t(__FUNCTION__, __LINE__, "size",
+        parse_kb_uint64_t(__func__, __LINE__, "size",
                           argv[2], &size, 0, 1, SIZE_MAX,
                           PARSE_KB | PARSE_KIB) < 0)
         goto done;

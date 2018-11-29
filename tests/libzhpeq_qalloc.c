@@ -196,13 +196,13 @@ int main(int argc, char **argv)
 
     rc = zhpeq_init(ZHPEQ_API_VERSION);
     if (rc < 0) {
-        print_func_err(__FUNCTION__, __LINE__, "zhpeq_init", "", rc);
+        print_func_err(__func__, __LINE__, "zhpeq_init", "", rc);
         goto done;
     }
 
     rc = zhpeq_query_attr(&attr);
     if (rc < 0) {
-        print_func_err(__FUNCTION__, __LINE__, "zhpeq_query_attr", "", rc);
+        print_func_err(__func__, __LINE__, "zhpeq_query_attr", "", rc);
         goto done;
     }
     zhpe = (attr.backend == ZHPEQ_BACKEND_ZHPE);
@@ -224,7 +224,7 @@ int main(int argc, char **argv)
         case 's':
             if (seed)
                 usage(false);
-            if (parse_kb_uint64_t(__FUNCTION__, __LINE__, "count",
+            if (parse_kb_uint64_t(__func__, __LINE__, "count",
                                   optarg, &u64, 0, 1, UINT_MAX, 0) < 0)
                 usage(false);
             seed = true;
@@ -241,7 +241,7 @@ int main(int argc, char **argv)
     if (argc < 1 || argc > 2)
         usage(false);
 
-    if (parse_kb_uint64_t(__FUNCTION__, __LINE__, "queues",
+    if (parse_kb_uint64_t(__func__, __LINE__, "queues",
                           argv[optind++], &u64, 0,
                           1, attr.z.max_tx_queues, 0) < 0)
         usage(false);
@@ -249,7 +249,7 @@ int main(int argc, char **argv)
     queues = u64;
 
     if (argc > 1) {
-        if (parse_kb_uint64_t(__FUNCTION__, __LINE__, "qlen",
+        if (parse_kb_uint64_t(__func__, __LINE__, "qlen",
                               argv[optind++], &u64, 0,
                               2, attr.z.max_hw_qlen, 0) < 0)
             usage(false);
@@ -270,7 +270,7 @@ int main(int argc, char **argv)
 
     rc = zhpeq_domain_alloc(&zdom);
     if (rc < 0) {
-        print_func_err(__FUNCTION__, __LINE__, "zhpeq_domain_alloc", "", rc);
+        print_func_err(__func__, __LINE__, "zhpeq_domain_alloc", "", rc);
         goto done;
     }
 
@@ -282,33 +282,33 @@ int main(int argc, char **argv)
     for (h = 0; h < queues; h++) {
         i = shuffle[h];
         if (zq[i])
-            print_err("%s,%u:random_array() broken\n", __FUNCTION__, __LINE__);
+            print_err("%s,%u:random_array() broken\n", __func__, __LINE__);
         cmd_len = (qlen ?: random_range(2, attr.z.max_hw_qlen));
         cmp_len = (qlen ?: random_range(2, attr.z.max_hw_qlen));
         rc = zhpeq_alloc(zdom, cmd_len, cmp_len, i & 0xF, i & 0x1, 0, &zq[i]);
         if (rc < 0) {
-            print_func_errn(__FUNCTION__, __LINE__, "zhpeq_alloc", qlen, false,
+            print_func_errn(__func__, __LINE__, "zhpeq_alloc", qlen, false,
                             rc);
             goto done;
         }
         if (zq[i]->xqinfo.cmdq.ent < cmd_len) {
             print_err("%s,%u:returned cmd_len %u < %lu.\n",
-                      __FUNCTION__, __LINE__, zq[i]->xqinfo.cmdq.ent, cmd_len);
+                      __func__, __LINE__, zq[i]->xqinfo.cmdq.ent, cmd_len);
             goto done;
         }
         if (zq[i]->xqinfo.cmdq.ent & (zq[i]->xqinfo.cmdq.ent - 1)) {
             print_err("%s,%u:returned qlen %u not a power of 2.\n",
-                      __FUNCTION__, __LINE__, zq[i]->xqinfo.cmdq.ent);
+                      __func__, __LINE__, zq[i]->xqinfo.cmdq.ent);
             goto done;
         }
         if (zq[i]->xqinfo.cmplq.ent < cmp_len) {
             print_err("%s,%u:returned cmp_len %u < %lu.\n",
-                      __FUNCTION__, __LINE__, zq[i]->xqinfo.cmplq.ent, cmp_len);
+                      __func__, __LINE__, zq[i]->xqinfo.cmplq.ent, cmp_len);
             goto done;
         }
         if (zq[i]->xqinfo.cmplq.ent & (zq[i]->xqinfo.cmplq.ent - 1)) {
             print_err("%s,%u:returned qlen %u not a power of 2.\n",
-                      __FUNCTION__, __LINE__, zq[i]->xqinfo.cmplq.ent);
+                      __func__, __LINE__, zq[i]->xqinfo.cmplq.ent);
             goto done;
         }
         if (!qcm_ok(zq[i]->qcm, &zq[i]->xqinfo, i, zhpe, true))

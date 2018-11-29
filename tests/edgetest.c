@@ -117,12 +117,12 @@ static void stuff_free(struct stuff *stuff)
 
     if (stuff->zq) {
         if (qcm)
-            zhpeq_print_qkdata(__FUNCTION__, __LINE__, stuff->zdom,
+            zhpeq_print_qkdata(__func__, __LINE__, stuff->zdom,
                                stuff->rem_kdata);
         zhpeq_zmmu_free(stuff->zdom, stuff->rem_kdata);
         buf = (void *)stuff->lcl_kdata->z.vaddr;
         if (qcm)
-            zhpeq_print_qkdata(__FUNCTION__, __LINE__, stuff->zdom,
+            zhpeq_print_qkdata(__func__, __LINE__, stuff->zdom,
                                stuff->lcl_kdata);
         zhpeq_mr_free(stuff->zdom, stuff->lcl_kdata);
         free(buf);
@@ -130,7 +130,7 @@ static void stuff_free(struct stuff *stuff)
     if (stuff->open_idx != -1)
         zhpeq_backend_close(stuff->zq, stuff->open_idx);
     if (qcm)
-        zhpeq_print_qcm(__FUNCTION__, __LINE__, stuff->zq);
+        zhpeq_print_qcm(__func__, __LINE__, stuff->zq);
     zhpeq_free(stuff->zq);
     zhpeq_domain_free(stuff->zdom);
 
@@ -152,7 +152,7 @@ static int do_mem_setup(struct stuff *conn)
     ret = -posix_memalign(&buf, page_size, req);
     if (ret < 0) {
         buf = NULL;
-        print_func_errn(__FUNCTION__, __LINE__, "posix_memalign", req, false,
+        print_func_errn(__func__, __LINE__, "posix_memalign", req, false,
                         ret);
         goto done;
     }
@@ -162,12 +162,12 @@ static int do_mem_setup(struct stuff *conn)
                         ZHPEQ_MR_GET_REMOTE | ZHPEQ_MR_PUT_REMOTE),
                        &conn->lcl_kdata);
     if (ret < 0) {
-        print_func_err(__FUNCTION__, __LINE__, "zhpeq_mr_reg", "", ret);
+        print_func_err(__func__, __LINE__, "zhpeq_mr_reg", "", ret);
         goto done;
     }
     buf = NULL;
     if (args->qcm)
-        zhpeq_print_qkdata(__FUNCTION__, __LINE__, conn->zdom, conn->lcl_kdata);
+        zhpeq_print_qkdata(__func__, __LINE__, conn->zdom, conn->lcl_kdata);
 
  done:
     free(buf);
@@ -184,7 +184,7 @@ static int do_mem_xchg(struct stuff *conn)
     blob_len = sizeof(blob);
     ret = zhpeq_zmmu_export(conn->zdom, conn->lcl_kdata, blob, &blob_len);
     if (ret < 0) {
-        print_func_err(__FUNCTION__, __LINE__, "zhpeq_zmmu_export", "", ret);
+        print_func_err(__func__, __LINE__, "zhpeq_zmmu_export", "", ret);
         goto done;
     }
 
@@ -198,11 +198,11 @@ static int do_mem_xchg(struct stuff *conn)
     ret = zhpeq_zmmu_import(conn->zdom, conn->open_idx, blob, blob_len,
                             false, &conn->rem_kdata);
     if (ret < 0) {
-        print_func_err(__FUNCTION__, __LINE__, "zhpeq_zmmu_import", "", ret);
+        print_func_err(__func__, __LINE__, "zhpeq_zmmu_import", "", ret);
         goto done;
     }
     if (conn->args->qcm)
-        zhpeq_print_qkdata(__FUNCTION__, __LINE__, conn->zdom, conn->rem_kdata);
+        zhpeq_print_qkdata(__func__, __LINE__, conn->zdom, conn->rem_kdata);
 
  done:
 
@@ -219,13 +219,13 @@ static inline int zq_completions(struct zhpeq *zq)
 
     ret = zhpeq_cq_read(zq, zq_comp, ARRAY_SIZE(zq_comp));
     if (ret < 0) {
-        print_func_err(__FUNCTION__, __LINE__, "zhpeq_cq_read", "", ret);
+        print_func_err(__func__, __LINE__, "zhpeq_cq_read", "", ret);
         goto done;
     }
     for (i = ret; i > 0;) {
         i--;
         if (zq_comp[i].z.status != ZHPEQ_CQ_STATUS_SUCCESS) {
-            print_err("%s,%u:I/O error\n", __FUNCTION__, __LINE__);
+            print_err("%s,%u:I/O error\n", __func__, __LINE__);
             ret = -EIO;
             break;
         }
@@ -261,7 +261,7 @@ static int zq_op(struct zhpeq *zq, bool read, void *lcl_buf, uint64_t lcl_zaddr,
 
     ret = zhpeq_reserve(zq, 1);
     if (ret < 0) {
-        print_func_err(__FUNCTION__, __LINE__, "zhpeq_reserve", "", ret);
+        print_func_err(__func__, __LINE__, "zhpeq_reserve", "", ret);
         goto done;
     }
     zq_index = ret;
@@ -285,12 +285,12 @@ static int zq_op(struct zhpeq *zq, bool read, void *lcl_buf, uint64_t lcl_zaddr,
         ret = zhpeq_put(zq, zq_index, false, lcl_zaddr, len, rem_zaddr, NULL);
     }
     if (ret < 0) {
-        print_func_err(__FUNCTION__, __LINE__, op_str, "", ret);
+        print_func_err(__func__, __LINE__, op_str, "", ret);
         goto done;
     }
     ret = zhpeq_commit(zq, zq_index, 1);
     if (ret < 0) {
-        print_func_err(__FUNCTION__, __LINE__, "zhpeq_commit", "", ret);
+        print_func_err(__func__, __LINE__, "zhpeq_commit", "", ret);
         goto done;
     }
     while (!(ret = zq_completions(zq)));
@@ -577,7 +577,7 @@ int do_zq_setup(struct stuff *conn)
 
     ret = zhpeq_query_attr(&zq_attr);
     if (ret < 0) {
-        print_func_err(__FUNCTION__, __LINE__, "zhpeq_query_attr", "", ret);
+        print_func_err(__func__, __LINE__, "zhpeq_query_attr", "", ret);
         goto done;
     }
 
@@ -586,27 +586,27 @@ int do_zq_setup(struct stuff *conn)
     /* Allocate domain. */
     ret = zhpeq_domain_alloc(&conn->zdom);
     if (ret < 0) {
-        print_func_err(__FUNCTION__, __LINE__, "zhpeq_domain_alloc", "", ret);
+        print_func_err(__func__, __LINE__, "zhpeq_domain_alloc", "", ret);
         goto done;
     }
     /* Allocate zqueue. */
     ret = zhpeq_alloc(conn->zdom, ZQ_LEN, ZQ_LEN, 0, 0, 0,  &conn->zq);
     if (ret < 0) {
-        print_func_err(__FUNCTION__, __LINE__, "zhpeq_qalloc", "", ret);
+        print_func_err(__func__, __LINE__, "zhpeq_qalloc", "", ret);
         goto done;
     }
     if (conn->args->qcm)
-        zhpeq_print_qcm(__FUNCTION__, __LINE__, conn->zq);
+        zhpeq_print_qcm(__func__, __LINE__, conn->zq);
     /* Get address index. */
     ret = zhpeq_backend_exchange(conn->zq, conn->sock_fd, &sa, &sa_len);
     if (ret < 0) {
-        print_func_err(__FUNCTION__, __LINE__, "zhpeq_backend_exchange",
+        print_func_err(__func__, __LINE__, "zhpeq_backend_exchange",
                        "", ret);
         goto done;
     }
     ret = zhpeq_backend_open(conn->zq, &sa);
     if (ret < 0) {
-        print_func_err(__FUNCTION__, __LINE__, "zhpeq_backend_open", "", ret);
+        print_func_err(__func__, __LINE__, "zhpeq_backend_open", "", ret);
         goto done;
     }
     conn->open_idx = ret;
@@ -681,31 +681,31 @@ static int do_server(const struct args *args)
                          resp->ai_protocol);
     if (listener_fd == -1) {
         ret = -errno;
-        print_func_err(__FUNCTION__, __LINE__, "socket", "", ret);
+        print_func_err(__func__, __LINE__, "socket", "", ret);
         goto done;
     }
     if (setsockopt(listener_fd, SOL_SOCKET, SO_REUSEADDR,
                    &oflags, sizeof(oflags)) == -1) {
         ret = -errno;
-        print_func_err(__FUNCTION__, __LINE__, "setsockopt", "", ret);
+        print_func_err(__func__, __LINE__, "setsockopt", "", ret);
         goto done;
     }
     /* None of the usual: no polling; no threads; no cloexec; no nonblock. */
     if (bind(listener_fd, resp->ai_addr, resp->ai_addrlen) == -1) {
         ret = -errno;
-        print_func_err(__FUNCTION__, __LINE__, "bind", "", ret);
+        print_func_err(__func__, __LINE__, "bind", "", ret);
         goto done;
     }
     if (listen(listener_fd, BACKLOG) == -1) {
         ret = -errno;
-        print_func_err(__FUNCTION__, __LINE__, "listen", "", ret);
+        print_func_err(__func__, __LINE__, "listen", "", ret);
         goto done;
     }
     for (ret = 0; !ret;) {
         conn_fd = accept(listener_fd, NULL, NULL);
         if (conn_fd == -1) {
             ret = -errno;
-            print_func_err(__FUNCTION__, __LINE__, "accept", "", ret);
+            print_func_err(__func__, __LINE__, "accept", "", ret);
             goto done;
         }
         ret = do_server_one(args, conn_fd);
@@ -827,7 +827,7 @@ int main(int argc, char **argv)
 
     rc = zhpeq_init(ZHPEQ_API_VERSION);
     if (rc < 0) {
-        print_func_err(__FUNCTION__, __LINE__, "zhpeq_init", "", rc);
+        print_func_err(__func__, __LINE__, "zhpeq_init", "", rc);
         goto done;
     }
 
@@ -888,29 +888,29 @@ int main(int argc, char **argv)
     } else if (opt == 6 || opt == 9) {
         args.service = argv[optind++];
         args.node = argv[optind++];
-        if (parse_kb_uint64_t(__FUNCTION__, __LINE__, "buf_len",
+        if (parse_kb_uint64_t(__func__, __LINE__, "buf_len",
                               argv[optind++], &args.buf_len, 0, 1,
                               SIZE_MAX, PARSE_KB | PARSE_KIB) < 0 ||
-            parse_kb_uint64_t(__FUNCTION__, __LINE__, "write_max",
+            parse_kb_uint64_t(__func__, __LINE__, "write_max",
                               argv[optind++], &args.write_max, 0, 1,
                               args.buf_len, PARSE_KB | PARSE_KIB) < 0 ||
-            parse_kb_uint64_t(__FUNCTION__, __LINE__, "cli_off_max",
+            parse_kb_uint64_t(__func__, __LINE__, "cli_off_max",
                               argv[optind++], &args.coff_max, 0, 0,
                               args.buf_len - args.write_max,
                               PARSE_KB | PARSE_KIB) < 0 ||
-            parse_kb_uint64_t(__FUNCTION__, __LINE__, "svr_off_max",
+            parse_kb_uint64_t(__func__, __LINE__, "svr_off_max",
                               argv[optind++], &args.soff_max, 0, 0,
                               args.buf_len - args.write_max,
                               PARSE_KB | PARSE_KIB) < 0)
             usage(false);
         if (opt == 9) {
-            if (parse_kb_uint64_t(__FUNCTION__, __LINE__, "write_min",
+            if (parse_kb_uint64_t(__func__, __LINE__, "write_min",
                                   argv[optind++], &args.write_min, 0, 1,
                                   args.write_max, PARSE_KB | PARSE_KIB) < 0 ||
-                parse_kb_uint64_t(__FUNCTION__, __LINE__, "cli_off_min",
+                parse_kb_uint64_t(__func__, __LINE__, "cli_off_min",
                                   argv[optind++], &args.coff_min, 0, 0,
                                   args.coff_max, PARSE_KB | PARSE_KIB) < 0 ||
-                parse_kb_uint64_t(__FUNCTION__, __LINE__, "svr_off_min",
+                parse_kb_uint64_t(__func__, __LINE__, "svr_off_min",
                                   argv[optind++], &args.soff_min, 0, 0,
                                   args.soff_max, PARSE_KB | PARSE_KIB) < 0)
                 usage(false);

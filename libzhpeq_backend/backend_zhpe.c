@@ -66,20 +66,20 @@ static int driver_cmd(union zhpe_op *op, size_t req_len, size_t rsp_len)
     mutex_lock(&dev_mutex);
 
     res = write(dev_fd, op, req_len);
-    ret = check_func_io(__FUNCTION__, __LINE__, "write", DEV_NAME,
+    ret = check_func_io(__func__, __LINE__, "write", DEV_NAME,
                         req_len, res, 0);
     if (ret < 0)
         goto done;
 
     res = read(dev_fd, op, rsp_len);
-    ret = check_func_io(__FUNCTION__, __LINE__, "read", DEV_NAME,
+    ret = check_func_io(__func__, __LINE__, "read", DEV_NAME,
                         rsp_len, res, 0);
     if (ret < 0)
         goto done;
     ret = -EIO;
     if (res < sizeof(op->hdr)) {
         print_err("%s,%u:Unexpected short read %lu\n",
-                  __FUNCTION__, __LINE__, res);
+                  __func__, __LINE__, res);
         goto done;
     }
     ret = -EINVAL;
@@ -92,7 +92,7 @@ static int driver_cmd(union zhpe_op *op, size_t req_len, size_t rsp_len)
     ret = op->hdr.status;
     if (ret < 0)
         print_err("%s,%u:zhpe command 0x%02x returned error %d:%s\n",
-                  __FUNCTION__, __LINE__, op->hdr.opcode,
+                  __func__, __LINE__, op->hdr.opcode,
                   -ret, strerror(-ret));
 
  done:
@@ -111,7 +111,7 @@ static int zhpe_lib_init(struct zhpeq_attr *attr)
     dev_fd = open(DEV_NAME, O_RDWR);
     if (dev_fd == -1) {
         ret = -errno;
-        print_func_err(__FUNCTION__, __LINE__, "open", DEV_NAME, ret);
+        print_func_err(__func__, __LINE__, "open", DEV_NAME, ret);
         goto done;
     }
 

@@ -174,7 +174,7 @@ static int do_mem_setup(struct stuff *conn)
     ret = -posix_memalign(&conn->tx_addr, page_size, req);
     if (ret < 0) {
         conn->tx_addr = NULL;
-        print_func_errn(__FUNCTION__, __LINE__, "posix_memalign", req, false,
+        print_func_errn(__func__, __LINE__, "posix_memalign", req, false,
                         ret);
         goto done;
     }
@@ -186,13 +186,13 @@ static int do_mem_setup(struct stuff *conn)
                         ZHPEQ_MR_GET_REMOTE | ZHPEQ_MR_PUT_REMOTE),
                        &conn->zq_local_kdata);
     if (ret < 0) {
-        print_func_err(__FUNCTION__, __LINE__, "zhpeq_mr_reg", "", ret);
+        print_func_err(__func__, __LINE__, "zhpeq_mr_reg", "", ret);
         goto done;
     }
     ret = zhpeq_lcl_key_access(conn->zq_local_kdata, conn->tx_addr,
                                req, 0, &conn->zq_local_tx_zaddr);
     if (ret < 0) {
-        print_func_err(__FUNCTION__, __LINE__, "zhpeq_lcl_key_access",
+        print_func_err(__func__, __LINE__, "zhpeq_lcl_key_access",
                        "", ret);
         goto done;
     }
@@ -201,7 +201,7 @@ static int do_mem_setup(struct stuff *conn)
     ret = -posix_memalign((void **)&conn->ring_timestamps, page_size, req);
     if (ret < 0) {
         conn->ring_timestamps = NULL;
-        print_func_errn(__FUNCTION__, __LINE__, "posix_memalign", true,
+        print_func_errn(__func__, __LINE__, "posix_memalign", true,
                         req, ret);
         goto done;
     }
@@ -214,7 +214,7 @@ static int do_mem_setup(struct stuff *conn)
     ret = -posix_memalign((void **)&conn->rx_rcv, page_size, req);
     if (ret < 0) {
         conn->rx_rcv = NULL;
-        print_func_errn(__FUNCTION__, __LINE__, "posix_memalign", true,
+        print_func_errn(__func__, __LINE__, "posix_memalign", true,
                         req, ret);
         goto done;
     }
@@ -234,7 +234,7 @@ static int do_mem_xchg(struct stuff *conn)
     blob_len = sizeof(blob);
     ret = zhpeq_zmmu_export(conn->zdom, conn->zq_local_kdata, blob, &blob_len);
     if (ret < 0) {
-        print_func_err(__FUNCTION__, __LINE__, "zhpeq_zmmu_export", "", ret);
+        print_func_err(__func__, __LINE__, "zhpeq_zmmu_export", "", ret);
         goto done;
     }
 
@@ -258,7 +258,7 @@ static int do_mem_xchg(struct stuff *conn)
     ret = zhpeq_zmmu_import(conn->zdom, conn->open_idx, blob, blob_len,
                             false, &conn->zq_remote_kdata);
     if (ret < 0) {
-        print_func_err(__FUNCTION__, __LINE__, "zhpeq_zmmu_import", "", ret);
+        print_func_err(__func__, __LINE__, "zhpeq_zmmu_import", "", ret);
         goto done;
     }
 
@@ -266,7 +266,7 @@ static int do_mem_xchg(struct stuff *conn)
                                mem_msg.zq_remote_rx_addr, conn->ring_end_off,
                                0, &conn->zq_remote_rx_zaddr);
     if (ret < 0) {
-        print_func_err(__FUNCTION__, __LINE__, "zhpeq_rem_key_access",
+        print_func_err(__func__, __LINE__, "zhpeq_rem_key_access",
                        "", ret);
         goto done;
     }
@@ -284,12 +284,12 @@ static inline int zq_completions(struct zhpeq *zq)
 
     ret = zhpeq_cq_read(zq, zq_comp, ARRAY_SIZE(zq_comp));
     if (ret < 0) {
-        print_func_err(__FUNCTION__, __LINE__, "zhpeq_cq_read", "", ret);
+        print_func_err(__func__, __LINE__, "zhpeq_cq_read", "", ret);
         goto done;
     }
     for (i = 0; i < ret; i++) {
         if (zq_comp[i].z.status != ZHPEQ_CQ_STATUS_SUCCESS) {
-            print_err("%s,%u:I/O error\n", __FUNCTION__, __LINE__);
+            print_err("%s,%u:I/O error\n", __func__, __LINE__);
             ret = -EIO;
             break;
         }
@@ -346,18 +346,18 @@ static int zq_write(struct zhpeq *zq, bool fence, uint64_t lcl_zaddr,
 
     ret = zhpeq_reserve(zq, 1);
     if (ret < 0) {
-        print_func_err(__FUNCTION__, __LINE__, "zhpeq_reserve", "", ret);
+        print_func_err(__func__, __LINE__, "zhpeq_reserve", "", ret);
         goto done;
     }
     zq_index = ret;
     ret = zhpeq_put(zq, zq_index, fence, lcl_zaddr, len, rem_zaddr, NULL);
     if (ret < 0) {
-        print_func_err(__FUNCTION__, __LINE__, "zhpeq_put", "", ret);
+        print_func_err(__func__, __LINE__, "zhpeq_put", "", ret);
         goto done;
     }
     ret = zhpeq_commit(zq, zq_index, 1);
     if (ret < 0) {
-        print_func_err(__FUNCTION__, __LINE__, "zhpeq_commit", "", ret);
+        print_func_err(__func__, __LINE__, "zhpeq_commit", "", ret);
         goto done;
     }
 
@@ -564,7 +564,7 @@ static int do_client_pong(struct stuff *conn)
 
             default:
                 print_err("%s,%u:Unexpected state %d\n",
-                          __FUNCTION__, __LINE__, tx_flag_out);
+                          __func__, __LINE__, tx_flag_out);
                 ret = -EINVAL;
                 goto done;
             }
@@ -685,7 +685,7 @@ static int do_client_unidir(struct stuff *conn)
 
         default:
             print_err("%s,%u:Unexpected state %d\n",
-                      __FUNCTION__, __LINE__, tx_flag_out);
+                      __func__, __LINE__, tx_flag_out);
             ret = -EINVAL;
             goto done;
         }
@@ -734,7 +734,7 @@ int do_zq_setup(struct stuff *conn)
 
     ret = zhpeq_query_attr(&zq_attr);
     if (ret < 0) {
-        print_func_err(__FUNCTION__, __LINE__, "zhpeq_query_attr", "", ret);
+        print_func_err(__func__, __LINE__, "zhpeq_query_attr", "", ret);
         goto done;
     }
 
@@ -749,26 +749,26 @@ int do_zq_setup(struct stuff *conn)
     /* Allocate domain. */
     ret = zhpeq_domain_alloc(&conn->zdom);
     if (ret < 0) {
-        print_func_err(__FUNCTION__, __LINE__, "zhpeq_domain_alloc", "", ret);
+        print_func_err(__func__, __LINE__, "zhpeq_domain_alloc", "", ret);
         goto done;
     }
     /* Allocate zqueue. */
     ret = zhpeq_alloc(conn->zdom, conn->tx_avail + 1, conn->tx_avail + 1,
                       0, 0, 0,  &conn->zq);
     if (ret < 0) {
-        print_func_err(__FUNCTION__, __LINE__, "zhpeq_qalloc", "", ret);
+        print_func_err(__func__, __LINE__, "zhpeq_qalloc", "", ret);
         goto done;
     }
     /* Get address index. */
     ret = zhpeq_backend_exchange(conn->zq, conn->sock_fd, &sa, &sa_len);
     if (ret < 0) {
-        print_func_err(__FUNCTION__, __LINE__, "zhpeq_backend_exchange",
+        print_func_err(__func__, __LINE__, "zhpeq_backend_exchange",
                        "", ret);
         goto done;
     }
     ret = zhpeq_backend_open(conn->zq, &sa);
     if (ret < 0) {
-        print_func_err(__FUNCTION__, __LINE__, "zhpeq_backend_open", "", ret);
+        print_func_err(__func__, __LINE__, "zhpeq_backend_open", "", ret);
         goto done;
     }
     conn->open_idx = ret;
@@ -848,31 +848,31 @@ static int do_server(const struct args *args)
                          resp->ai_protocol);
     if (listener_fd == -1) {
         ret = -errno;
-        print_func_err(__FUNCTION__, __LINE__, "socket", "", ret);
+        print_func_err(__func__, __LINE__, "socket", "", ret);
         goto done;
     }
     if (setsockopt(listener_fd, SOL_SOCKET, SO_REUSEADDR,
                    &oflags, sizeof(oflags)) == -1) {
         ret = -errno;
-        print_func_err(__FUNCTION__, __LINE__, "setsockopt", "", ret);
+        print_func_err(__func__, __LINE__, "setsockopt", "", ret);
         goto done;
     }
     /* None of the usual: no polling; no threads; no cloexec; no nonblock. */
     if (bind(listener_fd, resp->ai_addr, resp->ai_addrlen) == -1) {
         ret = -errno;
-        print_func_err(__FUNCTION__, __LINE__, "bind", "", ret);
+        print_func_err(__func__, __LINE__, "bind", "", ret);
         goto done;
     }
     if (listen(listener_fd, BACKLOG) == -1) {
         ret = -errno;
-        print_func_err(__FUNCTION__, __LINE__, "listen", "", ret);
+        print_func_err(__func__, __LINE__, "listen", "", ret);
         goto done;
     }
     for (ret = 0; !ret;) {
         conn_fd = accept(listener_fd, NULL, NULL);
         if (conn_fd == -1) {
             ret = -errno;
-            print_func_err(__FUNCTION__, __LINE__, "accept", "", ret);
+            print_func_err(__func__, __LINE__, "accept", "", ret);
             goto done;
         }
         ret = do_server_one(args, conn_fd);
@@ -1000,7 +1000,7 @@ int main(int argc, char **argv)
 
     rc = zhpeq_init(ZHPEQ_API_VERSION);
     if (rc < 0) {
-        print_func_err(__FUNCTION__, __LINE__, "zhpeq_init", "", rc);
+        print_func_err(__func__, __LINE__, "zhpeq_init", "", rc);
         goto done;
     }
 
@@ -1041,7 +1041,7 @@ int main(int argc, char **argv)
         case 't':
             if (args.tx_avail)
                 usage(false);
-            if (parse_kb_uint64_t(__FUNCTION__, __LINE__, "tx_avail",
+            if (parse_kb_uint64_t(__func__, __LINE__, "tx_avail",
                                   optarg, &args.tx_avail, 0, 1,
                                   SIZE_MAX, PARSE_KB | PARSE_KIB) < 0)
                 usage(false);
@@ -1056,7 +1056,7 @@ int main(int argc, char **argv)
         case 'w':
             if (args.warmup != SIZE_MAX)
                 usage(false);
-            if (parse_kb_uint64_t(__FUNCTION__, __LINE__, "warmup",
+            if (parse_kb_uint64_t(__func__, __LINE__, "warmup",
                                   optarg, &args.warmup, 0, 0,
                                   SIZE_MAX - 1, PARSE_KB | PARSE_KIB) < 0)
                 usage(false);
@@ -1082,13 +1082,13 @@ int main(int argc, char **argv)
     } else if (opt == 5) {
         args.service = argv[optind++];
         args.node = argv[optind++];
-        if (parse_kb_uint64_t(__FUNCTION__, __LINE__, "entry_len",
+        if (parse_kb_uint64_t(__func__, __LINE__, "entry_len",
                               argv[optind++], &args.ring_entry_len, 0, 1,
                               SIZE_MAX, PARSE_KB | PARSE_KIB) < 0 ||
-            parse_kb_uint64_t(__FUNCTION__, __LINE__, "ring_entries",
+            parse_kb_uint64_t(__func__, __LINE__, "ring_entries",
                               argv[optind++], &args.ring_entries, 0, 1,
                               SIZE_MAX, PARSE_KB | PARSE_KIB) < 0 ||
-            parse_kb_uint64_t(__FUNCTION__, __LINE__,
+            parse_kb_uint64_t(__func__, __LINE__,
                               (args.seconds_mode ? "seconds" : "op_counts"),
                               argv[optind++], &args.ring_ops, 0, 1,
                               (args.seconds_mode ? 1000000 : SIZE_MAX),

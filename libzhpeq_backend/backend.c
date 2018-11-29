@@ -45,7 +45,7 @@ static void __attribute__((constructor)) backend_lib_init(void)
     if (fd == -1) {
         err = errno;
         print_dbg("%s,%u:open(%s) returned error %d:%s\n",
-                  __FUNCTION__, __LINE__, DEV_NAME, err, strerror(err));
+                  __func__, __LINE__, DEV_NAME, err, strerror(err));
     }
 
     zhpeq_backend_libfabric_init(fd);

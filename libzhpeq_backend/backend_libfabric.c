@@ -264,7 +264,7 @@ static int lfab_eng_work_queue(struct engine *eng, zhpeu_worker worker,
             if (ret >= 0)
                 eng->state = ENGINE_RUNNING;
             else
-                print_func_err(__FUNCTION__, __LINE__, "pthread_create",
+                print_func_err(__func__, __LINE__, "pthread_create",
                                "eng", ret);
             break;
 
@@ -643,7 +643,7 @@ static bool worker_qalloc_post(struct zhpeu_work_head *head,
                     FI_READ | FI_WRITE, 0, 0, 0, &fab_plus->results_mr, NULL);
     if (ret < 0) {
         fab_plus->results_mr = NULL;
-        print_func_fi_err(__FUNCTION__, __LINE__, "fi_mr_req", "", ret);
+        print_func_fi_err(__func__, __LINE__, "fi_mr_req", "", ret);
         goto done;
     }
     fab_plus->results_desc = fi_mr_desc(fab_plus->results_mr);
@@ -707,7 +707,7 @@ static int lfab_open(struct zhpeq *zq, void *sa)
     ret = data.fi_addr;
     if (data.fi_addr > AV_MAX) {
         print_err("%s,%u:av %lu exceeds AV_MAX %u\n",
-                  __FUNCTION__, __LINE__, data.fi_addr, AV_MAX);
+                  __func__, __LINE__, data.fi_addr, AV_MAX);
         (void)lfab_eng_work_queue(&eng, worker_av_op_remove, &data);
         ret = -ENOSPC;
     }
@@ -881,7 +881,7 @@ static bool lfab_zq(struct stuff *conn)
                     cleanup_eagain(conn, context);
                     goto eagain;
                 }
-                print_func_fi_err(__FUNCTION__, __LINE__,
+                print_func_fi_err(__func__, __LINE__,
                                   "fi_writemsg", "", rc);
                 cq_write(context, rc);
                 break;
@@ -915,7 +915,7 @@ static bool lfab_zq(struct stuff *conn)
                     cleanup_eagain(conn, context);
                     goto eagain;
                 }
-                print_func_fi_err(__FUNCTION__, __LINE__,
+                print_func_fi_err(__func__, __LINE__,
                                   "fi_readmsg", "", rc);
                 cq_write(context, rc);
                 break;
@@ -946,7 +946,7 @@ static bool lfab_zq(struct stuff *conn)
                     cleanup_eagain(conn, context);
                     goto eagain;
                 }
-                print_func_fi_err(__FUNCTION__, __LINE__,
+                print_func_fi_err(__func__, __LINE__,
                                   "fi_writemsg", "", rc);
                 cq_write(context, rc);
                 break;
@@ -976,7 +976,7 @@ static bool lfab_zq(struct stuff *conn)
                     cleanup_eagain(conn, context);
                     goto eagain;
                 }
-                print_func_fi_err(__FUNCTION__, __LINE__,
+                print_func_fi_err(__func__, __LINE__,
                                   "fi_readmsg", "", rc);
                 cq_write(context, rc);
                 break;
@@ -1033,7 +1033,7 @@ static bool lfab_zq(struct stuff *conn)
                     cleanup_eagain(conn, context);
                     goto eagain;
                 }
-                print_func_fi_errn(__FUNCTION__, __LINE__,
+                print_func_fi_errn(__func__, __LINE__,
                                    "fi_atomicmsg", conn->atm_msg.op, true, rc);
                 cq_write(context, rc);
                 break;
@@ -1043,7 +1043,7 @@ static bool lfab_zq(struct stuff *conn)
         default:
             cq_write(context, -EINVAL);
             print_err("%s,%u:Unexpected opcode 0x%02x\n",
-                      __FUNCTION__, __LINE__, wqe->hdr.opcode);
+                      __func__, __LINE__, wqe->hdr.opcode);
             goto done;
         }
     }

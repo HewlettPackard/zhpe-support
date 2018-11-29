@@ -99,7 +99,7 @@ int main(int argc, char **argv)
 
     rc = zhpeq_init(ZHPEQ_API_VERSION);
     if (rc < 0) {
-        print_func_err(__FUNCTION__, __LINE__, "zhpeq_init", "", rc);
+        print_func_err(__func__, __LINE__, "zhpeq_init", "", rc);
         goto done;
     }
 
@@ -109,15 +109,15 @@ int main(int argc, char **argv)
     if (argc != 4)
         usage(false);
 
-    if (parse_kb_uint64_t(__FUNCTION__, __LINE__,
+    if (parse_kb_uint64_t(__func__, __LINE__,
                           "min_size", argv[1], &min_size,
                           0, 1, SIZE_MAX, PARSE_KIB) < 0)
         usage(false);
-    if (parse_kb_uint64_t(__FUNCTION__, __LINE__,
+    if (parse_kb_uint64_t(__func__, __LINE__,
                           "max_size", argv[2], &max_size,
                           0, 1, SIZE_MAX, PARSE_KIB) < 0)
         usage(false);
-    if (parse_kb_uint64_t(__FUNCTION__, __LINE__,
+    if (parse_kb_uint64_t(__func__, __LINE__,
                           "ops", argv[3], &ops,
                           0, 1, SIZE_MAX, PARSE_KIB | PARSE_KB) < 0)
         usage(false);
@@ -134,7 +134,7 @@ int main(int argc, char **argv)
 
     rc = zhpeq_domain_alloc(&zdom);
     if (rc < 0) {
-        print_func_err(__FUNCTION__, __LINE__, "zhpeq_domain_alloc", "", rc);
+        print_func_err(__func__, __LINE__, "zhpeq_domain_alloc", "", rc);
         goto done;
     }
 
@@ -146,17 +146,17 @@ int main(int argc, char **argv)
                MAP_ANONYMOUS | MAP_SHARED, -1, 0);
     if (map == MAP_FAILED) {
         map = NULL;
-        print_func_err(__FUNCTION__, __LINE__, "mmap", "", errno);
+        print_func_err(__func__, __LINE__, "mmap", "", errno);
         goto done;
     }
     delta = (void *)(map + req);
     /* mlock and munlock to fault everything in */
     if (mlock(map, req + delta_req) == -1) {
-        print_func_err(__FUNCTION__, __LINE__, "mlock", "", errno);
+        print_func_err(__func__, __LINE__, "mlock", "", errno);
         goto done;
     }
     if (munlock(map, req + delta_req) == -1) {
-        print_func_err(__FUNCTION__, __LINE__, "munlock", "", errno);
+        print_func_err(__func__, __LINE__, "munlock", "", errno);
         goto done;
     }
 
@@ -170,14 +170,14 @@ int main(int argc, char **argv)
                                ZHPEQ_MR_GET_REMOTE | ZHPEQ_MR_PUT_REMOTE),
                               &kdata);
             if (rc < 0) {
-                print_func_err(__FUNCTION__, __LINE__, "zhpeq_mr_reg", "", rc);
+                print_func_err(__func__, __LINE__, "zhpeq_mr_reg", "", rc);
                 goto done;
             }
             delta[j] = get_cycles(NULL) - start;
             start = get_cycles(NULL);
             rc = zhpeq_mr_free(zdom, kdata);
             if (rc < 0) {
-                print_func_err(__FUNCTION__, __LINE__, "zhpeq_mr_free",
+                print_func_err(__func__, __LINE__, "zhpeq_mr_free",
                                "", rc);
                 goto done;
             }
@@ -186,13 +186,13 @@ int main(int argc, char **argv)
         for (i = 0, j = 0; i < ops; i++, j += COUNTERS) {
             start = get_cycles(NULL);
             if (mlock(map, size) == -1) {
-                print_func_err(__FUNCTION__, __LINE__, "mlock", "", errno);
+                print_func_err(__func__, __LINE__, "mlock", "", errno);
                 goto done;
             }
             delta[j + 2] = get_cycles(NULL) - start;
             start = get_cycles(NULL);
             if (munlock(map, size) == -1) {
-                print_func_err(__FUNCTION__, __LINE__, "munlock", "", errno);
+                print_func_err(__func__, __LINE__, "munlock", "", errno);
                 goto done;
             }
             delta[j + 3] = get_cycles(NULL) - start;

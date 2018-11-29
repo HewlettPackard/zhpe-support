@@ -59,13 +59,13 @@ int main(int argc, char **argv)
 
     rc = zhpeq_init(ZHPEQ_API_VERSION);
     if (rc < 0) {
-        print_func_err(__FUNCTION__, __LINE__, "zhpeq_init", "", rc);
+        print_func_err(__func__, __LINE__, "zhpeq_init", "", rc);
         goto done;
     }
 
     rc = zhpeq_query_attr(&attr);
     if (rc < 0) {
-        print_func_err(__FUNCTION__, __LINE__, "zhpeq_query_attr", "", rc);
+        print_func_err(__func__, __LINE__, "zhpeq_query_attr", "", rc);
         goto done;
     }
     printf("%s:max_tx_queues : %u\n", appname, attr.z.max_tx_queues);

@@ -642,7 +642,7 @@ int zhpeq_mr_reg(struct zhpeq_dom *zdom, const void *buf, size_t len,
     ret = b_ops->mr_reg(zdom, buf, len, access, qkdata_out);
 #if QKDATA_DUMP
     if (ret >= 0)
-        zhpeq_print_qkdata(__FUNCTION__, __LINE__, zdom, *qkdata_out);
+        zhpeq_print_qkdata(__func__, __LINE__, zdom, *qkdata_out);
 #endif
 
  done:
@@ -660,7 +660,7 @@ int zhpeq_mr_free(struct zhpeq_dom *zdom, struct zhpeq_key_data *qkdata)
         goto done;
 
 #if QKDATA_DUMP
-    zhpeq_print_qkdata(__FUNCTION__, __LINE__, zdom, qkdata);
+    zhpeq_print_qkdata(__func__, __LINE__, zdom, qkdata);
 #endif
     ret = b_ops->mr_free(zdom, qkdata);
 
@@ -684,7 +684,7 @@ int zhpeq_zmmu_import(struct zhpeq_dom *zdom, int open_idx, const void *blob,
                              qkdata_out);
 #if QKDATA_DUMP
     if (ret >= 0)
-        zhpeq_print_qkdata(__FUNCTION__, __LINE__, zdom, *qkdata_out);
+        zhpeq_print_qkdata(__func__, __LINE__, zdom, *qkdata_out);
 #endif
 
  done:
@@ -709,7 +709,7 @@ int zhpeq_zmmu_fam_import(struct zhpeq_dom *zdom, int open_idx,
 
 #if QKDATA_DUMP
     if (ret >= 0)
-        zhpeq_print_qkdata(__FUNCTION__, __LINE__, zdom, *qkdata_out);
+        zhpeq_print_qkdata(__func__, __LINE__, zdom, *qkdata_out);
 #endif
 
  done:
@@ -730,7 +730,7 @@ int zhpeq_zmmu_export(struct zhpeq_dom *zdom,
         goto done;
 
 #if QKDATA_DUMP
-    zhpeq_print_qkdata(__FUNCTION__, __LINE__, zdom, qkdata);
+    zhpeq_print_qkdata(__func__, __LINE__, zdom, qkdata);
 #endif
     ret = b_ops->zmmu_export(zdom, qkdata, blob, blob_len);
 
@@ -749,7 +749,7 @@ int zhpeq_zmmu_free(struct zhpeq_dom *zdom, struct zhpeq_key_data *qkdata)
         goto done;
 
 #if 0
-    zhpeq_print_qkdata(__FUNCTION__, __LINE__, zdom, qkdata);
+    zhpeq_print_qkdata(__func__, __LINE__, zdom, qkdata);
 #endif
     ret = b_ops->zmmu_free(zdom, qkdata);
 
@@ -876,7 +876,7 @@ void zhpeq_print_qcm(const char *func, uint line, const struct zhpeq *zq)
 {
     uint                i;
 
-    printf("%s,%u:%s %p\n", func, line, __FUNCTION__, zq->qcm);
+    printf("%s,%u:%s %p\n", func, line, __func__, zq->qcm);
     for (i = 0x00; i < 0x30; i += 0x08)
         print_qcm1(func, line, zq->qcm, i);
     for (i = 0x40; i < 0x108; i += 0x40)

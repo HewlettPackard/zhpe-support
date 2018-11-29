@@ -181,7 +181,7 @@ static int compare_uuid(const void *key1, const void *key2)
 
 static int uuid_free(uuid_t *uu)
 {
-    int                 ret;
+    int                 ret = 0;
     union zhpe_op       op;
     union zhpe_req      *req = &op.req;
     union zhpe_rsp      *rsp = &op.rsp;

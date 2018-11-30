@@ -135,7 +135,7 @@ static inline int zhpeq_rem_key_access(struct zhpeq_key_data *qkdata,
 {
     struct zhpe_key_data *kdata = &qkdata->z;
 
-    if (!kdata)
+    if (!qkdata)
         return -EINVAL;
     if (kdata->access & ZHPEQ_MR_KEY_ZERO_OFF)
         start += kdata->vaddr;
@@ -154,7 +154,7 @@ static inline int zhpeq_lcl_key_access(struct zhpeq_key_data *qkdata,
     uintptr_t           start = (uintptr_t)buf;
     struct zhpe_key_data *kdata = &qkdata->z;
 
-    if (!kdata)
+    if (!qkdata)
         return -EINVAL;
     if ((qaccess & kdata->access) != qaccess ||
         start < kdata->vaddr || start + len > kdata->vaddr + kdata->len)

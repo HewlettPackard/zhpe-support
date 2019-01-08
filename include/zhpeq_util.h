@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2018 Hewlett Packard Enterprise Development LP.
+ * Copyright (C) 2017-2019 Hewlett Packard Enterprise Development LP.
  * All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -97,6 +97,8 @@ do {                                                            \
         (_fd) = -1;                                             \
     }                                                           \
 } while (0)
+
+#define arithcmp(_a, _b)        ((_a) < (_b) ? -1 : ((_a) > (_b) ? 1 : 0))
 
 typedef long long       llong;
 typedef unsigned long long ullong;

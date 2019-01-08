@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2018 Hewlett Packard Enterprise Development LP.
+ * Copyright (C) 2017-2019 Hewlett Packard Enterprise Development LP.
  * All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -897,12 +897,7 @@ static int compare_fi(const void *key1, const void *key2)
     fi_addr_t           fi_addr1 = *(const fi_addr_t *)key1;
     fi_addr_t           fi_addr2 = *(const fi_addr_t *)key2;
 
-    if (fi_addr1 < fi_addr2)
-        return -1;
-    if (fi_addr1 > fi_addr2)
-        return 1;
-
-    return 0;
+    return arithcmp(fi_addr1, fi_addr2);
 }
 
 int _fab_av_insert(const char *callf, uint line, struct fab_dom *dom,

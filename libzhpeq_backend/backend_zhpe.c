@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2018 Hewlett Packard Enterprise Development LP.
+ * Copyright (C) 2017-2019 Hewlett Packard Enterprise Development LP.
  * All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -44,11 +44,17 @@
 static int              dev_fd = -1;
 static pthread_mutex_t  dev_mutex = PTHREAD_MUTEX_INITIALIZER;
 static void             *dev_uuid_tree;
+static void             *dev_mr_tree;
 
 struct dev_uuid_tree_entry {
     uuid_t              uuid;
     int32_t             use_count;
     bool                fam;
+};
+
+struct dev_mr_tree_entry {
+    struct zhpeq_key_data *qkdata;
+    int32_t             use_count;
 };
 
 static struct zhpe_global_shared_data *shared_global;
@@ -419,6 +425,23 @@ static int zhpe_wq_signal(struct zhpeq *zq)
     return 0;
 }
 
+static int compare_qkdata(const void *key1, const void *key2)
+{
+    int                 ret;
+    const struct zhpeq_key_data *qk1 = *(const struct zhpeq_key_data **)key1;
+    const struct zhpeq_key_data *qk2 = *(const struct zhpeq_key_data **)key2;
+
+    ret = arithcmp(qk1->z.vaddr, qk2->z.vaddr);
+    if (ret)
+        return ret;
+    ret = arithcmp(qk1->z.len, qk2->z.len);
+    if (ret)
+        return ret;
+    ret = arithcmp(qk1->z.access,  qk2->z.access);
+
+    return ret;
+}
+
 static int zhpe_mr_reg(struct zhpeq_dom *zdom,
                        const void *buf, size_t len,
                        uint32_t access, struct zhpeq_key_data **qkdata_out)
@@ -428,33 +451,59 @@ static int zhpe_mr_reg(struct zhpeq_dom *zdom,
     union zhpe_op       op;
     union zhpe_req      *req = &op.req;
     union zhpe_rsp      *rsp = &op.rsp;
+    void                **tval;
+    struct dev_mr_tree_entry *mre;
 
     desc = malloc(sizeof(*desc));
     if (!desc)
         goto done;
-    req->hdr.opcode = ZHPE_OP_MR_REG;
-    req->mr_reg.vaddr = (uintptr_t)buf;
-    req->mr_reg.len = len;
     desc->access_plus = access | ZHPE_MR_INDIVIDUAL;
-    req->mr_reg.access = desc->access_plus;
-    ret = driver_cmd(&op, sizeof(req->mr_reg), sizeof(rsp->mr_reg));
-    if (ret < 0)
-        goto done;
-
     desc->hdr.magic = ZHPE_MAGIC;
     desc->hdr.version = ZHPEQ_MR_V1;
     desc->qkdata.z.vaddr = (uintptr_t)buf;
     desc->qkdata.laddr = (uintptr_t)buf;
     desc->qkdata.z.len = len;
-    desc->qkdata.z.zaddr = rsp->mr_reg.rsp_zaddr;
     desc->qkdata.z.access = access;
     *qkdata_out = &desc->qkdata;
 
-    ret = 0;
+    mutex_lock(&dev_mutex);
+    tval = tsearch(qkdata_out, &dev_mr_tree, compare_qkdata);
+    if (tval) {
+        mre = *tval;
+        if (mre != (void *)qkdata_out) {
+            *qkdata_out = mre->qkdata;
+            mre->use_count++;
+            free(desc);
+            ret = 0;
+        } else {
+            mre = malloc(sizeof(*mre));
+            if (mre) {
+                *tval = mre;
+                req->hdr.opcode = ZHPE_OP_MR_REG;
+                req->mr_reg.vaddr = (uintptr_t)buf;
+                req->mr_reg.len = len;
+                req->mr_reg.access = desc->access_plus;
+                ret = __driver_cmd(&op, sizeof(req->mr_reg),
+                                   sizeof(rsp->mr_reg));
+            }
+            if (ret >= 0) {
+                desc->qkdata.z.zaddr = rsp->mr_reg.rsp_zaddr;
+                mre->qkdata = *qkdata_out;
+                mre->use_count = 1;
+            } else {
+                (void)tdelete(qkdata_out, &dev_mr_tree, compare_qkdata);
+                free(mre);
+            }
+        }
+    } else
+        print_func_err(__func__, __LINE__, "tsearch", "", ret);
+    mutex_unlock(&dev_mutex);
 
  done:
-    if (ret < 0)
+    if (ret < 0) {
         free(desc);
+        *qkdata_out = NULL;
+    }
 
     return ret;
 }
@@ -468,18 +517,32 @@ static int zhpe_mr_free(struct zhpeq_dom *zdom, struct zhpeq_key_data *qkdata)
     union zhpe_op       op;
     union zhpe_req      *req = &op.req;
     union zhpe_rsp      *rsp = &op.rsp;
+    void                **tval;
+    struct dev_mr_tree_entry *mre;
 
 
     if (desc->hdr.magic != ZHPE_MAGIC || desc->hdr.version != ZHPEQ_MR_V1)
         goto done;
 
-    req->hdr.opcode = ZHPE_OP_MR_FREE;
-    req->mr_free.vaddr = desc->qkdata.z.vaddr;
-    req->mr_free.len = desc->qkdata.z.len;
-    req->mr_free.access = desc->access_plus;
-    req->mr_free.rsp_zaddr = desc->qkdata.z.zaddr;
-    ret = driver_cmd(&op, sizeof(req->mr_free), sizeof(rsp->mr_free));
-    free(desc);
+    mutex_lock(&dev_mutex);
+    tval = tfind(&qkdata, &dev_mr_tree, compare_qkdata);
+    if (tval) {
+        ret = 0;
+        mre = *tval;
+        if (!--(mre->use_count)) {
+            (void)tdelete(&qkdata, &dev_mr_tree, compare_qkdata);
+            req->hdr.opcode = ZHPE_OP_MR_FREE;
+            req->mr_free.vaddr = desc->qkdata.z.vaddr;
+            req->mr_free.len = desc->qkdata.z.len;
+            req->mr_free.access = desc->access_plus;
+            req->mr_free.rsp_zaddr = desc->qkdata.z.zaddr;
+            ret = __driver_cmd(&op, sizeof(req->mr_free), sizeof(rsp->mr_free));
+            free(desc);
+            free(mre);
+        }
+    } else
+        ret = -ENOENT;
+    mutex_unlock(&dev_mutex);
 
  done:
     return ret;

@@ -457,6 +457,9 @@ static int zhpe_mr_reg(struct zhpeq_dom *zdom,
     desc = malloc(sizeof(*desc));
     if (!desc)
         goto done;
+    /* Zero access is expected to work. */
+    if (!access)
+        access = ZHPEQ_MR_PUT;
     desc->access_plus = access | ZHPE_MR_INDIVIDUAL;
     desc->hdr.magic = ZHPE_MAGIC;
     desc->hdr.version = ZHPEQ_MR_V1;

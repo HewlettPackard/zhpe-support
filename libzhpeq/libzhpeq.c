@@ -231,8 +231,8 @@ int zhpeq_alloc(struct zhpeq_dom *zdom, int cmd_qlen, int cmp_qlen,
         goto done;
     *zq_out = NULL;
     if (!zdom ||
-        cmd_qlen < 2 || cmd_qlen > b_attr.z.max_hw_qlen ||
-        cmp_qlen < 2 || cmp_qlen > b_attr.z.max_hw_qlen ||
+        cmd_qlen < 2 || cmd_qlen > b_attr.z.max_tx_qlen ||
+        cmp_qlen < 2 || cmp_qlen > b_attr.z.max_tx_qlen ||
         traffic_class < 0 || traffic_class > ZHPEQ_TC_MAX ||
         priority < 0 || priority > ZHPEQ_PRI_MAX ||
         (slice_mask & ~(ALL_SLICES | SLICE_DEMAND)))
@@ -822,8 +822,8 @@ void zhpeq_print_info(struct zhpeq *zq)
     printf("backend       : %s\n", b_str);
     printf("max_tx_queues : %u\n", attr->max_tx_queues);
     printf("max_rx_queues : %u\n", attr->max_rx_queues);
-    printf("max_hw_qlen   : %u\n", attr->max_hw_qlen);
-    printf("max_sw_qlen   : %u\n", attr->max_sw_qlen);
+    printf("max_tx_qlen   : %u\n", attr->max_tx_qlen);
+    printf("max_rx_qlen   : %u\n", attr->max_rx_qlen);
     printf("max_dma_len   : %Lu\n", (ullong)attr->max_dma_len);
 
     if (b_ops->print_info) {

@@ -1113,11 +1113,11 @@ static void *lfab_eng_thread(void *veng)
 static int lfab_lib_init(struct zhpeq_attr *attr)
 {
     attr->backend = ZHPE_BACKEND_LIBFABRIC;
-    attr->z.max_tx_queues = 1024;
-    attr->z.max_rx_queues = 1024;
-    attr->z.max_hw_qlen  = 65535;
-    attr->z.max_sw_qlen  = 65535;
-    attr->z.max_dma_len  = (1U << 31);
+    attr->z.max_tx_queues = (1U << 10);
+    attr->z.max_rx_queues = (1U << 10);
+    attr->z.max_tx_qlen   = (1U << 16) - 1;
+    attr->z.max_rx_qlen   = (1U << 20) - 1;
+    attr->z.max_dma_len   = (1U << 31);
 
     zhpeu_work_head_init(&eng.work_head);
     CIRCLEQ_INIT(&eng.zq_head);

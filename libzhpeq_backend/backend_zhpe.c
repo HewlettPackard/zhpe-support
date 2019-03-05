@@ -200,10 +200,12 @@ static int uuid_free(uuid_t *uu)
         uue = *tval;
         if (!--(uue->use_count)) {
             (void)tdelete(uu, &dev_uuid_tree, compare_uuid);
-            req->hdr.opcode = ZHPE_OP_UUID_FREE;
-            memcpy(req->uuid_free.uuid, *uu, sizeof(req->uuid_free.uuid));
-            ret =__driver_cmd(&op, sizeof(req->uuid_free),
-                              sizeof(rsp->uuid_free));
+            if (uuid_compare(*uu, zhpeq_uuid)) {
+                req->hdr.opcode = ZHPE_OP_UUID_FREE;
+                memcpy(req->uuid_free.uuid, *uu, sizeof(req->uuid_free.uuid));
+                ret =__driver_cmd(&op, sizeof(req->uuid_free),
+                                  sizeof(rsp->uuid_free));
+            }
             free(uue);
         }
     } else
@@ -284,12 +286,16 @@ static int zhpe_qalloc(struct zhpeq *zq, int wqlen, int cqlen,
 static int zhpe_exchange(struct zhpeq *zq, int sock_fd, void *sa,
                          size_t *sa_len)
 {
-    int                 ret;
+    int                 ret = 0;
     struct sockaddr_zhpe *sz = sa;
 
     sz->sz_family = AF_ZHPE;
     memcpy(sz->sz_uuid, zhpeq_uuid, sizeof(sz->sz_uuid));
     sz->sz_queue = ~0U;
+    *sa_len = sizeof(*sz);
+
+    if (sock_fd == -1)
+        goto done;
 
     ret = sock_send_blob(sock_fd, sz, sizeof(*sz));
     if (ret < 0)
@@ -297,7 +303,6 @@ static int zhpe_exchange(struct zhpeq *zq, int sock_fd, void *sa,
     ret = sock_recv_fixed_blob(sock_fd, sz, sizeof(*sz));
     if (ret < 0)
         goto done;
-    *sa_len = sizeof(*sz);
  done:
     return ret;
 }

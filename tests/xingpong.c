@@ -85,6 +85,7 @@ STAILQ_HEAD(rx_queue_head, rx_queue);
 struct args {
     const char          *node;
     const char          *service;
+    uint64_t            bufaddr;
     uint64_t            ring_entry_len;
     uint64_t            ring_entries;
     uint64_t            ring_ops;
@@ -146,7 +147,8 @@ static void stuff_free(struct stuff *stuff)
 
     free(stuff->rx_rcv);
     free(stuff->ring_timestamps);
-    free(stuff->tx_addr);
+    if (stuff->tx_addr)
+        munmap(stuff->tx_addr, stuff->ring_end_off * 2);
 
     FD_CLOSE(stuff->sock_fd);
 
@@ -171,12 +173,13 @@ static int do_mem_setup(struct stuff *conn)
     req = conn->ring_entry_aligned * args->ring_entries;
     off = conn->ring_end_off = req;
     req *= 2;
-    ret = -posix_memalign(&conn->tx_addr, page_size, req);
-    if (ret < 0) {
-        conn->tx_addr = NULL;
-        print_func_errn(__func__, __LINE__, "posix_memalign", req, false,
-                        ret);
-        goto done;
+    conn->tx_addr = mmap((void *)(uintptr_t)args->bufaddr, req,
+                         PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_SHARED,
+                         -1 , 0);
+    if (conn->tx_addr == MAP_FAILED) {
+         conn->tx_addr = NULL;
+         print_func_errn(__func__, __LINE__, "mmap", req, false, ret);
+         goto done;
     }
     memset(conn->tx_addr, TX_NONE, req);
     conn->rx_addr = conn->tx_addr + off;
@@ -960,7 +963,7 @@ static void usage(bool help)
 {
     print_usage(
         help,
-        "Usage:%s [-acosu] [-t <txqlen>]\n"
+        "Usage:%s [-acosu] [-t <txqlen>] [-b <address>]\n"
         "    <port> [<node> <entry_len> <ring_entries>"
         " <op_count/seconds>]\n"
         "All sizes may be postfixed with [kmgtKMGT] to specify the"
@@ -969,6 +972,7 @@ static void usage(bool help)
         "Server requires just port; client requires all 5 arguments.\n"
         "Client only options:\n"
         " -a : cache line align entries\n"
+        " -b <address> : try to allocate buffer at address\n"
         " -c : copy mode\n"
         " -o : run once and then server will exit\n"
         " -s : treat the final argument as seconds\n"
@@ -1007,7 +1011,7 @@ int main(int argc, char **argv)
     if (argc == 1)
         usage(true);
 
-    while ((opt = getopt(argc, argv, "acost:uw:")) != -1) {
+    while ((opt = getopt(argc, argv, "ab:cost:uw:")) != -1) {
 
         /* All opts are client only, now. */
         client_opt = true;
@@ -1018,6 +1022,15 @@ int main(int argc, char **argv)
             if (args.aligned_mode)
                 usage(false);
             args.aligned_mode = true;
+            break;
+
+        case 'b':
+            if (args.bufaddr)
+                usage(false);
+            if (parse_kb_uint64_t(__func__, __LINE__, "bufaddr",
+                                  optarg, &args.bufaddr, 0, 1,
+                                  SIZE_MAX, PARSE_KB | PARSE_KIB) < 0)
+                usage(false);
             break;
 
         case 'c':

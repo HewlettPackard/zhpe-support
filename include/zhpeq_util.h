@@ -736,25 +736,26 @@ void print_urange_err(const char *callf, uint line, const char *name,
 char *get_cpuinfo_val(FILE *fp, char *buf, size_t buf_size,
                       uint field, const char *name, ...);
 
-uint64_t get_tsc_freq(void);
+uint64_t (*zhpeq_cycles_get)(volatile uint32_t *cpup);
+uint64_t zhpeq_cycles_freq;
+
+#define NSEC_PER_SEC    (1000000000UL)
+#define NSEC_PER_USEC   (1000000UL)
 
 static inline double cycles_to_usec(uint64_t delta, uint64_t loops)
 {
-    return (delta * 1.0e6) / ((double)get_tsc_freq() * loops);
+    return (((double)delta * NSEC_PER_USEC) /
+            ((double)zhpeq_cycles_freq * loops));
 }
 
 static inline uint64_t get_cycles(volatile uint32_t *cpup)
 {
-    uint32_t lo;
-    uint32_t hi;
-    uint32_t cpu;
+    return zhpeq_cycles_get(cpup);
+}
 
-    asm volatile("rdtscp" : "=a" (lo), "=d" (hi), "=c" (cpu) : :);
-
-    if (cpup)
-        *cpup = cpu;
-
-    return ((uint64_t)hi << 32 | lo);
+static inline uint64_t get_tsc_freq(void)
+{
+    return zhpeq_cycles_freq;
 }
 
 #define abort_syscall(_func, ...)                               \

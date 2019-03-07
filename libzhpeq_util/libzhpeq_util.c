@@ -47,6 +47,13 @@ static bool             log_syslog;
 static bool             log_syslog_init;
 static int              log_level = LOG_ERR;
 
+static uint64_t get_clock_cycles(volatile uint32_t *cpup);
+static uint64_t get_tsc_cycles(volatile uint32_t *cpup);
+static uint64_t __get_tsc_freq(void);
+
+uint64_t                zhpeq_cycles_freq;
+uint64_t                (*zhpeq_cycles_get)(volatile uint32_t *cpup);
+
 static struct zhpeu_atm_list_ptr atm_dummy;
 
 static void __attribute__((constructor)) lib_init(void)
@@ -54,17 +61,32 @@ static void __attribute__((constructor)) lib_init(void)
     long                rcl;
     struct zhpeu_atm_list_ptr oldh;
     struct zhpeu_atm_list_ptr newh;
+    uint64_t            freq;
+
+    /* Force __atomic_load_16 and __atomic_compare_exchange_16 to be linked
+     * Multiple instances can be run, so use this to run once.
+     */
+    oldh = atm_load_rlx(&atm_dummy);
+    newh.ptr = NULL;
+    newh.seq = oldh.seq + 1;
+    atm_cmpxchg(&atm_dummy, &oldh, newh);
+    if (oldh.seq)
+        return;
 
     /* Make sure page_size is set before use; if we can't get it, just die. */
     rcl = sysconf(_SC_PAGESIZE);
     if (rcl == -1)
         abort();
     page_size = rcl;
-    /* Force __atomic_load_16 and __atomic_compare_exchange_16 to be linked. */
-    oldh = atm_load_rlx(&atm_dummy);
-    newh.ptr = NULL;
-    newh.seq = oldh.seq + 1;
-    atm_cmpxchg(&atm_dummy, &oldh, newh);
+    /* Initialize cycle timing routines. */
+    freq = __get_tsc_freq();
+    if (freq) {
+        atm_store_rlx(&zhpeq_cycles_get, get_tsc_cycles);
+        atm_store_rlx(&zhpeq_cycles_freq, freq);
+    } else {
+        atm_store_rlx(&zhpeq_cycles_get, get_clock_cycles);
+        atm_store_rlx(&zhpeq_cycles_freq, (uint64_t)NSEC_PER_SEC);
+    }
 }
 
 void zhpeq_util_init(char *argv0, int default_log_level, bool use_syslog)
@@ -378,20 +400,31 @@ done:
     return ret;
 }
 
-uint64_t get_tsc_freq(void)
+static uint64_t get_tsc_cycles(volatile uint32_t *cpup)
 {
-    static uint64_t     freq = 0;
+    uint32_t            lo;
+    uint32_t            hi;
+    uint32_t            cpu;
 
-    if (!freq) {
-        freq = __get_tsc_freq();
-        if (!freq) {
-            print_err("%s,%u:Failed to determine cycle frequency",
-                      __func__, __LINE__);
-            abort();
-        }
-    }
+    asm volatile("rdtscp" : "=a" (lo), "=d" (hi), "=c" (cpu) : :);
 
-    return freq;
+    if (cpup)
+        *cpup = cpu;
+
+    return ((uint64_t)hi << 32 | lo);
+}
+
+static uint64_t get_clock_cycles(volatile uint32_t *cpup)
+{
+    struct timespec     now;
+
+    /* CPU not supported. */
+    if (cpup)
+        *cpup = ~(uint32_t)0;
+
+    clock_gettime_monotonic(&now);
+
+    return((uint64_t)now.tv_sec * NSEC_PER_SEC + now.tv_nsec);
 }
 
 int parse_kb_uint64_t(const char *callf, uint line,

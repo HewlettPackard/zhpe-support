@@ -1020,7 +1020,7 @@ static void usage(bool help)
     print_usage(
         help,
         "Usage:%s [-acorsu] [-d <domain>] [-p <provider>] [-t <txqlen>]\n"
-        "    <port> [<node> <entry_len> <ring_entries>"
+        "    [-w <ops>] <port> [<node> <entry_len> <ring_entries>"
         " <op_count/seconds>]\n"
         "All sizes may be postfixed with [kmgtKMGT] to specify the"
         " base units.\n"

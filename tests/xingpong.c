@@ -744,7 +744,7 @@ int do_zq_setup(struct stuff *conn)
     ret = -EINVAL;
     conn->tx_avail = args->tx_avail;
     if (conn->tx_avail) {
-        if (conn->tx_avail > zq_attr.z.max_hw_qlen)
+        if (conn->tx_avail > zq_attr.z.max_tx_qlen)
             goto done;
     } else
         conn->tx_avail = ZQ_LEN;

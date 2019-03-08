@@ -53,7 +53,7 @@ static void usage(bool help)
         "         specified, qlen will be selected randomly and [-s]"
         " allows\n"
         "         specifying a seed for random().\n",
-        appname, attr.z.max_tx_queues, attr.z.max_hw_qlen);
+        appname, attr.z.max_tx_queues, attr.z.max_tx_qlen);
 
     exit(255);
 }
@@ -251,7 +251,7 @@ int main(int argc, char **argv)
     if (argc > 1) {
         if (parse_kb_uint64_t(__func__, __LINE__, "qlen",
                               argv[optind++], &u64, 0,
-                              2, attr.z.max_hw_qlen, 0) < 0)
+                              2, attr.z.max_tx_qlen, 0) < 0)
             usage(false);
         qlen = u64;
     }
@@ -283,8 +283,8 @@ int main(int argc, char **argv)
         i = shuffle[h];
         if (zq[i])
             print_err("%s,%u:random_array() broken\n", __func__, __LINE__);
-        cmd_len = (qlen ?: random_range(2, attr.z.max_hw_qlen));
-        cmp_len = (qlen ?: random_range(2, attr.z.max_hw_qlen));
+        cmd_len = (qlen ?: random_range(2, attr.z.max_tx_qlen));
+        cmp_len = (qlen ?: random_range(2, attr.z.max_tx_qlen));
         rc = zhpeq_alloc(zdom, cmd_len, cmp_len, i & 0xF, i & 0x1, 0, &zq[i]);
         if (rc < 0) {
             print_func_errn(__func__, __LINE__, "zhpeq_alloc", qlen, false,

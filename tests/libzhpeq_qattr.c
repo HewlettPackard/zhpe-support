@@ -70,8 +70,8 @@ int main(int argc, char **argv)
     }
     printf("%s:max_tx_queues : %u\n", appname, attr.z.max_tx_queues);
     printf("%s:max_rx_queues : %u\n", appname, attr.z.max_rx_queues);
-    printf("%s:max_hw_qlen   : %u\n", appname, attr.z.max_hw_qlen);
-    printf("%s:max_sw_qlen   : %u\n", appname, attr.z.max_sw_qlen);
+    printf("%s:max_tx_qlen   : %u\n", appname, attr.z.max_tx_qlen);
+    printf("%s:max_rx_qlen   : %u\n", appname, attr.z.max_rx_qlen);
     printf("%s:max_dma_len   : %Lu\n", appname, (ullong)attr.z.max_dma_len);
 
  done:

@@ -1,0 +1,6 @@
+add_library(simh INTERFACE)
+if (SIMH)
+  set(SIMH_INC ${INSD}/include)
+  target_include_directories(simh INTERFACE ${SIMH_INC})
+  target_compile_definitions(simh INTERFACE -DHAVE_ZHPE_SIM)
+endif (SIMH)

@@ -38,14 +38,26 @@
 
 #include <zhpeq_util.h>
 
+#ifdef LIKWID_PERFMON
+#include <likwid.h>
+#else
+#define LIKWID_MARKER_INIT
+#define LIKWID_MARKER_CLOSE
+#endif
+
+#include <zhpe_stats.h>
+
+EXTERN_ZHPE_STATS(zhpe_stats_send);
+EXTERN_ZHPE_STATS(zhpe_stats_recv);
+
 #define WARMUP          (100)
 
 int main(int argc, char **argv)
 {
     int                 ret = 1;
-    uint64_t            size = 1;
     void                *buf = NULL;
     uint64_t            loops;
+    uint64_t            size;
     uint64_t            i;
     int                 n_proc;
     int                 n_rank;
@@ -53,17 +65,18 @@ int main(int argc, char **argv)
     if (MPI_Init(&argc, &argv) != MPI_SUCCESS)
         goto done;
 
-    if (argc < 2 || argc > 3) {
-        fprintf(stderr, "Need loops and, optionally, size.\n");
+    if (argc !=  3) {
+        fprintf(stderr, "Usage:%s <loops> <size>\n", argv[0]);
         goto done;
     }
+
+    LIKWID_MARKER_INIT;
 
     if (parse_kb_uint64_t(__func__, __LINE__, "loops",
                           argv[1], &loops, 0, 1, SIZE_MAX,
                           PARSE_KB | PARSE_KIB) < 0)
         goto done;
-    if (argc == 3 &&
-        parse_kb_uint64_t(__func__, __LINE__, "size",
+    if (parse_kb_uint64_t(__func__, __LINE__, "size",
                           argv[2], &size, 0, 1, SIZE_MAX,
                           PARSE_KB | PARSE_KIB) < 0)
         goto done;
@@ -96,6 +109,8 @@ int main(int argc, char **argv)
                 goto done;
         }
 
+        zhpe_stats_enable(&zhpe_stats_send);
+        zhpe_stats_enable(&zhpe_stats_recv);
         for (i = 0; i < loops; i++) {
             if (MPI_Send(buf, size, MPI_BYTE, 1, 0, MPI_COMM_WORLD)
                 != MPI_SUCCESS)
@@ -104,7 +119,8 @@ int main(int argc, char **argv)
                          MPI_STATUS_IGNORE) != MPI_SUCCESS)
                 goto done;
         }
-        printf("RANK %d\n", n_rank);
+        zhpe_stats_disable(&zhpe_stats_send);
+        zhpe_stats_disable(&zhpe_stats_recv);
         MPI_Barrier(MPI_COMM_WORLD);
     }
     else {
@@ -117,6 +133,8 @@ int main(int argc, char **argv)
                 goto done;
         }
 
+        zhpe_stats_enable(&zhpe_stats_send);
+        zhpe_stats_enable(&zhpe_stats_recv);
         for (i = 0; i < loops; i++) {
             if (MPI_Recv(buf, size, MPI_BYTE, 0, 0, MPI_COMM_WORLD,
                          MPI_STATUS_IGNORE) != MPI_SUCCESS)
@@ -125,14 +143,16 @@ int main(int argc, char **argv)
                 != MPI_SUCCESS)
                 goto done;
         }
+        zhpe_stats_disable(&zhpe_stats_send);
+        zhpe_stats_disable(&zhpe_stats_recv);
         MPI_Barrier(MPI_COMM_WORLD);
-        printf("RANK %d\n", n_rank);
     }
     ret = 0;
 
  done:
     if (buf)
         munmap(buf, size);
+    LIKWID_MARKER_CLOSE;
     MPI_Finalize();
     if (ret)
         fprintf(stderr, "error\n");

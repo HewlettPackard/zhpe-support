@@ -2,45 +2,27 @@ SHELL := /bin/bash
 MAKEFILE_PATH := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 BUILD := $(MAKEFILE_PATH)/build
 
-TARGETS = \
-	lf_tests \
-	libzhpeq \
-	libzhpeq_backend \
-	libzhpeq_lf \
-	libzhpeq_util \
-	libzhpeq_util_fab \
-	mpi_tests \
-	tests
-
-.PHONY: all $(TARGETS)
-
-all install:
-	make -C $(BUILD) VERBOSE=$(VERBOSE) install
+.PHONY: distclean step1 step2 step3
 
 distclean:
 	rm -rf $(BUILD)
 
-lf_tests:
+step1:
 	make -C $(BUILD)/$@ VERBOSE=$(VERBOSE) install
 
-libzhpeq: libzhpeq_util
+step2:
 	make -C $(BUILD)/$@ VERBOSE=$(VERBOSE) install
 
-libzhpeq_backend:
+step3:
+	$(BUILD)/$@/prep3.sh
 	make -C $(BUILD)/$@ VERBOSE=$(VERBOSE) install
 
-libzhpeq_lf:
-	make -C $(BUILD)/$@ VERBOSE=$(VERBOSE) install
+# Backwards compatability
 
-libzhpeq_util:
-	make -C $(BUILD)/$@ VERBOSE=$(VERBOSE) install
+.PHONY: all install libzhpeq mpi_tests
 
-libzhpeq_util_fab:
-	make -C $(BUILD)/$@ VERBOSE=$(VERBOSE) install
+libzhpeq: step1
 
-mpi_tests:
-	make -C $(BUILD)/$@ VERBOSE=$(VERBOSE) install
+install all: step1 step2
 
-tests:
-	make -C $(BUILD)/$@ VERBOSE=$(VERBOSE) install
-
+mpi_tests: step3

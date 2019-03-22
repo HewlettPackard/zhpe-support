@@ -18,11 +18,27 @@ find_package(Threads REQUIRED)
 
 include_directories(include asic/include)
 
-# Libraries/tests
+# Interface libraries
+add_library(likwid INTERFACE)
+if (LIKWID)
+  find_library(LIKWID_LIB likwid HINTS ${LIKWID}/lib)
+  message("LIKWID_LIB " ${LIKWID_LIB})
+  target_link_libraries(likwid INTERFACE ${LIKWID_LIB})
+  find_path(LIKWID_INC likwid.h HINTS ${LIKWID}/include)
+  message("LIKWID_INC " ${LIKWID_INC})
+  target_include_directories(likwid INTERFACE ${LIKWID_INC})
+  target_compile_definitions(likwid INTERFACE -DLIKWID_PERFMON)
+endif (LIKWID)
+add_library(fabric INTERFACE)
 if (LIBF)
-  include_directories(AFTER ${LIBF}/include)
-  link_directories(${LIBF}/lib)
+  target_link_libraries(fabric INTERFACE ${LIBF}/lib/libfabric.so likwid)
+  target_include_directories(fabric INTERFACE ${LIBF}/include)
+  find_path(SIM_INC hpe_sim_api_linux64.h HINTS ${LIBF}/include)
+  message("SIM_INC " ${SIM_INC})
 endif (LIBF)
+
+# Build libraries/tests
+add_subdirectory(libzhpe_stats)
 add_subdirectory(libzhpeq)
 add_subdirectory(libzhpeq_backend)
 add_subdirectory(libzhpeq_util)

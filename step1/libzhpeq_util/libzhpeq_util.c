@@ -984,6 +984,8 @@ int zhpeu_asprintf(char **strp, const char *fmt, ...)
     va_start(ap, fmt);
     ret = vasprintf(strp, fmt, ap);
     va_end(ap);
+    if (ret == -1)
+        *strp = NULL;
 
     return ret;
 }

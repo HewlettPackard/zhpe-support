@@ -44,12 +44,17 @@
 
 _EXTERN_C_BEG
 
+struct zhpe_stats_extra {
+    uint32_t            pauses;
+};
+
 struct zhpe_stats {
-	void			*buf;
-	uint64_t		buf_len;
-	int			fd;
-	uint16_t		uid;
-	uint8_t			state;
+    void                *buf;
+    struct zhpe_stats_extra *extra;
+    uint64_t            buf_len;
+    int                 fd;
+    uint16_t            uid;
+    uint8_t             state;
 };
 
 enum {

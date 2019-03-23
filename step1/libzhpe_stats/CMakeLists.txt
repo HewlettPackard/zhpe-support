@@ -5,3 +5,4 @@ set_target_properties(zhpe_stats PROPERTIES LINK_FLAGS -znow)
 
 install(TARGETS zhpe_stats DESTINATION lib)
 install(FILES ${CMAKE_SOURCE_DIR}/include/zhpe_stats.h DESTINATION include)
+install(PROGRAMS unpackdata.py DESTINATION libexec)

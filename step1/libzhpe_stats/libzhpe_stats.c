@@ -94,9 +94,12 @@ void zhpe_stats_open(struct zhpe_stats *stats)
         stats->buf_len = 0;
         goto done;
     }
+    stats->buf_len += sizeof(*stats->extra);
     stats->buf = malloc(stats->buf_len);
     if (!stats->buf)
         goto done;
+    stats->extra = (void *)((char *)stats->buf + stats->buf_len -
+                            sizeof(*stats->extra));
     stats->fd = open(fname, O_RDWR | O_CREAT | O_TRUNC,
                      S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
     if (stats->fd == -1) {
@@ -145,7 +148,9 @@ void zhpe_stats_test(uint16_t uid)
 
 void zhpe_stats_start(struct zhpe_stats *stats)
 {
-    if (stats->state != ZHPE_STATS_STOPPED && stats->state != ZHPE_STATS_PAUSED)
+    if (stats->state == ZHPE_STATS_STOPPED)
+        memset(stats->extra, 0, sizeof(*stats->extra));
+    else if (stats->state != ZHPE_STATS_PAUSED)
         return;
     if (sim_api_data_rec(DATA_REC_START, stats->uid, (uintptr_t)stats->buf)) {
         print_func_err(__func__, __LINE__, "sim_api_data_rec",
@@ -183,6 +188,7 @@ void zhpe_stats_pause(struct zhpe_stats *stats)
                        "DATA_REC_PAUSE", -EINVAL);
         return;
     }
+    stats->extra->pauses++;
     stats->state = ZHPE_STATS_PAUSED;
 }
 

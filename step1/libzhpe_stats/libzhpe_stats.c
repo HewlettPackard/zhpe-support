@@ -130,6 +130,7 @@ void zhpe_stats_test(uint16_t uid)
     DEFINE_ZHPE_STATS(stats_test, uid);
 
     zhpe_stats_open(&stats_test);
+    zhpe_stats_enable(&stats_test);
 
     zhpe_stats_start(&stats_test);
     zhpe_stats_stop(&stats_test);

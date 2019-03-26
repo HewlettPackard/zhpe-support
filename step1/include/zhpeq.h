@@ -210,6 +210,8 @@ int64_t zhpeq_reserve(struct zhpeq *zq, uint32_t n_entries);
 
 int zhpeq_commit(struct zhpeq *zq, uint32_t qindex, uint32_t n_entries);
 
+int zhpeq_signal(struct zhpeq *zq);
+
 int zhpeq_check_stopped(struct zhpeq *zq);
 
 int zhpeq_restart(struct zhpeq *zq, uint32_t head_idx, uint32_t tail_idx);

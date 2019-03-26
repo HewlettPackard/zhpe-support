@@ -40,62 +40,44 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include <zhpe_externc.h>
+#include <zhpe_stats_types.h>
 
 _EXTERN_C_BEG
 
-struct zhpe_stats_extra {
-    uint32_t            pauses;
-};
-
-struct zhpe_stats {
-    void                *buf;
-    struct zhpe_stats_extra *extra;
-    uint64_t            buf_len;
-    int                 fd;
-    uint16_t            uid;
-    uint8_t             state;
-};
-
-enum {
-    ZHPE_STATS_INIT,
-    ZHPE_STATS_DISABLED,
-    ZHPE_STATS_STOPPED,
-    ZHPE_STATS_RUNNING,
-    ZHPE_STATS_PAUSED,
-};
-
-#define DEFINE_ZHPE_STATS(_name, _uid)          \
-    struct zhpe_stats _name = {                 \
-        .uid            = _uid,                 \
-        .fd             = -1,                   \
-        .state          = ZHPE_STATS_INIT,      \
-}
-
-#if defined(DEFAULT_SYMVER)
-#define DEFINE_ZHPE_STATS_FABRIC(_name, _uid)   \
-    struct zhpe_stats DEFAULT_SYMVER_PRE(_name) \
-    __attribute__((visibility ("default"),      \
-                   EXTERNALLY_VISIBLE)) = {     \
-        .uid            = _uid,                 \
-        .fd             = -1,                   \
-        .state          = ZHPE_STATS_INIT,      \
-    };                                          \
-    CURRENT_SYMVER(_name##_, _name)
-#endif
-
 #ifdef HAVE_ZHPE_STATS
-
-#define EXTERN_ZHPE_STATS(_name)                \
-        extern struct zhpe_stats _name
 
 void zhpe_stats_init(const char *stats_dir, const char *stats_unique);
 void zhpe_stats_test(uint16_t uid);
-void zhpe_stats_open(struct zhpe_stats *stats);
-void zhpe_stats_close(struct zhpe_stats *stats);
-void zhpe_stats_start(struct zhpe_stats *stats);
-void zhpe_stats_stop(struct zhpe_stats *stats);
-void zhpe_stats_pause(struct zhpe_stats *stats);
+
+static inline void zhpe_stats_finalize(void)
+{
+    zhpe_stats_ops->finalize();
+}
+
+static inline void zhpe_stats_open(struct zhpe_stats *stats)
+{
+    zhpe_stats_ops->open(stats);
+}
+
+static inline void zhpe_stats_close(struct zhpe_stats *stats)
+{
+    zhpe_stats_ops->close(stats);
+}
+
+static inline void zhpe_stats_start(struct zhpe_stats *stats)
+{
+    zhpe_stats_ops->start(stats);
+}
+
+static inline void zhpe_stats_stop(struct zhpe_stats *stats)
+{
+    zhpe_stats_ops->stop(stats);
+}
+
+static inline void zhpe_stats_pause(struct zhpe_stats *stats)
+{
+    zhpe_stats_ops->pause(stats);
+}
 
 static inline void zhpe_stats_enable(struct zhpe_stats *stats)
 {
@@ -134,9 +116,8 @@ static inline void zhpe_stats_disable(struct zhpe_stats *stats)
 
 #else
 
-#define EXTERN_ZHPE_STATS(_name)
-
 #define zhpe_stats_init(stats_dir, stats_unique)
+#define zhpe_stats_finalize()
 #define zhpe_stats_test(uid)
 #define zhpe_stats_open(stats)
 #define zhpe_stats_close(stats)

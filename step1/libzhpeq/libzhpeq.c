@@ -394,12 +394,17 @@ int zhpeq_commit(struct zhpeq *zq, uint32_t qindex, uint32_t n_entries)
     io_wmb();
     iowrite64(new & qmask,
               zq->qcm + ZHPE_XDM_QCM_CMD_QUEUE_TAIL_OFFSET);
-    ret = b_ops->wq_signal(zq);
     io_wmb();
     atm_store_rlx(&zq->tail_commit, new);
+    ret = 0;
 
  done:
     return ret;
+}
+
+int zhpeq_signal(struct zhpeq *zq)
+{
+    return b_ops->wq_signal(zq);
 }
 
 static inline void set_context(struct zhpeq *zq, union zhpe_hw_wq_entry *wqe,

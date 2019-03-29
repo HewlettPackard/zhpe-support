@@ -54,10 +54,11 @@ int main(int argc, char **argv)
     int                 n_rank;
 
     if (MPI_Init(&argc, &argv) != MPI_SUCCESS)
-        goto done;
+        return ret;
 
-    if (argc !=  3) {
-        fprintf(stderr, "Usage:%s <loops> <size>\n", argv[0]);
+    if (argc != 3 && argc != 4) {
+        fprintf(stderr, "Usage:%s <loops> <size> [stats_dir]\n",
+                argv[0]);
         goto done;
     }
 
@@ -66,22 +67,32 @@ int main(int argc, char **argv)
                           PARSE_KB | PARSE_KIB) < 0)
         goto done;
     if (parse_kb_uint64_t(__func__, __LINE__, "size",
-                          argv[2], &size, 0, 1, SIZE_MAX,
+                          argv[2], &size, 0, 0, SIZE_MAX,
                           PARSE_KB | PARSE_KIB) < 0)
         goto done;
-
-    buf = mmap(NULL, size, PROT_READ | PROT_WRITE,
-               MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
-    if (buf == MAP_FAILED) {
-        buf = NULL;
-        goto done;
-    }
 
     if (MPI_Comm_size(MPI_COMM_WORLD, &n_proc) != MPI_SUCCESS)
         goto done;
 
     if (MPI_Comm_rank(MPI_COMM_WORLD, &n_rank) != MPI_SUCCESS)
         goto done;
+
+    if (argc == 4) {
+        char            unique[20];
+        snprintf(unique, sizeof(unique), "%d", n_rank);
+        unique[sizeof(unique) - 1] = '\0';
+        zhpe_stats_init(argv[3], unique);
+        zhpe_stats_test(0);
+        zhpe_stats_open(&zhpe_stats_send);
+        zhpe_stats_open(&zhpe_stats_recv);
+    }
+
+    buf = mmap(NULL, (size ?: 1), PROT_READ | PROT_WRITE,
+               MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+    if (buf == MAP_FAILED) {
+        buf = NULL;
+        goto done;
+    }
 
     if (!n_rank) {
         if (n_proc != 2) {
@@ -123,9 +134,11 @@ int main(int argc, char **argv)
  done:
     if (buf)
         munmap(buf, size);
-    zhpe_stats_close(&zhpe_stats_send);
-    zhpe_stats_close(&zhpe_stats_recv);
-    zhpe_stats_finalize();
+    if (argc == 4) {
+        zhpe_stats_close(&zhpe_stats_send);
+        zhpe_stats_close(&zhpe_stats_recv);
+        zhpe_stats_finalize();
+    }
     MPI_Finalize();
     if (ret)
         fprintf(stderr, "error\n");

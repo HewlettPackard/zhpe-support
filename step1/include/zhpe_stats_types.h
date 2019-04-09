@@ -44,71 +44,27 @@
 
 _EXTERN_C_BEG
 
-struct zhpe_stats_extra {
-    uint32_t            starts;
-    uint32_t            pauses;
-};
-
-struct zhpe_stats {
-    void                *buf;
-    struct zhpe_stats_extra *extra;
-    uint64_t            buf_len;
-    char                likwid_name[16];
-    uint32_t            likwid_sample;
-    int                 fd;
-    uint16_t            uid;
-    uint8_t             state;
-};
-
 struct zhpe_stats_ops {
+    void                (*open)(uint16_t uid);
+    void                (*close)(void);
+    void                (*enable)(void);
+    void                (*disable)(void);
+    struct zhpe_stats   *(*stop_counters)(void);
+    void                (*stop_all)(struct zhpe_stats *stats);
+    void                (*pause_all)(struct zhpe_stats *stats);
+    void                (*restart_all)(void);
+    void                (*start)(struct zhpe_stats *stats, uint32_t subid);
+    void                (*stop)(struct zhpe_stats *stats, uint32_t subid);
+    void                (*pause)(struct zhpe_stats * stats, uint32_t subid);
     void                (*finalize)(void);
-    void                (*open)(struct zhpe_stats *stats);
-    void                (*close)(struct zhpe_stats *stats);
-    void                (*start)(struct zhpe_stats *stats);
-    void                (*stop)(struct zhpe_stats *stats);
-    void                (*pause)(struct zhpe_stats *stats);
+    void                (*key_destructor)(void *);
 };
 
 enum {
-    ZHPE_STATS_INIT,
-    ZHPE_STATS_DISABLED,
-    ZHPE_STATS_STOPPED,
-    ZHPE_STATS_RUNNING,
-    ZHPE_STATS_PAUSED,
+    ZHPE_STATS_SUBID_SEND = 10,
+    ZHPE_STATS_SUBID_RECV = 20,
+    ZHPE_STATS_SUBID_RMA  = 30,
 };
-
-#define DEFINE_ZHPE_STATS(_name, _uid)          \
-    struct zhpe_stats _name = {                 \
-        .uid            = _uid,                 \
-        .fd             = -1,                   \
-        .state          = ZHPE_STATS_INIT,      \
-}
-
-#if defined(DEFAULT_SYMVER)
-#define DEFINE_ZHPE_STATS_FABRIC(_name, _uid)   \
-    struct zhpe_stats DEFAULT_SYMVER_PRE(_name) \
-    __attribute__((visibility ("default"),      \
-                   EXTERNALLY_VISIBLE)) = {     \
-        .uid            = _uid,                 \
-        .fd             = -1,                   \
-        .state          = ZHPE_STATS_INIT,      \
-    };                                          \
-    CURRENT_SYMVER(_name##_, _name);            \
-    extern struct zhpe_stats _name
-#endif
-
-#ifdef HAVE_ZHPE_STATS
-
-#define EXTERN_ZHPE_STATS(_name)                \
-        extern struct zhpe_stats _name
-
-extern struct zhpe_stats_ops *zhpe_stats_ops;
-
-#else
-
-#define EXTERN_ZHPE_STATS(_name)
-
-#endif
 
 _EXTERN_C_END
 

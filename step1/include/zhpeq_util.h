@@ -47,6 +47,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <stdatomic.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 #include <syslog.h>
@@ -256,6 +257,11 @@ static inline void io_wmb(void)
 }
 
 #define L1_CACHE_BYTES  (64U)
+
+static inline void nop(void)
+{
+    asm volatile("nop");
+}
 
 #endif
 

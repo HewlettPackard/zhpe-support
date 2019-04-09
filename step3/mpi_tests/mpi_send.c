@@ -40,9 +40,6 @@
 
 #include <zhpe_stats.h>
 
-EXTERN_ZHPE_STATS(zhpe_stats_send);
-EXTERN_ZHPE_STATS(zhpe_stats_recv);
-
 int main(int argc, char **argv)
 {
     int                 ret = 1;
@@ -77,16 +74,6 @@ int main(int argc, char **argv)
     if (MPI_Comm_rank(MPI_COMM_WORLD, &n_rank) != MPI_SUCCESS)
         goto done;
 
-    if (argc == 4) {
-        char            unique[20];
-        snprintf(unique, sizeof(unique), "%d", n_rank);
-        unique[sizeof(unique) - 1] = '\0';
-        zhpe_stats_init(argv[3], unique);
-        zhpe_stats_test(0);
-        zhpe_stats_open(&zhpe_stats_send);
-        zhpe_stats_open(&zhpe_stats_recv);
-    }
-
     buf = mmap(NULL, (size ?: 1), PROT_READ | PROT_WRITE,
                MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
     if (buf == MAP_FAILED) {
@@ -100,8 +87,17 @@ int main(int argc, char **argv)
             goto done;
         }
         printf("loops %Lu size %Lu\n", (ullong)loops, (ullong)size);
-        zhpe_stats_enable(&zhpe_stats_send);
-        zhpe_stats_enable(&zhpe_stats_recv);
+
+        if (argc == 4) {
+            char            unique[20];
+            snprintf(unique, sizeof(unique), "%d", n_rank);
+            unique[sizeof(unique) - 1] = '\0';
+            zhpe_stats_init(argv[3], unique);
+            zhpe_stats_test(0);
+            zhpe_stats_open(1);
+        }
+
+        zhpe_stats_enable();
         for (i = 0; i < loops; i++) {
             if (MPI_Send(buf, size, MPI_BYTE, 1, 0, MPI_COMM_WORLD)
                 != MPI_SUCCESS)
@@ -110,13 +106,10 @@ int main(int argc, char **argv)
                          MPI_STATUS_IGNORE) != MPI_SUCCESS)
                 goto done;
         }
-        zhpe_stats_disable(&zhpe_stats_send);
-        zhpe_stats_disable(&zhpe_stats_recv);
+        zhpe_stats_disable();
         MPI_Barrier(MPI_COMM_WORLD);
     }
     else {
-        zhpe_stats_enable(&zhpe_stats_send);
-        zhpe_stats_enable(&zhpe_stats_recv);
         for (i = 0; i < loops; i++) {
             if (MPI_Recv(buf, size, MPI_BYTE, 0, 0, MPI_COMM_WORLD,
                          MPI_STATUS_IGNORE) != MPI_SUCCESS)
@@ -125,8 +118,6 @@ int main(int argc, char **argv)
                 != MPI_SUCCESS)
                 goto done;
         }
-        zhpe_stats_disable(&zhpe_stats_send);
-        zhpe_stats_disable(&zhpe_stats_recv);
         MPI_Barrier(MPI_COMM_WORLD);
     }
     ret = 0;
@@ -135,8 +126,7 @@ int main(int argc, char **argv)
     if (buf)
         munmap(buf, size);
     if (argc == 4) {
-        zhpe_stats_close(&zhpe_stats_send);
-        zhpe_stats_close(&zhpe_stats_recv);
+        zhpe_stats_close();
         zhpe_stats_finalize();
     }
     MPI_Finalize();

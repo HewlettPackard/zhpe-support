@@ -46,6 +46,8 @@ _EXTERN_C_BEG
 
 #ifdef HAVE_ZHPE_STATS
 
+extern struct zhpe_stats_ops *zhpe_stats_ops;
+
 void zhpe_stats_init(const char *stats_dir, const char *stats_unique);
 void zhpe_stats_test(uint16_t uid);
 
@@ -54,78 +56,90 @@ static inline void zhpe_stats_finalize(void)
     zhpe_stats_ops->finalize();
 }
 
-static inline void zhpe_stats_open(struct zhpe_stats *stats)
+static inline void zhpe_stats_open(uint16_t uid)
 {
-    zhpe_stats_ops->open(stats);
+    zhpe_stats_ops->open(uid);
 }
 
-static inline void zhpe_stats_close(struct zhpe_stats *stats)
+static inline void zhpe_stats_close(void)
 {
-    zhpe_stats_ops->close(stats);
+    zhpe_stats_ops->close();
 }
 
-static inline void zhpe_stats_start(struct zhpe_stats *stats)
+static inline void zhpe_stats_stop_all(void)
 {
-    zhpe_stats_ops->start(stats);
+    struct zhpe_stats   *stats;
+
+    if ((stats = zhpe_stats_ops->stop_counters()))
+        zhpe_stats_ops->stop_all(stats);
 }
 
-static inline void zhpe_stats_stop(struct zhpe_stats *stats)
+static inline void zhpe_stats_pause_all(void)
 {
-    zhpe_stats_ops->stop(stats);
+    struct zhpe_stats   *stats;
+
+    if ((stats = zhpe_stats_ops->stop_counters()))
+        zhpe_stats_ops->pause_all(stats);
 }
 
-static inline void zhpe_stats_pause(struct zhpe_stats *stats)
+static inline void zhpe_stats_restart_all(void)
 {
-    zhpe_stats_ops->pause(stats);
+    zhpe_stats_ops->restart_all();
 }
 
-static inline void zhpe_stats_enable(struct zhpe_stats *stats)
+static inline void zhpe_stats_start(uint32_t subid)
 {
-    switch (stats->state)
-    {
-    case ZHPE_STATS_INIT:
-        zhpe_stats_open(stats);
-        /* FALLTHROUGH */
+    struct zhpe_stats   *stats;
 
-    case ZHPE_STATS_DISABLED:
-        stats->state = ZHPE_STATS_STOPPED;
-        break;
-
-    default:
-        break;
-    }
+    if ((stats = zhpe_stats_ops->stop_counters()))
+        zhpe_stats_ops->start(stats, subid);
 }
 
-static inline void zhpe_stats_disable(struct zhpe_stats *stats)
+static inline void zhpe_stats_stop(uint32_t subid)
 {
-    switch (stats->state)
-    {
-    case ZHPE_STATS_RUNNING:
-    case ZHPE_STATS_PAUSED:
-        zhpe_stats_stop(stats);
-        /* FALLTHROUGH */
+    struct zhpe_stats   *stats;
 
-    case ZHPE_STATS_STOPPED:
-        stats->state = ZHPE_STATS_DISABLED;
-        break;
-
-    default:
-        break;
-    }
+    if ((stats = zhpe_stats_ops->stop_counters()))
+        zhpe_stats_ops->stop(stats, subid);
 }
+
+static inline void zhpe_stats_pause(uint32_t subid)
+{
+    struct zhpe_stats   *stats;
+
+    if ((stats = zhpe_stats_ops->stop_counters()))
+        zhpe_stats_ops->pause(stats, subid);
+}
+
+static inline void zhpe_stats_enable(void)
+{
+    zhpe_stats_ops->enable();
+}
+
+static inline void zhpe_stats_disable()
+{
+    zhpe_stats_ops->disable();
+}
+
+#define zhpe_stats_subid(_name, _id) \
+    ((ZHPE_STATS_SUBID_##_name * 1000) + _id)
 
 #else
 
 #define zhpe_stats_init(stats_dir, stats_unique)
 #define zhpe_stats_finalize()
 #define zhpe_stats_test(uid)
-#define zhpe_stats_open(stats)
-#define zhpe_stats_close(stats)
-#define zhpe_stats_start(stats)
-#define zhpe_stats_stop(stats)
-#define zhpe_stats_pause(stats)
-#define zhpe_stats_enable(stats)
-#define zhpe_stats_disable(stats)
+#define zhpe_stats_open(uid)
+#define zhpe_stats_close()
+#define zhpe_stats_stop_all(dum)
+#define zhpe_stats_pause_all(dum)
+#define zhpe_stats_restart_all(dum)
+#define zhpe_stats_start(subid)
+#define zhpe_stats_stop(subid, force_write)
+#define zhpe_stats_pause(subid)
+#define zhpe_stats_enable()
+#define zhpe_stats_disable()
+#define zhpe_stats_subid(_name, _id)
 
 #endif
 

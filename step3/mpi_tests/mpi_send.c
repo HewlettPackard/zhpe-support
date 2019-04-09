@@ -50,14 +50,25 @@ int main(int argc, char **argv)
     int                 n_proc;
     int                 n_rank;
 
-    if (MPI_Init(&argc, &argv) != MPI_SUCCESS)
-        return ret;
-
-    if (argc != 3 && argc != 4) {
-        fprintf(stderr, "Usage:%s <loops> <size> [stats_dir]\n",
+    /* We're going to assume MPI isn't tweaking the arguments. */
+    if (argc != 3 && argc != 5) {
+        fprintf(stderr, "Usage:%s <loops> <size> [stats_dir <unique>]\n",
                 argv[0]);
         goto done;
     }
+
+    if (argc == 5) {
+        zhpe_stats_init(argv[3], argv[4]);
+        zhpe_stats_test(0);
+        zhpe_stats_open(1);
+        zhpe_stats_enable();
+        zhpe_stats_start(0);
+        zhpe_stats_start(10);
+        zhpe_stats_disable();
+    }
+
+    if (MPI_Init(&argc, &argv) != MPI_SUCCESS)
+        return ret;
 
     if (parse_kb_uint64_t(__func__, __LINE__, "loops",
                           argv[1], &loops, 0, 1, SIZE_MAX,
@@ -81,6 +92,11 @@ int main(int argc, char **argv)
         goto done;
     }
 
+    zhpe_stats_enable();
+    zhpe_stats_stop(10);
+    zhpe_stats_start(20);
+    zhpe_stats_disable();
+
     if (!n_rank) {
         if (n_proc != 2) {
             fprintf(stderr, "Need 2 ranks, not %d\n", n_proc);
@@ -88,23 +104,18 @@ int main(int argc, char **argv)
         }
         printf("loops %Lu size %Lu\n", (ullong)loops, (ullong)size);
 
-        if (argc == 4) {
-            char            unique[20];
-            snprintf(unique, sizeof(unique), "%d", n_rank);
-            unique[sizeof(unique) - 1] = '\0';
-            zhpe_stats_init(argv[3], unique);
-            zhpe_stats_test(0);
-            zhpe_stats_open(1);
-        }
-
         zhpe_stats_enable();
         for (i = 0; i < loops; i++) {
+            zhpe_stats_start(100);
             if (MPI_Send(buf, size, MPI_BYTE, 1, 0, MPI_COMM_WORLD)
                 != MPI_SUCCESS)
                 goto done;
+            zhpe_stats_stop(100);
+            zhpe_stats_start(110);
             if (MPI_Recv(buf, size, MPI_BYTE, 1, 0, MPI_COMM_WORLD,
                          MPI_STATUS_IGNORE) != MPI_SUCCESS)
                 goto done;
+            zhpe_stats_stop(110);
         }
         zhpe_stats_disable();
         MPI_Barrier(MPI_COMM_WORLD);
@@ -122,16 +133,22 @@ int main(int argc, char **argv)
     }
     ret = 0;
 
+    zhpe_stats_enable();
+    zhpe_stats_stop(20);
+    zhpe_stats_start(30);
+    zhpe_stats_disable();
+
  done:
     if (buf)
         munmap(buf, size);
-    if (argc == 4) {
-        zhpe_stats_close();
-        zhpe_stats_finalize();
-    }
     MPI_Finalize();
     if (ret)
         fprintf(stderr, "error\n");
+
+    zhpe_stats_enable();
+    zhpe_stats_stop_all();
+    zhpe_stats_close();
+    zhpe_stats_finalize();
 
     return ret;
 }

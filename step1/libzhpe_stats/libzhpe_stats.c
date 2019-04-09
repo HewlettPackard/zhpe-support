@@ -59,8 +59,9 @@ struct zhpe_stats {
     uint32_t            run_count;
     int                 fd;
     uint16_t            uid;
-    uint8_t             state;
-    bool                pause_all;
+    uint8_t             state:4;
+    uint8_t             pause_all:1;
+    uint8_t             enabled:1;
     struct zhpe_stats_delta *delta;
     struct zhpe_stats_delta *delta_free;
     uint64_t            buf_len;
@@ -68,8 +69,6 @@ struct zhpe_stats {
 };
 
 enum {
-    ZHPE_STATS_INIT,
-    ZHPE_STATS_DISABLED,
     ZHPE_STATS_STOPPED,
     ZHPE_STATS_RUNNING,
     ZHPE_STATS_PAUSED,
@@ -158,7 +157,6 @@ static const char *stats_cmn_state_str(uint8_t state)
     switch (state) {
 
     STATS_STATE_CASE(INIT);
-    STATS_STATE_CASE(DISABLED);
     STATS_STATE_CASE(RUNNING);
     STATS_STATE_CASE(STOPPED);
     STATS_STATE_CASE(PAUSED);
@@ -355,7 +353,8 @@ static void stats_cmn_open(uint16_t uid, size_t buf_len)
     }
 
     abort_posix(pthread_setspecific, zhpe_stats_key, stats);
-    stats->state = ZHPE_STATS_DISABLED;
+    stats->state = ZHPE_STATS_STOPPED;
+    stats->enabled = false;
 
     free(fname);
 }
@@ -368,15 +367,7 @@ static void stats_cmn_enable(void)
     if (!stats)
         return;
 
-    switch (stats->state)
-    {
-    case ZHPE_STATS_DISABLED:
-        stats->state = ZHPE_STATS_STOPPED;
-        break;
-
-    default:
-        break;
-    }
+    stats->enabled = true;
 }
 
 static void stats_cmn_disable(void)
@@ -387,19 +378,7 @@ static void stats_cmn_disable(void)
     if (!stats)
         return;
 
-    switch (stats->state)
-    {
-    case ZHPE_STATS_RUNNING:
-        zhpe_stats_stop_all();
-        /* FALLTHROUGH */
-
-    case ZHPE_STATS_STOPPED:
-        stats->state = ZHPE_STATS_DISABLED;
-        break;
-
-    default:
-        break;
-    }
+    stats->enabled = false;
 }
 
 /* Carbon code */
@@ -532,7 +511,7 @@ static void stats_sim_restart_all(void)
     if (!stats)
         return;
 
-    if (stats->state <= ZHPE_STATS_DISABLED)
+    if (!stats->enabled)
         return;
     if (!stats->pause_all)
         return;
@@ -548,7 +527,7 @@ static struct zhpe_stats *stats_sim_stop_counters(void)
     stats = pthread_getspecific(zhpe_stats_key);
     if (!stats)
         return NULL;
-    if (stats->state <= ZHPE_STATS_DISABLED)
+    if (!stats->enabled)
         return NULL;
 
     if (stats->state != ZHPE_STATS_STOPPED)
@@ -651,7 +630,9 @@ static void stats_sim_pause(struct zhpe_stats *stats, uint32_t subid)
 
 static void stats_sim_finalize(void)
 {
-    stats_sim_close();
+    /* Delete all trackers. */
+    sim_api_data_rec(DATA_REC_START, -2, (uintptr_t)NULL);
+
     mutex_lock(&zhpe_stats_mutex);
     stats_cmn_finalize();
     mutex_unlock(&zhpe_stats_mutex);
@@ -664,7 +645,7 @@ static void stats_sim_key_destructor(void *vstats)
     if (!stats)
         return;
 
-    if (stats->state <= ZHPE_STATS_DISABLED)
+    if (!stats->enabled)
         return;
 
     sim_close(stats);

@@ -47,8 +47,7 @@ _EXTERN_C_BEG
 #ifdef HAVE_ZHPE_STATS
 
 extern struct zhpe_stats_ops *zhpe_stats_ops;
-
-void zhpe_stats_init(const char *stats_dir, const char *stats_unique);
+bool zhpe_stats_init(const char *stats_dir, const char *stats_unique);
 void zhpe_stats_test(uint16_t uid);
 
 static inline void zhpe_stats_finalize(void)
@@ -116,7 +115,7 @@ static inline void zhpe_stats_enable(void)
     zhpe_stats_ops->enable();
 }
 
-static inline void zhpe_stats_disable()
+static inline void zhpe_stats_disable(void)
 {
     zhpe_stats_ops->disable();
 }
@@ -126,16 +125,21 @@ static inline void zhpe_stats_disable()
 
 #else
 
-#define zhpe_stats_init(stats_dir, stats_unique)
-#define zhpe_stats_finalize()
+static inline bool zhpe_stats_init(const char *stats_dir,
+                                   const char *stats_unique)
+{
+    return false;
+}
+
 #define zhpe_stats_test(uid)
+#define zhpe_stats_finalize()
 #define zhpe_stats_open(uid)
 #define zhpe_stats_close()
-#define zhpe_stats_stop_all(dum)
-#define zhpe_stats_pause_all(dum)
-#define zhpe_stats_restart_all(dum)
+#define zhpe_stats_stop_all()
+#define zhpe_stats_pause_all()
+#define zhpe_stats_restart_all()
 #define zhpe_stats_start(subid)
-#define zhpe_stats_stop(subid, force_write)
+#define zhpe_stats_stop(subid)
 #define zhpe_stats_pause(subid)
 #define zhpe_stats_enable()
 #define zhpe_stats_disable()

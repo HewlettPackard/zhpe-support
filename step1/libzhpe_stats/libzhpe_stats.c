@@ -48,7 +48,6 @@ struct zhpe_stats_extra {
 };
 
 struct zhpe_stats_delta {
-    bool                paused;
     struct zhpe_stats_delta *next;
     char                buf[0];
 };
@@ -63,6 +62,7 @@ struct zhpe_stats {
     uint8_t             pause_all:1;
     uint8_t             enabled:1;
     struct zhpe_stats_delta *delta;
+    struct zhpe_stats_delta *delta_paused;
     struct zhpe_stats_delta *delta_free;
     uint64_t            buf_len;
     char                buf[0];
@@ -202,8 +202,6 @@ static void stats_cmn_update_stats(struct zhpe_stats *stats)
 
     /* Update all active deltas with new data: delta += old */
     for (delta = stats->delta; delta; delta = delta->next) {
-        if (delta->paused)
-            continue;
         /* compute delta stats: new += old */
         o = offsetof(ProcCtlData, execInstTotal);
         n = ((sizeof(ProcCtlData) - o) / sizeof(*u64op));
@@ -231,12 +229,16 @@ static void stats_cmn_update_stats(struct zhpe_stats *stats)
 
 static struct zhpe_stats_delta *
 stats_cmn_delta_find(struct zhpe_stats *stats,
-                     struct zhpe_stats_delta *list, uint32_t subid)
+                     struct zhpe_stats_delta **list, uint32_t subid,
+                     bool unlink)
 {
     struct zhpe_stats_delta *ret;
+    struct zhpe_stats_delta **prev = list;
 
-    for (ret = list; ret; ret = ret->next) {
+    for (ret = *prev; ret; prev = &ret->next, ret = *prev) {
         if (stats_cmn_extra(stats, ret->buf)->subid == subid) {
+            if (unlink)
+                *prev = ret->next;
             break;
         }
     }
@@ -255,12 +257,13 @@ static inline void stats_cmn_delta_write(struct zhpe_stats *stats,
         abort();
 }
 
-static inline void stats_cmn_delta_free_head(struct zhpe_stats *stats)
+static inline void stats_cmn_delta_free_head(struct zhpe_stats *stats,
+                                             struct zhpe_stats_delta **list)
 {
     struct zhpe_stats_delta *delta;
 
-    delta = stats->delta;
-    stats->delta = delta->next;
+    delta = *list;
+    *list = delta->next;
     delta->next = stats->delta_free;
     stats->delta_free = delta;
 }
@@ -313,15 +316,22 @@ static void stats_cmn_close(struct zhpe_stats *stats)
     if (stats->fd != -1)
         close(stats->fd);
 
-    while (stats->delta)
-        stats_cmn_delta_free_head(stats);
+    for (delta = stats->delta; delta; delta = next) {
+        next = delta->next;
+        free(delta);
+    }
     stats->delta = NULL;
-
+    for (delta = stats->delta_paused; delta; delta = next) {
+        next = delta->next;
+        free(delta);
+    }
+    stats->delta_paused = NULL;
     for (delta = stats->delta_free; delta; delta = next) {
         next = delta->next;
         free(delta);
     }
     stats->delta_free = NULL;
+
     free(stats);
 }
 
@@ -486,6 +496,8 @@ static void stats_sim_open(uint16_t uid)
 
     stats = pthread_getspecific(zhpe_stats_key);
     if (stats) {
+        if (stats->uid == uid)
+            return;
         print_err("%s,%u:tid %ld, uid 0x%03x active, cannot open 0x%03x\n",
                   __func__, __LINE__, syscall(SYS_gettid), stats->uid, uid);
         abort();
@@ -539,23 +551,24 @@ static struct zhpe_stats *stats_sim_stop_counters(void)
 static void stats_sim_start(struct zhpe_stats *stats, uint32_t subid)
 {
     struct zhpe_stats_delta *active;
-    struct zhpe_stats_delta *delta;
-    struct zhpe_stats_delta *next;
 
-    /* subid already active? */
-    active = stats_cmn_delta_find(stats, stats->delta, subid);
-    if (!active) {
-        stats_cmn_delta_alloc(stats, subid);
+    /* subid running or paused? */
+    active = stats_cmn_delta_find(stats, &stats->delta_paused, subid, true);
+    if (active) {
+        if (stats->delta)
+            stats_cmn_extra(stats, active->buf)->nesting =
+                stats_cmn_extra(stats, stats->delta->buf)->nesting + 1;
+        else
+            stats_cmn_extra(stats, active->buf)->nesting = 0;
+        active->next = stats->delta;
+        stats->delta = active;
         goto do_start;
     }
+    active = stats_cmn_delta_find(stats, &stats->delta, subid, false);
+    if (!active)
+        stats_cmn_delta_alloc(stats, subid);
 
-    for (delta = stats->delta; delta; delta = next) {
-        next = delta->next;
-        delta->paused = false;
-        if (delta == active)
-            break;
-    }
-do_start:
+ do_start:
     sim_start(stats);
 }
 
@@ -565,27 +578,29 @@ static void stats_sim_stop(struct zhpe_stats *stats, uint32_t subid)
     struct zhpe_stats_delta *delta;
     struct zhpe_stats_delta *next;
 
-    /* Active? */
-    active = stats_cmn_delta_find(stats, stats->delta, subid);
+    /* subid running or paused? */
+    active = stats_cmn_delta_find(stats, &stats->delta_paused, subid, true);
+    if (active) {
+        stats_cmn_delta_write(stats, active);
+        active->next = stats->delta_free;
+        stats->delta_free = active;
+        goto do_start;
+    }
+    active = stats_cmn_delta_find(stats, &stats->delta, subid, false);
     if (!active)
         goto do_start;
 
     for (delta = stats->delta; delta; delta = next) {
         next = delta->next;
         stats_cmn_delta_write(stats, delta);
-        stats_cmn_delta_free_head(stats);
+        stats_cmn_delta_free_head(stats, &stats->delta);
         if (delta == active)
             break;
     }
 
  do_start:
-    for (delta = stats->delta; delta; delta = next) {
-        next = delta->next;
-        if (!delta->paused) {
-            sim_start(stats);
-            return;
-        }
-    }
+    if (stats->delta)
+        sim_start(stats);
 }
 
 static void stats_sim_stop_all(struct zhpe_stats *stats)
@@ -593,10 +608,15 @@ static void stats_sim_stop_all(struct zhpe_stats *stats)
     struct zhpe_stats_delta *delta;
     struct zhpe_stats_delta *next;
 
+    for (delta = stats->delta_paused; delta; delta = next) {
+        next = delta->next;
+        stats_cmn_delta_write(stats, delta);
+        stats_cmn_delta_free_head(stats, &stats->delta_paused);
+    }
     for (delta = stats->delta; delta; delta = next) {
         next = delta->next;
         stats_cmn_delta_write(stats, delta);
-        stats_cmn_delta_free_head(stats);
+        stats_cmn_delta_free_head(stats, &stats->delta);
     }
 }
 
@@ -607,25 +627,25 @@ static void stats_sim_pause(struct zhpe_stats *stats, uint32_t subid)
     struct zhpe_stats_delta *next;
 
     /* Active? */
-    active = stats_cmn_delta_find(stats, stats->delta, subid);
+    active = stats_cmn_delta_find(stats, &stats->delta, subid, false);
     if (!active)
         goto do_start;
 
     for (delta = stats->delta; delta; delta = next) {
         next = delta->next;
-        delta->paused = true;
-        if (delta == active)
+        if (delta == active) {
+            stats->delta = next;
+            delta->next = stats->delta_paused;
+            stats->delta_paused = delta;
             break;
+        }
+        stats_cmn_delta_write(stats, delta);
+        stats_cmn_delta_free_head(stats, &stats->delta);
     }
 
  do_start:
-    for (delta = stats->delta; delta; delta = next) {
-        next = delta->next;
-        if (!delta->paused) {
-            sim_start(stats);
-            return;
-        }
-    }
+    if (stats->delta)
+        sim_start(stats);
 }
 
 static void stats_sim_finalize(void)
@@ -744,19 +764,22 @@ static struct zhpe_stats_ops stats_ops_likwid = {
 
 #endif
 
-void zhpe_stats_init(const char *stats_dir, const char *stats_unique)
+bool zhpe_stats_init(const char *stats_dir, const char *stats_unique)
 {
+    bool                ret = false;
+    int                 rc;
+
     if (!stats_dir && !stats_unique)
-        return;
+        return ret;
     if (!stats_dir || !stats_unique) {
         print_err("%s,%u:missing %s\n", __func__, __LINE__,
                   stats_dir ? "stats_unique" : "stats_dir");
-        abort();
+        return ret;
     }
     mutex_lock(&zhpe_stats_mutex);
     if (zhpe_stats_ops != &zhpe_stats_nops) {
         print_err("%s,%u:already initialized\n", __func__, __LINE__);
-        abort();
+        goto done;
     }
 #ifdef HAVE_ZHPE_SIM
     if (sim_api_is_sim())
@@ -771,23 +794,31 @@ void zhpe_stats_init(const char *stats_dir, const char *stats_unique)
     if (zhpe_stats_ops == &zhpe_stats_nops) {
         print_err("%s,%u:no statistics support available\n",
                   __func__, __LINE__);
-        abort();
+        goto done;
     }
 
     zhpe_stats_dir = strdup_or_null(stats_dir);
     if (!zhpe_stats_dir)
-        abort();
+        goto done;
     zhpe_stats_unique = strdup_or_null(stats_unique);
     if (!zhpe_stats_unique)
-        abort();
+        goto done;
 
     if (!zhpe_stats_init_once) {
-        abort_posix(pthread_key_create, &zhpe_stats_key,
-                    zhpe_stats_ops->key_destructor);
+        rc = -pthread_key_create(&zhpe_stats_key,
+                                 zhpe_stats_ops->key_destructor);
+        if (rc < 0) {
+            print_func_err(__func__, __LINE__, "pthread_key_create", "", rc);
+            goto done;
+        }
         zhpe_stats_init_once = true;
     }
+    ret = true;
 
+ done:
     mutex_unlock(&zhpe_stats_mutex);
+
+    return ret;
 }
 
 void zhpe_stats_test(uint16_t uid)
@@ -799,51 +830,51 @@ void zhpe_stats_test(uint16_t uid)
     zhpe_stats_start(0);
     zhpe_stats_stop(0);
 
-    zhpe_stats_start(0);
-    zhpe_stats_stop(0);
+    zhpe_stats_start(10);
+    zhpe_stats_stop(10);
 
-    zhpe_stats_start(0);
-    zhpe_stats_pause(0);
-    zhpe_stats_stop(0);
+    zhpe_stats_start(20);
+    zhpe_stats_pause(20);
+    zhpe_stats_stop(20);
 
-    zhpe_stats_start(0);
-    zhpe_stats_pause(0);
-    zhpe_stats_start(0);
-    zhpe_stats_stop(0);
-
-    zhpe_stats_start(0);
-    zhpe_stats_pause_all();
+    zhpe_stats_start(30);
     nop();
-    zhpe_stats_stop_all();
+    zhpe_stats_stop(30);
 
-    zhpe_stats_start(0);
+    zhpe_stats_start(40);
+    nop();
+    zhpe_stats_pause(40);
+    zhpe_stats_start(40);
+    nop();
+    nop();
+    zhpe_stats_stop(40);
+
+    zhpe_stats_start(50);
+    nop();
+    nop();
     zhpe_stats_pause_all();
     zhpe_stats_restart_all();
     nop();
     zhpe_stats_stop_all();
 
-    zhpe_stats_start(0);
-    nop();
-    zhpe_stats_stop(0);
+    zhpe_stats_start(60);
+    zhpe_stats_start(70);
+    zhpe_stats_stop(70);
+    zhpe_stats_stop(60);
 
-    zhpe_stats_start(0);
-    zhpe_stats_start(1);
-    zhpe_stats_stop(1);
-    zhpe_stats_stop(0);
+    zhpe_stats_start(80);
+    nop();
+    zhpe_stats_start(90);
+    nop();
+    nop();
+    zhpe_stats_stop(80);
+    nop();
+    zhpe_stats_stop_all();
 
-    zhpe_stats_start(0);
-    nop();
-    zhpe_stats_start(1);
+    zhpe_stats_start(100);
     nop();
     nop();
-    zhpe_stats_stop(1);
-    nop();
-    zhpe_stats_stop(0);
-
-    zhpe_stats_start(0);
-    nop();
-    nop();
-    zhpe_stats_start(1);
+    zhpe_stats_start(110);
     nop();
     zhpe_stats_pause_all();
     nop();
@@ -851,30 +882,33 @@ void zhpe_stats_test(uint16_t uid)
     nop();
     zhpe_stats_stop_all();
 
-    zhpe_stats_start(0);
-    zhpe_stats_start(1);
+    zhpe_stats_start(120);
+    nop();
+    zhpe_stats_start(130);
     nop();
     nop();
 
-    zhpe_stats_start(2);
+    zhpe_stats_start(140);
     nop();
-    zhpe_stats_start(3);
+    zhpe_stats_start(150);
     nop();
-    zhpe_stats_pause(2);
+    zhpe_stats_pause(140);
     nop();
-    zhpe_stats_start(3);
+    zhpe_stats_start(150);
     nop();
-    zhpe_stats_stop(3);
-    zhpe_stats_stop(2);
+    zhpe_stats_stop(150);
+    zhpe_stats_stop(140);
 
-    zhpe_stats_start(4);
-    zhpe_stats_start(5);
+    zhpe_stats_start(160);
+    zhpe_stats_start(170);
     nop();
-    zhpe_stats_stop(5);
-    zhpe_stats_stop(4);
+    zhpe_stats_stop(170);
+    zhpe_stats_stop(160);
 
-    zhpe_stats_stop(1);
-    zhpe_stats_stop(0);
+    zhpe_stats_stop(150);
+    zhpe_stats_stop(140);
+
+    zhpe_stats_stop_all();
 
     zhpe_stats_close();
 }

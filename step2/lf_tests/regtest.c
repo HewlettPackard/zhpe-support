@@ -70,6 +70,19 @@ static int do_reg(const struct args *args)
     ret = fab_dom_setup(NULL, NULL, true, "zhpe", NULL, FI_EP_RDM, &fab_dom);
     if (ret < 0)
         goto done;
+
+    /* There might be some extra overhead the first time. */
+    ret = fi_mr_reg(fab_dom.domain, buf, buf_size,
+                    (FI_SEND | FI_RECV | FI_READ | FI_WRITE |
+                     FI_REMOTE_READ | FI_REMOTE_WRITE),
+                    0, 0, 0, &mr, NULL);
+    if (ret < 0) {
+        print_func_fi_err(__func__, __LINE__, "fi_mr_reg", "", ret);
+        goto done;
+    }
+    fi_close(&mr->fid);
+    zhpe_stats_enable();
+
     for (size = args->start_size, steps = 0; steps < args->steps;
          size <<= 1, steps++) {
         zhpe_stats_stamp(0, size);
@@ -140,7 +153,6 @@ int main(int argc, char **argv)
     zhpe_stats_init("/tmp", "reg");
     zhpe_stats_test(0);
     zhpe_stats_open(1);
-    zhpe_stats_enable();
 
     if (argc != 4)
         usage(true);

@@ -310,10 +310,11 @@ stats_cmn_delta_alloc(struct zhpe_stats *stats, uint32_t subid)
     if (ret)
         stats->delta_free = ret->next;
     else {
-        ret = calloc(1, req);
+        ret = malloc(req);
         if (!ret)
             abort();
     }
+    memset(ret, 0, req);
 
     extra = stats_cmn_extra(stats, ret->buf);
     extra->subid = subid;

@@ -57,14 +57,16 @@ struct zhpe_stats_ops {
     void                (*stop)(struct zhpe_stats *stats, uint32_t subid);
     void                (*pause)(struct zhpe_stats * stats, uint32_t subid);
     void                (*finalize)(void);
-    void                (*key_destructor)(void *);
+    void                (*key_destructor)(void *vstats);
+    void                (*stamp)(struct zhpe_stats *stats, uint32_t subid,
+                                 uint32_t items, uint64_t *data);
 };
 
 enum {
     ZHPE_STATS_SUBID_SEND = 10,
     ZHPE_STATS_SUBID_RECV = 20,
     ZHPE_STATS_SUBID_RMA  = 30,
-    ZHPE_STATS_SUBID_COMP = 40,
+    ZHPE_STATS_SUBID_ZHPQ = 40,
 };
 
 _EXTERN_C_END

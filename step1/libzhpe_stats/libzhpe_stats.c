@@ -79,6 +79,11 @@ static struct zhpe_stats *stats_nop_null(void)
     return NULL;
 }
 
+static void stats_nop_stamp(struct zhpe_stats *stats, uint32_t dum,
+                            uint32_t dum2, uint64_t *dum3)
+{
+}
+
 static void stats_nop_stats(struct zhpe_stats *stats)
 {
 }
@@ -113,6 +118,7 @@ static struct zhpe_stats_ops zhpe_stats_nops = {
     .pause              = stats_nop_stats_uint32,
     .finalize           = stats_nop_void,
     .key_destructor     = stats_nop_voidp,
+    .stamp              = stats_nop_stamp,
 };
 
 struct zhpe_stats_ops *zhpe_stats_ops = &zhpe_stats_nops;
@@ -167,64 +173,84 @@ static const char *stats_cmn_state_str(uint8_t state)
 }
 #endif
 
-static void stats_cmn_update_stats(struct zhpe_stats *stats)
+static void stats_cmn_stats_sub(struct zhpe_stats *stats, char *old, char *new)
 {
-    char                *new = stats->buf;
-    char                *old = stats->buf + stats->buf_len;
     size_t              o;
     size_t              n;
     uint64_t            *u64op;
     uint64_t            *u64np;
     uint32_t            *u32op;
     uint32_t            *u32np;
-    struct zhpe_stats_delta *delta;
 
     /* compute delta stats: old = new - old */
     o = offsetof(ProcCtlData, execInstTotal);
-    n = ((sizeof(ProcCtlData) - o) / sizeof(*u64op));
+    n = ((sizeof(ProcCtlData) - o) / sizeof(*u64np));
     u64op = (void *)(old + o);
     u64np = (void *)(new + o);
     for (; n > 0; n--, u64op++, u64np++)
         *u64op = *u64np - *u64op;
 
     o = offsetof(CacheData, coherencyCastoutDataL1);
-    n = ((sizeof(CacheData) - o) / sizeof(*u64op));
+    n = ((sizeof(CacheData) - o) / sizeof(*u64np));
     u64op = (void *)(old + sizeof(ProcCtlData) + o);
     u64np = (void *)(new + sizeof(ProcCtlData) + o);
     for (; n > 0; n--, u64op++, u64np++)
         *u64op = *u64np - *u64op;
 
-    n = offsetof(struct zhpe_stats_extra, subid) / sizeof(*u32op);
+    n = offsetof(struct zhpe_stats_extra, subid) / sizeof(*u32np);
     u32op = (void *)stats_cmn_extra(stats, old);
     u32np = (void *)stats_cmn_extra(stats, new);
     for (; n > 0; n--, u32op++, u32np++)
         *u32op = *u32np - *u32op;
 
-    /* Update all active deltas with new data: delta += old */
-    for (delta = stats->delta; delta; delta = delta->next) {
-        /* compute delta stats: new += old */
-        o = offsetof(ProcCtlData, execInstTotal);
-        n = ((sizeof(ProcCtlData) - o) / sizeof(*u64op));
-        u64op = (void *)(old + o);
-        u64np = (void *)(delta->buf + o);
-        for (; n > 0; n--, u64op++, u64np++)
-            *u64np += *u64op;
+}
 
-        o = offsetof(CacheData, coherencyCastoutDataL1);
-        n = ((sizeof(CacheData) - o) / sizeof(*u64op));
-        u64op = (void *)(old + sizeof(ProcCtlData) + o);
-        u64np = (void *)(delta->buf + sizeof(ProcCtlData) + o);
-        for (; n > 0; n--, u64op++, u64np++)
-            *u64np += *u64op;
+static void stats_cmn_stats_add(struct zhpe_stats *stats, char *old, char *new)
+{
+    size_t              o;
+    size_t              n;
+    uint64_t            *u64op;
+    uint64_t            *u64np;
+    uint32_t            *u32op;
+    uint32_t            *u32np;
 
-        n = offsetof(struct zhpe_stats_extra, subid) / sizeof(*u32op);
-        u32op = (void *)stats_cmn_extra(stats, old);
-        u32np = (void *)stats_cmn_extra(stats, delta->buf);
-        for (; n > 0; n--, u32op++, u32np++)
-            *u32np += *u32op;
-    }
-    /* Save current state. */
-    memcpy(stats->buf + stats->buf_len, stats->buf, stats->buf_len);
+    /* old = new + old */
+    o = offsetof(ProcCtlData, execInstTotal);
+    n = ((sizeof(ProcCtlData) - o) / sizeof(*u64np));
+    u64op = (void *)(old + o);
+    u64np = (void *)(new + o);
+    for (; n > 0; n--, u64op++, u64np++)
+        *u64op = *u64np + *u64op;
+
+    o = offsetof(CacheData, coherencyCastoutDataL1);
+    n = ((sizeof(CacheData) - o) / sizeof(*u64np));
+    u64op = (void *)(old + sizeof(ProcCtlData) + o);
+    u64np = (void *)(new + sizeof(ProcCtlData) + o);
+    for (; n > 0; n--, u64op++, u64np++)
+        *u64op = *u64np + *u64op;
+
+    n = offsetof(struct zhpe_stats_extra, subid) / sizeof(*u32np);
+    u32op = (void *)stats_cmn_extra(stats, old);
+    u32np = (void *)stats_cmn_extra(stats, new);
+    for (; n > 0; n--, u32op++, u32np++)
+        *u32op = *u32np + *u32op;
+}
+
+static void stats_cmn_update_stats(struct zhpe_stats *stats)
+{
+    char                *new = stats->buf;
+    char                *old = stats->buf + stats->buf_len;
+    struct zhpe_stats_delta *delta;
+
+    /* Compute delta */
+    stats_cmn_stats_sub(stats, old, new);
+    /* Update all active deltas with new data. */
+    for (delta = stats->delta; delta; delta = delta->next)
+        stats_cmn_stats_add(stats, delta->buf, old);
+    /* Update "clock" */
+    stats_cmn_stats_add(stats, old + stats->buf_len, old);
+    /* Save current counters for next time. */
+    memcpy(old, new, stats->buf_len);
 }
 
 static struct zhpe_stats_delta *
@@ -246,15 +272,20 @@ stats_cmn_delta_find(struct zhpe_stats *stats,
     return ret;
 }
 
-static inline void stats_cmn_delta_write(struct zhpe_stats *stats,
-                                         struct zhpe_stats_delta *delta)
+static inline void stats_cmn_buf_write(struct zhpe_stats *stats, void *buf)
 {
     ssize_t             res;
 
-    res = write(stats->fd, delta->buf, stats->buf_len);
+    res = write(stats->fd, buf, stats->buf_len);
     if (check_func_ion(__func__, __LINE__, "write", stats->buf_len, false,
                        stats->buf_len, res, 0) < 0)
         abort();
+}
+
+static inline void stats_cmn_delta_write(struct zhpe_stats *stats,
+                                         struct zhpe_stats_delta *delta)
+{
+    stats_cmn_buf_write(stats, delta->buf);
 }
 
 static inline void stats_cmn_delta_free_head(struct zhpe_stats *stats,
@@ -279,11 +310,10 @@ stats_cmn_delta_alloc(struct zhpe_stats *stats, uint32_t subid)
     if (ret)
         stats->delta_free = ret->next;
     else {
-        ret = malloc(req);
+        ret = calloc(1, req);
         if (!ret)
             abort();
     }
-    memset(ret, 0, req);
 
     extra = stats_cmn_extra(stats, ret->buf);
     extra->subid = subid;
@@ -341,7 +371,7 @@ static void stats_cmn_open(uint16_t uid, size_t buf_len)
     struct zhpe_stats   *stats;
 
     buf_len += sizeof(struct zhpe_stats_extra);
-    stats = calloc(1, sizeof(*stats) + 2 * buf_len);
+    stats = calloc(1, sizeof(*stats) + 3 * buf_len);
     if (!stats)
         abort();
     stats->uid = uid;
@@ -529,7 +559,8 @@ static void stats_sim_restart_all(void)
         return;
     stats->pause_all = false;
 
-    sim_start(stats);
+    if (stats->delta)
+        sim_start(stats);
 }
 
 static struct zhpe_stats *stats_sim_stop_counters(void)
@@ -671,6 +702,42 @@ static void stats_sim_key_destructor(void *vstats)
     sim_close(stats);
 }
 
+static void stats_sim_stamp(struct zhpe_stats *stats, uint32_t subid,
+                            uint32_t items, uint64_t *data)
+{
+    char                *clock = stats->buf + 2 * stats->buf_len;
+    size_t              o;
+    size_t              n;
+    uint64_t            *u64np;
+    char                buf[stats->buf_len];
+    struct zhpe_stats_extra *extra = stats_cmn_extra(stats, buf);;
+
+    /* Fill in instruction counts amd extra from clock data. */
+    memcpy(buf, clock, sizeof(ProcCtlData));
+    memcpy(extra, stats_cmn_extra(stats, clock), sizeof(*extra));
+
+    /* Put user data in CacheData. */
+    o = offsetof(CacheData, coherencyCastoutDataL1);
+    n = ((sizeof(CacheData) - o) / sizeof(*u64np));
+    u64np = (void *)(buf + sizeof(ProcCtlData) + o);
+    if (items > n)
+        items = n;
+    n -= items;
+    for (; items > 0; items--, u64np++, data++)
+        *u64np = *data;
+    for (; n > 0; n--, u64np++)
+        *u64np = 0;
+
+    extra->subid = subid;
+    if (stats->delta)
+        extra->nesting = stats_cmn_extra(stats, stats->delta->buf)->nesting + 1;
+    stats_cmn_buf_write(stats, buf);
+
+    /* Restart I/O, if active. */
+    if (stats->delta)
+        sim_start(stats);
+}
+
 static struct zhpe_stats_ops stats_ops_sim = {
     .open               = stats_sim_open,
     .close              = stats_sim_close,
@@ -685,6 +752,7 @@ static struct zhpe_stats_ops stats_ops_sim = {
     .pause              = stats_sim_pause,
     .finalize           = stats_sim_finalize,
     .key_destructor     = stats_sim_key_destructor,
+    .stamp              = stats_sim_stamp,
 };
 
 /* LIKWID code */

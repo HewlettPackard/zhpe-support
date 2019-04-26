@@ -1,5 +1,6 @@
 add_library(zhpeq SHARED libzhpeq.c)
-target_link_libraries(zhpeq PUBLIC zhpeq_util dl Threads::Threads)
+target_link_libraries(
+  zhpeq PRIVATE zhpe_stats PUBLIC zhpe_stats zhpeq_util dl Threads::Threads)
 
 install(TARGETS zhpeq DESTINATION lib)
 install(

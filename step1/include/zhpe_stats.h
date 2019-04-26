@@ -120,7 +120,19 @@ static inline void zhpe_stats_disable(void)
     zhpe_stats_ops->disable();
 }
 
-#define zhpe_stats_subid(_name, _id) \
+#define zhpe_stats_stamp(_subid, ...)                                   \
+do {                                                                    \
+    struct zhpe_stats   *stats;                                         \
+                                                                        \
+    if ((stats = zhpe_stats_ops->stop_counters())) {                    \
+        uint64_t        data[] = { __VA_ARGS__ };                       \
+                                                                        \
+        zhpe_stats_ops->stamp(stats, _subid,                            \
+                             sizeof(data) / sizeof(uint64_t), data);    \
+    }                                                                   \
+} while(0)
+
+#define zhpe_stats_subid(_name, _id)            \
     ((ZHPE_STATS_SUBID_##_name * 1000) + _id)
 
 #else
@@ -143,6 +155,7 @@ static inline bool zhpe_stats_init(const char *stats_dir,
 #define zhpe_stats_pause(subid)
 #define zhpe_stats_enable()
 #define zhpe_stats_disable()
+#define zhpe_stats_stamp(_subid, ...)
 #define zhpe_stats_subid(_name, _id)
 
 #endif

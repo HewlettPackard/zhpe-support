@@ -385,6 +385,21 @@ int zhpeq_commit(struct zhpeq *zq, uint32_t qindex, uint32_t n_entries)
         goto done;
 
     qmask = zq->xqinfo.cmdq.ent - 1;
+
+#ifdef HAVE_ZHPE_STATS
+    zhpe_stats_pause_all();
+    uint32_t            i;
+    union zhpe_hw_wq_entry *wqe;
+
+    for (i = 0; i < n_entries; i++) {
+        wqe = zq->wq + ((qindex + i) & qmask);
+        zhpe_stats_stamp(zhpe_stats_subid(ZHPQ, 60), (uintptr_t)zq,
+                         wqe->hdr.cmp_index,
+                         (uintptr_t)zq->context[wqe->hdr.cmp_index]);
+    }
+    zhpe_stats_restart_all();
+#endif
+
     old = atm_load_rlx(&zq->tail_commit);
     if (old != qindex) {
         ret = -EAGAIN;
@@ -636,6 +651,8 @@ int zhpeq_atomic(struct zhpeq *zq, uint32_t qindex, bool fence, bool retval,
 int zhpeq_mr_reg(struct zhpeq_dom *zdom, const void *buf, size_t len,
                  uint32_t access, struct zhpeq_key_data **qkdata_out)
 {
+    zhpe_stats_start(zhpe_stats_subid(ZHPQ, 0));
+
     int                 ret = -EINVAL;
 
     if (!qkdata_out)
@@ -651,11 +668,15 @@ int zhpeq_mr_reg(struct zhpeq_dom *zdom, const void *buf, size_t len,
 #endif
 
  done:
+    zhpe_stats_stop(zhpe_stats_subid(ZHPQ, 0));
+
     return ret;
 }
 
 int zhpeq_mr_free(struct zhpeq_dom *zdom, struct zhpeq_key_data *qkdata)
 {
+    zhpe_stats_start(zhpe_stats_subid(ZHPQ, 10));
+
     int                 ret = 0;
 
     if (!qkdata)
@@ -670,6 +691,8 @@ int zhpeq_mr_free(struct zhpeq_dom *zdom, struct zhpeq_key_data *qkdata)
     ret = b_ops->mr_free(zdom, qkdata);
 
  done:
+    zhpe_stats_stop(zhpe_stats_subid(ZHPQ, 10));
+
     return ret;
 }
 
@@ -677,6 +700,8 @@ int zhpeq_zmmu_import(struct zhpeq_dom *zdom, int open_idx, const void *blob,
                       size_t blob_len, bool cpu_visible,
                       struct zhpeq_key_data **qkdata_out)
 {
+    zhpe_stats_start(zhpe_stats_subid(ZHPQ, 40));
+
     int                 ret = -EINVAL;
 
     if (!qkdata_out)
@@ -693,6 +718,8 @@ int zhpeq_zmmu_import(struct zhpeq_dom *zdom, int open_idx, const void *blob,
 #endif
 
  done:
+    zhpe_stats_stop(zhpe_stats_subid(ZHPQ, 40));
+
     return ret;
 }
 
@@ -700,6 +727,8 @@ int zhpeq_zmmu_fam_import(struct zhpeq_dom *zdom, int open_idx,
                           bool cpu_visible, struct zhpeq_key_data **qkdata_out)
 {
     int                 ret = -EINVAL;
+
+    zhpe_stats_start(zhpe_stats_subid(ZHPQ, 20));
 
     if (!qkdata_out)
         goto done;
@@ -718,6 +747,8 @@ int zhpeq_zmmu_fam_import(struct zhpeq_dom *zdom, int open_idx,
 #endif
 
  done:
+    zhpe_stats_stop(zhpe_stats_subid(ZHPQ, 20));
+
     return ret;
 }
 
@@ -725,6 +756,8 @@ int zhpeq_zmmu_export(struct zhpeq_dom *zdom,
                       const struct zhpeq_key_data *qkdata,
                       void *blob, size_t *blob_len)
 {
+    zhpe_stats_start(zhpe_stats_subid(ZHPQ, 30));
+
     int                 ret = -EINVAL;
     struct zhpeq_mr_desc_v1 *desc = container_of(qkdata,
                                                  struct zhpeq_mr_desc_v1,
@@ -740,12 +773,16 @@ int zhpeq_zmmu_export(struct zhpeq_dom *zdom,
     ret = b_ops->zmmu_export(zdom, qkdata, blob, blob_len);
 
  done:
+    zhpe_stats_stop(zhpe_stats_subid(ZHPQ, 30));
+
     return ret;
 }
 
 int zhpeq_zmmu_free(struct zhpeq_dom *zdom, struct zhpeq_key_data *qkdata)
 {
     int                 ret = 0;
+
+    zhpe_stats_start(zhpe_stats_subid(ZHPQ, 50));
 
     if (!qkdata)
         goto done;
@@ -759,6 +796,8 @@ int zhpeq_zmmu_free(struct zhpeq_dom *zdom, struct zhpeq_key_data *qkdata)
     ret = b_ops->zmmu_free(zdom, qkdata);
 
  done:
+    zhpe_stats_stop(zhpe_stats_subid(ZHPQ, 50));
+
     return ret;
 }
 
@@ -782,8 +821,11 @@ ssize_t zhpeq_cq_read(struct zhpeq *zq, struct zhpeq_cq_entry *entries,
         cqe = zq->cq + (old & qmask);
         if ((atm_load_rlx((uint8_t *)cqe) & ZHPE_HW_CQ_VALID) !=
              cq_valid(old, qmask)) {
-            if (i > 0 || !b_ops->cq_poll || polled)
+            if (i > 0 || !b_ops->cq_poll || polled) {
+                if (i == 0)
+                    zhpe_stats_stamp(zhpe_stats_subid(ZHPQ, 70), (uintptr_t)zq);
                 break;
+            }
             ret = b_ops->cq_poll(zq, n_entries);
             if (ret < 0)
                 goto done;
@@ -793,8 +835,10 @@ ssize_t zhpeq_cq_read(struct zhpeq *zq, struct zhpeq_cq_entry *entries,
         entries[i].z = cqe->entry;
         new = old + 1;
         if (!atm_cmpxchg(&zq->head_tail.head, &old, new))
-            break;
+            continue;
         entries[i].z.context = get_context(zq, &entries[i].z);
+        zhpe_stats_stamp(zhpe_stats_subid(ZHPQ, 80), (uintptr_t)zq,
+                         entries[i].z.index, (uintptr_t)entries[i].z.context);
         old = new;
         i++;
     }

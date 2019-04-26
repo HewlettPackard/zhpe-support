@@ -40,6 +40,7 @@
 #include <zhpeq.h>
 #include <zhpeq_util.h>
 #include <zhpe.h>
+#include <zhpe_stats.h>
 
 #include <assert.h>
 #include <endian.h>

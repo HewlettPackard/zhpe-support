@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2019 Hewlett Packard Enterprise Development LP.
+ * Copyright (C) 2019 Hewlett Packard Enterprise Development LP.
  * All rights reserved.
  *
  * This software is available to you under a choice of one of two

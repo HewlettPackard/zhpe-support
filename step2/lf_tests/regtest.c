@@ -50,6 +50,8 @@ static int do_reg(const struct args *args)
     int                 ret = 0;
     char                *buf = NULL;
     struct fid_mr       *mr = NULL;
+    const uint64_t      lcl_acc =  FI_READ | FI_WRITE;
+    const uint64_t      rem_acc =  FI_REMOTE_READ | FI_REMOTE_WRITE;
     size_t              buf_size;
     struct fab_dom      fab_dom;
     uint64_t            size;
@@ -71,25 +73,24 @@ static int do_reg(const struct args *args)
     if (ret < 0)
         goto done;
 
-    /* There might be some extra overhead the first time. */
-    ret = fi_mr_reg(fab_dom.domain, buf, buf_size,
-                    (FI_SEND | FI_RECV | FI_READ | FI_WRITE |
-                     FI_REMOTE_READ | FI_REMOTE_WRITE),
-                    0, 0, 0, &mr, NULL);
-    if (ret < 0) {
-        print_func_fi_err(__func__, __LINE__, "fi_mr_reg", "", ret);
-        goto done;
-    }
-    fi_close(&mr->fid);
-    zhpe_stats_enable();
-
     for (size = args->start_size, steps = 0; steps < args->steps;
          size <<= 1, steps++) {
         zhpe_stats_stamp(0, size);
+        /* Warmups, local+remote. */
+        for (i = 0; i < 10; i++) {
+            ret = fi_mr_reg(fab_dom.domain, buf, buf_size, lcl_acc | rem_acc,
+                            0, 0, 0, &mr, NULL);
+            if (ret < 0) {
+                print_func_fi_err(__func__, __LINE__, "fi_mr_reg", "", ret);
+                goto done;
+            }
+            fi_close(&mr->fid);
+        }
+        /* Gathering statistics, local+remote. */
+        zhpe_stats_enable();
         for (i = 0; i < args->iterations; i++)  {
             zhpe_stats_start(10);
-            ret = fi_mr_reg(fab_dom.domain, buf, size,
-                            FI_SEND | FI_RECV | FI_READ | FI_WRITE,
+            ret = fi_mr_reg(fab_dom.domain, buf, size, lcl_acc | rem_acc,
                             0, 0, 0, &mr, NULL);
             zhpe_stats_stop(10);
             if (ret < 0) {
@@ -99,10 +100,23 @@ static int do_reg(const struct args *args)
             zhpe_stats_start(20);
             fi_close(&mr->fid);
             zhpe_stats_stop(20);
+        }
+        zhpe_stats_disable();
+        /* Warmups, local only. */
+        for (i = 0; i < 10; i++) {
+            ret = fi_mr_reg(fab_dom.domain, buf, buf_size, lcl_acc,
+                            0, 0, 0, &mr, NULL);
+            if (ret < 0) {
+                print_func_fi_err(__func__, __LINE__, "fi_mr_reg", "", ret);
+                goto done;
+            }
+            fi_close(&mr->fid);
+        }
+        /* Gathering statistics, local only. */
+        zhpe_stats_enable();
+        for (i = 0; i < args->iterations; i++)  {
             zhpe_stats_start(30);
-            ret = fi_mr_reg(fab_dom.domain, buf, size,
-                            (FI_SEND | FI_RECV | FI_READ | FI_WRITE |
-                             FI_REMOTE_READ | FI_REMOTE_WRITE),
+            ret = fi_mr_reg(fab_dom.domain, buf, size, lcl_acc,
                             0, 0, 0, &mr, NULL);
             zhpe_stats_stop(30);
             if (ret < 0) {
@@ -113,6 +127,7 @@ static int do_reg(const struct args *args)
             fi_close(&mr->fid);
             zhpe_stats_stop(40);
         }
+        zhpe_stats_disable();
     }
  done:
     if (buf)

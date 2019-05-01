@@ -91,7 +91,7 @@ Make sure the new version of libtoolize is first in your PATH.
 
 ### 2. Build and install zhpe library
 	$ cd ${SRC_DIR}/zhpe-support
-	$ ./prep.sh -f ${TEST_DIR} ${TEST_DIR}
+	$ ./prep.sh ${TEST_DIR}
 	$ make libzhpeq
 
 ### 3. Build and install zhpe provider with zhpe support
@@ -135,7 +135,6 @@ Make sure the new version of libtoolize is first in your PATH.
 
 ### 6. Build and install MPI tests
 	$ cd ${SRC_DIR}/zhpe-support
-	$ ./prep_mpi.sh -m ${TEST_DIR} ${TEST_DIR}
 	$ make mpi_tests
 
 ## Test low level APIs:  xingpong

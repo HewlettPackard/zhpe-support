@@ -143,19 +143,19 @@ static inline bool zhpe_stats_init(const char *stats_dir,
     return false;
 }
 
-#define zhpe_stats_test(uid)
-#define zhpe_stats_finalize()
-#define zhpe_stats_open(uid)
-#define zhpe_stats_close()
-#define zhpe_stats_stop_all()
-#define zhpe_stats_pause_all()
-#define zhpe_stats_restart_all()
-#define zhpe_stats_start(subid)
-#define zhpe_stats_stop(subid)
-#define zhpe_stats_pause(subid)
-#define zhpe_stats_enable()
-#define zhpe_stats_disable()
-#define zhpe_stats_stamp(_subid, ...)
+#define zhpe_stats_test(uid)            do {} while (0)
+#define zhpe_stats_finalize()           do {} while (0)
+#define zhpe_stats_open(uid)            do {} while (0)
+#define zhpe_stats_close()              do {} while (0)
+#define zhpe_stats_stop_all()           do {} while (0)
+#define zhpe_stats_pause_all()          do {} while (0)
+#define zhpe_stats_restart_all()        do {} while (0)
+#define zhpe_stats_start(subid)         do {} while (0)
+#define zhpe_stats_stop(subid)          do {} while (0)
+#define zhpe_stats_pause(subid)         do {} while (0)
+#define zhpe_stats_enable()             do {} while (0)
+#define zhpe_stats_disable()            do {} while (0)
+#define zhpe_stats_stamp(_subid, ...)   do {} while (0)
 #define zhpe_stats_subid(_name, _id)
 
 #endif

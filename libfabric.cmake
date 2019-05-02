@@ -1,0 +1,7 @@
+add_library(fabric INTERFACE)
+set(LIBF_LIB ${INSD}/lib/libfabric.so)
+target_link_libraries(fabric INTERFACE ${LIBF_LIB} Threads::Threads)
+message("LIBF_LIB " ${LIBF_LIB})
+set(LIBF_INC ${INSD}/include)
+target_include_directories(fabric INTERFACE ${LIBF_INC})
+message("LIBF_INC " ${LIBF_INC})

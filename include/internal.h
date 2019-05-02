@@ -40,23 +40,12 @@
 #include <zhpeq.h>
 #include <zhpeq_util.h>
 #include <zhpe.h>
+#include <zhpe_stats.h>
 
 #include <assert.h>
 #include <endian.h>
 
 #include <uuid/uuid.h>
-
-/* Do extern "C" without goofing up emacs. */
-#ifndef _EXTERN_C_SET
-#define _EXTERN_C_SET
-#ifdef  __cplusplus
-#define _EXTERN_C_BEG extern "C" {
-#define _EXTERN_C_END }
-#else
-#define _EXTERN_C_BEG
-#define _EXTERN_C_END
-#endif
-#endif
 
 _EXTERN_C_BEG
 
@@ -72,7 +61,9 @@ struct backend_ops {
     int                 (*qalloc_post)(struct zhpeq *zq);
     int                 (*qfree_pre)(struct zhpeq *zq);
     int                 (*qfree)(struct zhpeq *zq);
-    int                 (*open)(struct zhpeq *zq, int sock_fd);
+    int                 (*exchange)(struct zhpeq *zq, int sock_fd,
+                                    void *sa, size_t *sa_len);
+    int                 (*open)(struct zhpeq *zq, void *sa);
     int                 (*close)(struct zhpeq *zq, int open_idx);
     int                 (*wq_signal)(struct zhpeq *zq);
     ssize_t             (*cq_poll)(struct zhpeq *zq, size_t len);
@@ -87,11 +78,14 @@ struct backend_ops {
                                        const void *blob, size_t blob_len,
                                        bool cpu_visible,
                                        struct zhpeq_key_data **kdata_out);
+    int                 (*zmmu_fam_import)(struct zhpeq_dom *zdom, int open_idx,
+                                           bool cpu_visible,
+                                           struct zhpeq_key_data **kdata_out);
     int                 (*zmmu_export)(struct zhpeq_dom *zdom,
                                        const struct zhpeq_key_data *kdata,
                                        void *blob, size_t *blob_len);
     void                (*print_info)(struct zhpeq *zq);
-    int                 (*getaddr)(struct zhpeq *zq, union sockaddr_in46 *sa);
+    int                 (*getaddr)(struct zhpeq *zq, void *sa, size_t *sa_len);
     char                *(*qkdata_id_str)(struct zhpeq_dom *zdom,
                                           const struct zhpeq_key_data *qkdata);
 };
@@ -214,11 +208,5 @@ union rdm_rcv_tail {
 };
 
 _EXTERN_C_END
-
-#ifdef _EXTERN_C_SET
-#undef _EXTERN_C_SET
-#undef _EXTERN_C_BEG
-#undef _EXTERN_C_END
-#endif
 
 #endif /* _LIBZHPEQ_INTERNAL_H */

@@ -249,7 +249,8 @@ static int finfo_getinfo(const char *callf, uint line, struct fab_info *finfo)
      * find an exact match. May not be necessary in top-of-tree, but
      * it shouldn't hurt anything.
      */
-    if (!finfo->hints->fabric_attr ||
+    if (!finfo->hints ||
+        !finfo->hints->fabric_attr ||
         !finfo->hints->fabric_attr->prov_name)
         goto done;
     for (info = finfo->info; info; info = info->next) {

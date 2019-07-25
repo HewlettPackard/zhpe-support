@@ -219,11 +219,6 @@ static void usage(bool help)
         "Lower case is base 10; upper case is base 2.\n",
         appname);
 
-    if (help) {
-        printf("\n");
-        fab_print_info(NULL);
-    }
-
     exit(help ? 0 : 255);
 }
 

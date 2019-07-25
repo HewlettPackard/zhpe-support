@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2018 Hewlett Packard Enterprise Development LP.
+ * Copyright (C) 2017-2019 Hewlett Packard Enterprise Development LP.
  * All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -1253,6 +1253,7 @@ static int lfab_mr_reg(struct zhpeq_dom *zdom,
     bdom->lcl_mr[index] = mr;
     desc->hdr.magic = ZHPE_MAGIC;
     desc->hdr.version = ZHPEQ_MR_V1;
+    desc->hdr.zdom = zdom;
     desc->qkdata.z.vaddr = (uintptr_t)buf;
     desc->qkdata.z.len = len;
     desc->qkdata.z.zaddr = (((uint64_t)index << KEY_SHIFT) +
@@ -1273,23 +1274,17 @@ static int lfab_mr_reg(struct zhpeq_dom *zdom,
     return ret;
 }
 
-static int lfab_mr_free(struct zhpeq_dom *zdom, struct zhpeq_key_data *qkdata)
+static int lfab_mr_free(struct zhpeq_key_data *qkdata)
 {
     int                 ret = -EINVAL;
-    struct zdom_data    *bdom = zdom->backend_data;
-    struct zhpeq_mr_desc_v1 *desc = container_of(qkdata,
-                                                 struct zhpeq_mr_desc_v1,
-                                                 qkdata);
+    struct zhpeq_mr_desc_v1 *desc =
+        container_of(qkdata, struct zhpeq_mr_desc_v1, qkdata);
+    struct zdom_data    *bdom = desc->hdr.zdom->backend_data;
     uint32_t            index = TO_KEYIDX(qkdata->z.zaddr);
-
-    if (desc->hdr.magic != ZHPE_MAGIC || desc->hdr.version != ZHPEQ_MR_V1)
-        goto done;
 
     ret = lfab_eng_work_queue(&eng, worker_fi_close, &bdom->lcl_mr[index]->fid);
     free_lcl_mr(bdom, index);
-    free(desc);
 
- done:
     return ret;
 }
 
@@ -1307,30 +1302,15 @@ static void free_rkey(struct zdom_data *bdom, uint32_t index)
     }
 }
 
-static int lfab_zmmu_import(struct zhpeq_dom *zdom, int open_idx,
-                            const void *blob, size_t blob_len,
-                            bool cpu_visible,
-                            struct zhpeq_key_data **qkdata_out)
+static int lfab_zmmu_reg(struct zhpeq_key_data *qkdata)
 {
-    int                 ret = -EINVAL;
-    struct zdom_data    *bdom = zdom->backend_data;
-    const struct key_data_packed *pdata = blob;
-    struct zhpeq_mr_desc_v1 *desc = NULL;
+    int                 ret = -ENOSPC;
+    struct zhpeq_mr_desc_v1 *desc =
+        container_of(qkdata, struct zhpeq_mr_desc_v1, qkdata);
+    struct zdom_data    *bdom = desc->hdr.zdom->backend_data;
     struct free_index   old;
     struct free_index   new;
 
-    if (blob_len != sizeof(*pdata) || cpu_visible)
-        goto done;
-
-    ret = -ENOMEM;
-    desc = malloc(sizeof(*desc));
-    if (!desc)
-        goto done;
-    desc->hdr.magic = ZHPE_MAGIC;
-    desc->hdr.version = ZHPEQ_MR_V1 | ZHPEQ_MR_REMOTE;
-    unpack_kdata(pdata, &desc->qkdata);
-
-    ret = -ENOSPC;
     for (old = atm_load_rlx(&bdom->rkey_free) ;;) {
         if (old.index == FREE_END)
             goto done;
@@ -1339,60 +1319,37 @@ static int lfab_zmmu_import(struct zhpeq_dom *zdom, int open_idx,
         if (atm_cmpxchg(&bdom->rkey_free, &old, new))
             break;
     }
-    bdom->rkey[old.index].rkey = desc->qkdata.z.zaddr;
-    bdom->rkey[old.index].av_idx = open_idx;
-    desc->qkdata.z.zaddr = (((uint64_t)old.index << KEY_SHIFT) +
-                            TO_ADDR(desc->qkdata.z.vaddr));
-    *qkdata_out = &desc->qkdata;
-
-    ret = 0;
-
- done:
-    if (ret < 0)
-        free(desc);
-
-    return ret;
-}
-
-static int lfab_zmmu_free(struct zhpeq_dom *zdom, struct zhpeq_key_data *qkdata)
-{
-    int                 ret = -EINVAL;
-    struct zdom_data    *bdom = zdom->backend_data;
-    struct zhpeq_mr_desc_v1 *desc = container_of(qkdata,
-                                                 struct zhpeq_mr_desc_v1,
-                                                 qkdata);
-    uint32_t            index = TO_KEYIDX(qkdata->z.zaddr);
-
-    if (desc->hdr.magic != ZHPE_MAGIC ||
-        desc->hdr.version != (ZHPEQ_MR_V1 | ZHPEQ_MR_REMOTE))
-        goto done;
-
-    free_rkey(bdom, index);
-    free(desc);
+    bdom->rkey[old.index].rkey = qkdata->rsp_zaddr;
+    bdom->rkey[old.index].av_idx = desc->open_idx;
+    qkdata->z.zaddr = (((uint64_t)old.index << KEY_SHIFT) +
+                       TO_ADDR(qkdata->z.vaddr));
     ret = 0;
 
  done:
     return ret;
 }
 
-static int lfab_zmmu_export(struct zhpeq_dom *zdom,
-                            const struct zhpeq_key_data *qkdata,
-                            void *blob, size_t *blob_len)
+static int lfab_zmmu_free(struct zhpeq_key_data *qkdata)
 {
-    int                 ret = -EOVERFLOW;
-    struct zdom_data    *bdom = zdom->backend_data;
+    struct zhpeq_mr_desc_v1 *desc =
+        container_of(qkdata, struct zhpeq_mr_desc_v1, qkdata);
+    struct zdom_data    *bdom = desc->hdr.zdom->backend_data;
 
-    if (*blob_len < sizeof(struct key_data_packed))
-        goto done;
+    free_rkey(bdom, TO_KEYIDX(qkdata->z.zaddr));
+
+    return 0;
+}
+
+static int lfab_qkdata_export(const struct zhpeq_key_data *qkdata,
+                              struct key_data_packed *blob)
+{
+    struct zhpeq_mr_desc_v1 *desc =
+        container_of(qkdata, struct zhpeq_mr_desc_v1, qkdata);
+    struct zdom_data    *bdom = desc->hdr.zdom->backend_data;
 
     pack_kdata(qkdata, blob,
                fi_mr_key(bdom->lcl_mr[TO_KEYIDX(qkdata->z.zaddr)]));
-    ret = 0;
-
- done:
-    *blob_len = sizeof(struct key_data_packed);
-
-    return ret;
+    return 0;
 }
 
 static void lfab_print_info(struct zhpeq *zq)
@@ -1455,9 +1412,9 @@ static struct backend_ops ops = {
     .cq_poll            = lfab_cq_poll,
     .mr_reg             = lfab_mr_reg,
     .mr_free            = lfab_mr_free,
-    .zmmu_import        = lfab_zmmu_import,
+    .qkdata_export      = lfab_qkdata_export,
+    .zmmu_reg           = lfab_zmmu_reg,
     .zmmu_free          = lfab_zmmu_free,
-    .zmmu_export        = lfab_zmmu_export,
     .print_info         = lfab_print_info,
     .getaddr            = lfab_getaddr,
 };

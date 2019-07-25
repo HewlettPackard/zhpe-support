@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2018 Hewlett Packard Enterprise Development LP.
+ * Copyright (C) 2017-2019 Hewlett Packard Enterprise Development LP.
  * All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -137,8 +137,8 @@ static void stuff_free(struct stuff *stuff)
         return;
 
     if (stuff->zq) {
-        zhpeq_zmmu_free(stuff->zdom, stuff->zq_remote_kdata);
-        zhpeq_mr_free(stuff->zdom, stuff->zq_local_kdata);
+        zhpeq_qkdata_free(stuff->zq_remote_kdata);
+        zhpeq_qkdata_free(stuff->zq_local_kdata);
     }
     if (stuff->open_idx != -1)
         zhpeq_backend_close(stuff->zq, stuff->open_idx);
@@ -235,9 +235,9 @@ static int do_mem_xchg(struct stuff *conn)
     size_t              blob_len;
 
     blob_len = sizeof(blob);
-    ret = zhpeq_zmmu_export(conn->zdom, conn->zq_local_kdata, blob, &blob_len);
+    ret = zhpeq_qkdata_export(conn->zq_local_kdata, blob, &blob_len);
     if (ret < 0) {
-        print_func_err(__func__, __LINE__, "zhpeq_zmmu_export", "", ret);
+        print_func_err(__func__, __LINE__, "zhpeq_qkdata_export", "", ret);
         goto done;
     }
 
@@ -258,10 +258,15 @@ static int do_mem_xchg(struct stuff *conn)
 
     mem_msg.zq_remote_rx_addr = be64toh(mem_msg.zq_remote_rx_addr);
 
-    ret = zhpeq_zmmu_import(conn->zdom, conn->open_idx, blob, blob_len,
-                            false, &conn->zq_remote_kdata);
+    ret = zhpeq_qkdata_import(conn->zdom, conn->open_idx, blob, blob_len,
+                              &conn->zq_remote_kdata);
     if (ret < 0) {
-        print_func_err(__func__, __LINE__, "zhpeq_zmmu_import", "", ret);
+        print_func_err(__func__, __LINE__, "zhpeq_qkdata_import", "", ret);
+        goto done;
+    }
+    ret = zhpeq_zmmu_reg(conn->zq_remote_kdata);
+    if (ret < 0) {
+        print_func_err(__func__, __LINE__, "zhpeq_zmmu_reg", "", ret);
         goto done;
     }
 

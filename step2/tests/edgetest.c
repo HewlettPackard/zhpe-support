@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2018 Hewlett Packard Enterprise Development LP.
+ * Copyright (C) 2017-2019 Hewlett Packard Enterprise Development LP.
  * All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -117,14 +117,12 @@ static void stuff_free(struct stuff *stuff)
 
     if (stuff->zq) {
         if (qcm)
-            zhpeq_print_qkdata(__func__, __LINE__, stuff->zdom,
-                               stuff->rem_kdata);
-        zhpeq_zmmu_free(stuff->zdom, stuff->rem_kdata);
+            zhpeq_print_qkdata(__func__, __LINE__, stuff->rem_kdata);
+        zhpeq_qkdata_free(stuff->rem_kdata);
         buf = (void *)stuff->lcl_kdata->z.vaddr;
         if (qcm)
-            zhpeq_print_qkdata(__func__, __LINE__, stuff->zdom,
-                               stuff->lcl_kdata);
-        zhpeq_mr_free(stuff->zdom, stuff->lcl_kdata);
+            zhpeq_print_qkdata(__func__, __LINE__, stuff->lcl_kdata);
+        zhpeq_qkdata_free(stuff->lcl_kdata);
         free(buf);
     }
     if (stuff->open_idx != -1)
@@ -167,7 +165,7 @@ static int do_mem_setup(struct stuff *conn)
     }
     buf = NULL;
     if (args->qcm)
-        zhpeq_print_qkdata(__func__, __LINE__, conn->zdom, conn->lcl_kdata);
+        zhpeq_print_qkdata(__func__, __LINE__, conn->lcl_kdata);
 
  done:
     free(buf);
@@ -182,7 +180,7 @@ static int do_mem_xchg(struct stuff *conn)
     size_t              blob_len;
 
     blob_len = sizeof(blob);
-    ret = zhpeq_zmmu_export(conn->zdom, conn->lcl_kdata, blob, &blob_len);
+    ret = zhpeq_qkdata_export(conn->lcl_kdata, blob, &blob_len);
     if (ret < 0) {
         print_func_err(__func__, __LINE__, "zhpeq_zmmu_export", "", ret);
         goto done;
@@ -195,14 +193,19 @@ static int do_mem_xchg(struct stuff *conn)
     if (ret < 0)
         goto done;
 
-    ret = zhpeq_zmmu_import(conn->zdom, conn->open_idx, blob, blob_len,
-                            false, &conn->rem_kdata);
+    ret = zhpeq_qkdata_import(conn->zdom, conn->open_idx, blob, blob_len,
+                              &conn->rem_kdata);
     if (ret < 0) {
         print_func_err(__func__, __LINE__, "zhpeq_zmmu_import", "", ret);
         goto done;
     }
+    ret = zhpeq_zmmu_reg(conn->rem_kdata);
+    if (ret < 0) {
+        print_func_err(__func__, __LINE__, "zhpeq_zmmu_reg", "", ret);
+        goto done;
+    }
     if (conn->args->qcm)
-        zhpeq_print_qkdata(__func__, __LINE__, conn->zdom, conn->rem_kdata);
+        zhpeq_print_qkdata(__func__, __LINE__, conn->rem_kdata);
 
  done:
 

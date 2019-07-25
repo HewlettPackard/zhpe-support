@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2018 Hewlett Packard Enterprise Development LP.
+ * Copyright (C) 2017-2019 Hewlett Packard Enterprise Development LP.
  * All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -41,7 +41,6 @@
 #include <libgen.h>
 
 const char              *appname;
-size_t                  page_size;
 
 static bool             log_syslog;
 static bool             log_syslog_init;
@@ -49,10 +48,12 @@ static int              log_level = LOG_ERR;
 
 static uint64_t get_clock_cycles(volatile uint32_t *cpup);
 static uint64_t get_tsc_cycles(volatile uint32_t *cpup);
-static uint64_t __get_tsc_freq(void);
+static void do_init_time_cpuinfo(struct zhpeu_init_time *init_time);
 
-uint64_t                zhpeq_cycles_freq;
-uint64_t                (*zhpeq_cycles_get)(volatile uint32_t *cpup);
+static const char *cpuinfo_delim = " \t\n";
+
+struct zhpeu_init_time  *zhpeu_init_time;
+struct zhpeu_init_time  init_time;
 
 static struct zhpeu_atm_list_ptr atm_dummy;
 
@@ -61,32 +62,32 @@ static void __attribute__((constructor)) lib_init(void)
     long                rcl;
     struct zhpeu_atm_list_ptr oldh;
     struct zhpeu_atm_list_ptr newh;
-    uint64_t            freq;
+    struct zhpeu_init_time *oldi;
 
-    /* Force __atomic_load_16 and __atomic_compare_exchange_16 to be linked
-     * Multiple instances can be run, so use this to run once.
+    /*
+     * Run only once and force __atomic_load_16 and
+     * __atomic_compare_exchange_16 to be linked.
      */
     oldh = atm_load_rlx(&atm_dummy);
     newh.ptr = NULL;
     newh.seq = oldh.seq + 1;
     atm_cmpxchg(&atm_dummy, &oldh, newh);
-    if (oldh.seq)
+    if (oldh.seq) {
+        /* Wait for global initialization to complete. */
+        while (!atm_load_rlx(&zhpeu_init_time))
+            pthread_yield();
         return;
+    }
 
     /* Make sure page_size is set before use; if we can't get it, just die. */
     rcl = sysconf(_SC_PAGESIZE);
     if (rcl == -1)
         abort();
-    page_size = rcl;
-    /* Initialize cycle timing routines. */
-    freq = __get_tsc_freq();
-    if (freq) {
-        atm_store_rlx(&zhpeq_cycles_get, get_tsc_cycles);
-        atm_store_rlx(&zhpeq_cycles_freq, freq);
-    } else {
-        atm_store_rlx(&zhpeq_cycles_get, get_clock_cycles);
-        atm_store_rlx(&zhpeq_cycles_freq, (uint64_t)NSEC_PER_SEC);
-    }
+    init_time.pagesz = rcl;
+    do_init_time_cpuinfo(&init_time);
+
+    oldi = NULL;
+    atm_cmpxchg(&zhpeu_init_time, &oldi, &init_time);
 }
 
 void zhpeq_util_init(char *argv0, int default_log_level, bool use_syslog)
@@ -219,8 +220,6 @@ void print_urange_err(const char *callf, uint line, const char *name,
               callf, line, name, (ullong)val, (ullong)min, (ullong)max);
 }
 
-static const char *cpuinfo_delim = " \t\n";
-
 char *get_cpuinfo_val(FILE *fp, char *buf, size_t buf_size,
                       uint field, const char *name, ...)
 {
@@ -275,9 +274,50 @@ char *get_cpuinfo_val(FILE *fp, char *buf, size_t buf_size,
     return ret;
 }
 
-static uint64_t __get_tsc_freq(void)
+#if defined(__x86_32__) || defined( __x86_64__)
+
+static void x86_clflush_range(const void *addr, size_t len,  bool fence)
 {
-    uint64_t            ret = 0;
+    const char          *p =
+        (const char *)((uintptr_t)addr & ~zhpeu_init_time->l1sz);
+    const char          *e = (const char *)addr + len;
+
+    for (; p < e; p += zhpeu_init_time->l1sz)
+        _mm_clflush(p);
+    if (fence)
+        io_wmb();
+}
+
+static void x86_clflushopt_range(const void *addr, size_t len, bool fence)
+{
+    const char          *p =
+        (const char *)((uintptr_t)addr & ~zhpeu_init_time->l1sz);
+    const char          *e = (const char *)addr + len;
+
+    for (; p < e; p += zhpeu_init_time->l1sz)
+        _mm_clflushopt((void *)p);
+    if (fence)
+        io_wmb();
+}
+
+static void x86_clwb_range(const void *addr, size_t len, bool fence)
+{
+    const char          *p =
+        (const char *)((uintptr_t)addr & ~zhpeu_init_time->l1sz);
+    const char          *e = (const char *)addr + len;
+
+    if (fence)
+        io_wmb();
+    for (; p < e; p += zhpeu_init_time->l1sz)
+        _mm_clwb((void *)p);
+    if (fence)
+        io_wmb();
+}
+
+#endif
+
+static void do_init_time_cpuinfo(struct zhpeu_init_time *init_time)
+{
     FILE                *fp = NULL;
     const char          *fname_info = "/proc/cpuinfo";
     const char          *fname_freq =
@@ -292,6 +332,17 @@ static uint64_t __get_tsc_freq(void)
     uint64_t            val2;
     uint                i;
 
+    /* Assume we use system clock and clflush */
+    init_time->clflush_range = x86_clflush_range;
+    init_time->clwb_range = x86_clflush_range;
+    init_time->l1sz = L1_CACHE_BYTES;
+    init_time->get_cycles = get_clock_cycles;
+    init_time->freq = NSEC_PER_SEC;
+
+    /*
+     * Now, try to find something better. If something goes wrong, try
+     * to fail in a forgiving manner.
+     */
     fname = fname_info;
     fp = fopen(fname, "r");
     if (!fp) {
@@ -304,23 +355,44 @@ static uint64_t __get_tsc_freq(void)
         goto done;
     intel = !strcmp(sval, "GenuineIntel");
 
-    /* We need "constant_tsc" and "nonstop_tsc" in flags. */
+    /* Search for flags we care about. */
     sval = get_cpuinfo_val(fp, buf, sizeof(buf), 0, "flags", NULL);
     if (!sval)
         goto done;
     i = 0;
     while ((tok = strsep(&sval, cpuinfo_delim))) {
         if (!strcmp(tok, "constant_tsc"))
-            i |= 1;
+            i |= 0x01;
         if (!strcmp(tok, "nonstop_tsc"))
-            i |= 2;
-        if (i == 3)
+            i |= 0x02;
+        if (!strcmp(tok, "clflushopt"))
+            i |= 0x04;
+        if (!strcmp(tok, "clwb"))
+            i |= 0x08;
+        if (i == 0x0F)
             break;
     }
-    if (!tok) {
-        print_err("%s:CPU missing constant_tsc/nonstop_tsc", __func__);
-        goto done;
+
+    /* Update flush routines with flag info. */
+    if (i & 0x04) {
+        init_time->clflush_range = x86_clflushopt_range;
+        init_time->clwb_range = x86_clflushopt_range;
     }
+    if (i & 0x08)
+        init_time->clwb_range = x86_clwb_range;
+    /* clflush_size is documented to be cache line size */
+    sval = get_cpuinfo_val(fp, buf, sizeof(buf), 0, "clflush_size", NULL);
+    if (sval) {
+        errno = 0;
+        val1 = strtoull(sval, &endp, 0);
+        if (!errno && !*endp)
+            init_time->l1sz = val1;
+    }
+
+    /* CPU support for TSC timekeeping? */
+    if (!(i & 0x03))
+        /* No. */
+        goto done;
 
     /*
      * Once we know nonstop_tsc exists, we could measure the frequency,
@@ -362,7 +434,8 @@ static uint64_t __get_tsc_freq(void)
         val1 += val2;
         for (i = 9 - (endp - tok); i > 0; i--)
             val1 *= 10;
-        ret = val1;
+        init_time->get_cycles = get_tsc_cycles;
+        init_time->freq = val1;
     }
     fclose(fp);
 
@@ -379,7 +452,8 @@ static uint64_t __get_tsc_freq(void)
         val1 = strtoull(tok, &endp, 0) * 1000;
         if (errno || *endp != '\0')
             goto done;
-        ret = val1;
+        init_time->get_cycles = get_tsc_cycles;
+        init_time->freq = val1;
     } else if (!fp) {
         if (errno != ENOENT) {
             print_func_err(__func__, __LINE__, "fopen", fname, errno);
@@ -389,15 +463,11 @@ static uint64_t __get_tsc_freq(void)
 
 done:
     if (fp) {
-        if (ferror(fp)) {
+        if (ferror(fp))
             print_err("%s,%u:Error reading %s\n",
                       __func__, __LINE__, fname);
-            ret = 0;
-        }
         fclose(fp);
     }
-
-    return ret;
 }
 
 static uint64_t get_tsc_cycles(volatile uint32_t *cpup)

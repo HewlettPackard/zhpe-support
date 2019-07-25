@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2018 Hewlett Packard Enterprise Development LP.
+ * Copyright (C) 2017-2019 Hewlett Packard Enterprise Development LP.
  * All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -175,7 +175,7 @@ int main(int argc, char **argv)
             }
             delta[j] = get_cycles(NULL) - start;
             start = get_cycles(NULL);
-            rc = zhpeq_mr_free(zdom, kdata);
+            rc = zhpeq_qkdata_free(kdata);
             if (rc < 0) {
                 print_func_err(__func__, __LINE__, "zhpeq_mr_free",
                                "", rc);

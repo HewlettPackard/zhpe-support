@@ -64,6 +64,8 @@
 
 #include <uuid/uuid.h>
 
+#include <x86intrin.h>
+
 #include <zhpe_externc.h>
 
 _EXTERN_C_BEG
@@ -106,7 +108,6 @@ typedef unsigned long long ullong;
 typedef unsigned char   uchar;
 
 extern const char       *appname;
-extern size_t           page_size;
 
 /* Borrow AF_APPLETALK since it should never be seen. */
 #define AF_ZHPE         AF_APPLETALK
@@ -238,30 +239,35 @@ void zhpeu_free_ptr(void *ptr);
 
 static inline void smp_mb(void)
 {
-    asm volatile("mfence":::"memory");
+    _mm_mfence();
 }
 
 static inline void smp_rmb(void)
 {
-    asm volatile("lfence":::"memory");
+    _mm_lfence();
 }
 
 static inline void smp_wmb(void)
 {
-    asm volatile("sfence":::"memory");
+    _mm_sfence();
+}
+
+static inline void io_rmb(void)
+{
+    _mm_lfence();
 }
 
 static inline void io_wmb(void)
 {
-    asm volatile("sfence":::"memory");
+    _mm_sfence();
 }
 
-#define L1_CACHE_BYTES  (64U)
-
-static inline void nop(void)
+static inline void io_mb(void)
 {
-    asm volatile("nop");
+    _mm_mfence();
 }
+
+#define L1_CACHE_BYTES  (64UL)
 
 #endif
 
@@ -742,8 +748,18 @@ void print_urange_err(const char *callf, uint line, const char *name,
 char *get_cpuinfo_val(FILE *fp, char *buf, size_t buf_size,
                       uint field, const char *name, ...);
 
-uint64_t (*zhpeq_cycles_get)(volatile uint32_t *cpup);
-uint64_t zhpeq_cycles_freq;
+struct zhpeu_init_time {
+    uint64_t            (*get_cycles)(volatile uint32_t *cpup);
+    uint64_t            freq;
+    void                (*clflush_range)(const void *p, size_t len, bool fence);
+    void                (*clwb_range)(const void *p, size_t len, bool fence);
+    uint64_t            pagesz;
+    uint64_t            l1sz;
+};
+
+extern struct zhpeu_init_time *zhpeu_init_time;
+
+#define page_size       (zhpeu_init_time->pagesz)
 
 #define NSEC_PER_SEC    (1000000000UL)
 #define NSEC_PER_USEC   (1000000UL)
@@ -751,17 +767,27 @@ uint64_t zhpeq_cycles_freq;
 static inline double cycles_to_usec(uint64_t delta, uint64_t loops)
 {
     return (((double)delta * NSEC_PER_USEC) /
-            ((double)zhpeq_cycles_freq * loops));
+            ((double)zhpeu_init_time->freq * loops));
 }
 
 static inline uint64_t get_cycles(volatile uint32_t *cpup)
 {
-    return zhpeq_cycles_get(cpup);
+    return zhpeu_init_time->get_cycles(cpup);
 }
 
 static inline uint64_t get_tsc_freq(void)
 {
-    return zhpeq_cycles_freq;
+    return zhpeu_init_time->freq;
+}
+
+static inline void clflush_range(const void *addr, size_t length, bool fence)
+{
+    zhpeu_init_time->clflush_range(addr, length, fence);
+}
+
+static inline void clwb_range(const void *addr, size_t length,  bool fence)
+{
+    zhpeu_init_time->clwb_range(addr, length, fence);
 }
 
 #define abort_syscall(_func, ...)                               \
@@ -1042,6 +1068,27 @@ static inline uint64_t roundup_pow_of_2(uint64_t val)
         return val;
 
     return ((uint64_t)1 << (fls64(val + 1)));
+}
+
+static inline uint64_t page_off(uint64_t addr)
+{
+    uint64_t            page_off_mask = (uint64_t)(page_size - 1);
+
+    return (addr & page_off_mask);
+}
+
+static inline uint64_t page_down(uint64_t addr)
+{
+    uint64_t            page_mask = ~(uint64_t)(page_size - 1);
+
+    return (addr & page_mask);
+}
+
+static inline uint64_t page_up(uint64_t addr)
+{
+    uint64_t            page_mask = ~(uint64_t)(page_size - 1);
+
+    return (((addr + page_size - 1) & page_mask));
 }
 
 struct zhpeu_thr_wait {

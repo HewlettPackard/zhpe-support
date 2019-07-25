@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2018 Hewlett Packard Enterprise Development LP.
+ * Copyright (C) 2017-2019 Hewlett Packard Enterprise Development LP.
  * All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -51,6 +51,8 @@ _EXTERN_C_BEG
 
 #define DEV_NAME        "/dev/"DRIVER_NAME
 
+struct key_data_packed;
+
 struct backend_ops {
     int                 (*lib_init)(struct zhpeq_attr *attr);
     int                 (*domain)(struct zhpeq_dom *zdom);
@@ -69,25 +71,27 @@ struct backend_ops {
     ssize_t             (*cq_poll)(struct zhpeq *zq, size_t len);
     int                 (*mr_reg)(struct zhpeq_dom *zdom,
                                   const void *buf, size_t len, uint32_t access,
-                                  struct zhpeq_key_data **kdata_out);
-    int                 (*mr_free)(struct zhpeq_dom *zdom,
-                                   struct zhpeq_key_data *kdata);
-    int                 (*zmmu_free)(struct zhpeq_dom *zdom,
-                                     struct zhpeq_key_data *kdata);
-    int                 (*zmmu_import)(struct zhpeq_dom *zdom, int open_idx,
-                                       const void *blob, size_t blob_len,
-                                       bool cpu_visible,
-                                       struct zhpeq_key_data **kdata_out);
-    int                 (*zmmu_fam_import)(struct zhpeq_dom *zdom, int open_idx,
-                                           bool cpu_visible,
-                                           struct zhpeq_key_data **kdata_out);
-    int                 (*zmmu_export)(struct zhpeq_dom *zdom,
-                                       const struct zhpeq_key_data *kdata,
-                                       void *blob, size_t *blob_len);
+                                  struct zhpeq_key_data **qkdata_out);
+    int                 (*mr_free)(struct zhpeq_key_data *qkdata);
+    int                 (*qkdata_export)(const struct zhpeq_key_data *qkdata,
+                                         struct key_data_packed *blob);
+    int                 (*zmmu_reg)(struct zhpeq_key_data *qkdata);
+    int                 (*zmmu_free)(struct zhpeq_key_data *qkdata);
+    int                 (*fam_qkdata)(struct zhpeq_dom *zdom, int open_idx,
+                                      struct zhpeq_key_data **qkdata_out);
+    int                 (*mmap)(const struct zhpeq_key_data *qkdata,
+                                uint32_t cache_mode, void *addr,
+                                size_t length, int prot, int flags,
+                                off_t offset, void **mmap_addr,
+                                     struct zhpeq_mmap_desc **zmdesc_out);
+    int                 (*mmap_unmap)(struct zhpeq_mmap_desc *zmdesc,
+                                      void *addr, size_t length);
+    int                 (*mmap_commit)(struct zhpeq_mmap_desc *zmdesc,
+                                       const void *addr, size_t length,
+                                       bool fence);
     void                (*print_info)(struct zhpeq *zq);
     int                 (*getaddr)(struct zhpeq *zq, void *sa, size_t *sa_len);
-    char                *(*qkdata_id_str)(struct zhpeq_dom *zdom,
-                                          const struct zhpeq_key_data *qkdata);
+    char                *(*qkdata_id_str)(const struct zhpeq_key_data *qkdata);
 };
 
 extern uuid_t           zhpeq_uuid;
@@ -177,18 +181,24 @@ static inline void unpack_kdata(const struct key_data_packed *pdata,
 struct zhpeq_mr_desc_common_hdr {
     uint32_t            magic;
     uint32_t            version;
+    struct zhpeq_dom    *zdom;
 };
 
 struct zhpeq_mr_desc_v1 {
     struct zhpeq_mr_desc_common_hdr hdr;
     struct zhpeq_key_data qkdata;
-    uint32_t            access_plus;
-    int                 uuid_idx;
+    int                 open_idx;
 };
 
 union zhpeq_mr_desc {
     struct zhpeq_mr_desc_common_hdr hdr;
     struct zhpeq_mr_desc_v1 v1;
+};
+
+struct zhpeq_mmap_desc {
+    struct zhpeq_mr_desc_v1 *desc;
+    void                *mmap_addr;
+    void                *backend_data;
 };
 
 /* FIXME: probably works for now, but ditch bit fields. */

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2018 Hewlett Packard Enterprise Development LP.
+ * Copyright (C) 2017-2019 Hewlett Packard Enterprise Development LP.
  * All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -658,13 +658,13 @@ int zhpeq_mr_reg(struct zhpeq_dom *zdom, const void *buf, size_t len,
     if (!qkdata_out)
         goto done;
     *qkdata_out = NULL;
-    if (!zdom)
+    if (!zdom || page_up((uintptr_t)buf + len)  <= (uintptr_t)buf)
          goto done;
 
     ret = b_ops->mr_reg(zdom, buf, len, access, qkdata_out);
 #if QKDATA_DUMP
     if (ret >= 0)
-        zhpeq_print_qkdata(__func__, __LINE__, zdom, *qkdata_out);
+        zhpeq_print_qkdata(__func__, __LINE__, *qkdata_out);
 #endif
 
  done:
@@ -673,49 +673,55 @@ int zhpeq_mr_reg(struct zhpeq_dom *zdom, const void *buf, size_t len,
     return ret;
 }
 
-int zhpeq_mr_free(struct zhpeq_dom *zdom, struct zhpeq_key_data *qkdata)
+int zhpeq_qkdata_free(struct zhpeq_key_data *qkdata)
 {
-    zhpe_stats_start(zhpe_stats_subid(ZHPQ, 10));
-
     int                 ret = 0;
+    struct zhpeq_mr_desc_v1 *desc =
+        container_of(qkdata, struct zhpeq_mr_desc_v1, qkdata);
 
     if (!qkdata)
         goto done;
     ret = -EINVAL;
-    if (!zdom)
+    if (desc->hdr.magic != ZHPE_MAGIC ||
+        (desc->hdr.version & ~ZHPEQ_MR_REMOTE) != ZHPEQ_MR_V1)
         goto done;
-
 #if QKDATA_DUMP
-    zhpeq_print_qkdata(__func__, __LINE__, zdom, qkdata);
+    zhpeq_print_qkdata(__func__, __LINE__, qkdata);
 #endif
-    ret = b_ops->mr_free(zdom, qkdata);
+    if (desc->qkdata.z.zaddr) {
+        if (desc->hdr.version & ZHPEQ_MR_REMOTE) {
+            zhpe_stats_start(zhpe_stats_subid(ZHPQ, 50));
+            ret = b_ops->zmmu_free(qkdata);
+            zhpe_stats_stop(zhpe_stats_subid(ZHPQ, 50));
+        } else {
+            zhpe_stats_start(zhpe_stats_subid(ZHPQ, 10));
+            ret = b_ops->mr_free(qkdata);
+            zhpe_stats_stop(zhpe_stats_subid(ZHPQ, 10));
+        }
+    }
+    free(desc);
 
  done:
-    zhpe_stats_stop(zhpe_stats_subid(ZHPQ, 10));
 
     return ret;
 }
 
-int zhpeq_zmmu_import(struct zhpeq_dom *zdom, int open_idx, const void *blob,
-                      size_t blob_len, bool cpu_visible,
-                      struct zhpeq_key_data **qkdata_out)
+int zhpeq_zmmu_reg(struct zhpeq_key_data *qkdata)
 {
     zhpe_stats_start(zhpe_stats_subid(ZHPQ, 40));
 
     int                 ret = -EINVAL;
+    struct zhpeq_mr_desc_v1 *desc =
+        container_of(qkdata, struct zhpeq_mr_desc_v1, qkdata);
 
-    if (!qkdata_out)
-        goto done;
-    *qkdata_out = NULL;
-    if (!zdom || !blob)
+    if (!qkdata || desc->hdr.magic != ZHPE_MAGIC ||
+        desc->hdr.version != (ZHPEQ_MR_V1 | ZHPEQ_MR_REMOTE))
         goto done;
 
-    ret = b_ops->zmmu_import(zdom, open_idx, blob, blob_len, cpu_visible,
-                             qkdata_out);
 #if QKDATA_DUMP
-    if (ret >= 0)
-        zhpeq_print_qkdata(__func__, __LINE__, zdom, *qkdata_out);
+    zhpeq_print_qkdata(__func__, __LINE__, qkdata);
 #endif
+    ret = b_ops->zmmu_reg(qkdata);
 
  done:
     zhpe_stats_stop(zhpe_stats_subid(ZHPQ, 40));
@@ -723,8 +729,8 @@ int zhpeq_zmmu_import(struct zhpeq_dom *zdom, int open_idx, const void *blob,
     return ret;
 }
 
-int zhpeq_zmmu_fam_import(struct zhpeq_dom *zdom, int open_idx,
-                          bool cpu_visible, struct zhpeq_key_data **qkdata_out)
+int zhpeq_fam_qkdata(struct zhpeq_dom *zdom, int open_idx,
+                     struct zhpeq_key_data **qkdata_out)
 {
     int                 ret = -EINVAL;
 
@@ -736,14 +742,14 @@ int zhpeq_zmmu_fam_import(struct zhpeq_dom *zdom, int open_idx,
     if (!zdom)
         goto done;
 
-    if (b_ops->zmmu_fam_import)
-        ret = b_ops->zmmu_fam_import(zdom, open_idx, cpu_visible,  qkdata_out);
+    if (b_ops->fam_qkdata)
+        ret = b_ops->fam_qkdata(zdom, open_idx, qkdata_out);
     else
         ret = -ENOSYS;
 
 #if QKDATA_DUMP
     if (ret >= 0)
-        zhpeq_print_qkdata(__func__, __LINE__, zdom, *qkdata_out);
+        zhpeq_print_qkdata(__func__, __LINE__, *qkdata_out);
 #endif
 
  done:
@@ -752,25 +758,25 @@ int zhpeq_zmmu_fam_import(struct zhpeq_dom *zdom, int open_idx,
     return ret;
 }
 
-int zhpeq_zmmu_export(struct zhpeq_dom *zdom,
-                      const struct zhpeq_key_data *qkdata,
-                      void *blob, size_t *blob_len)
+int zhpeq_qkdata_export(const struct zhpeq_key_data *qkdata,
+                        void *blob, size_t *blob_len)
 {
     zhpe_stats_start(zhpe_stats_subid(ZHPQ, 30));
 
     int                 ret = -EINVAL;
-    struct zhpeq_mr_desc_v1 *desc = container_of(qkdata,
-                                                 struct zhpeq_mr_desc_v1,
-                                                 qkdata);
+    struct zhpeq_mr_desc_v1 *desc =
+        container_of(qkdata, struct zhpeq_mr_desc_v1, qkdata);
 
-    if (!zdom || !qkdata || !blob || !blob_len ||
+    if (!qkdata || !blob || !blob_len ||
+        *blob_len < sizeof(struct key_data_packed) ||
         desc->hdr.magic != ZHPE_MAGIC || desc->hdr.version != ZHPEQ_MR_V1)
         goto done;
 
 #if QKDATA_DUMP
-    zhpeq_print_qkdata(__func__, __LINE__, zdom, qkdata);
+    zhpeq_print_qkdata(__func__, __LINE__, qkdata);
 #endif
-    ret = b_ops->zmmu_export(zdom, qkdata, blob, blob_len);
+    *blob_len = sizeof(struct key_data_packed);
+    ret = b_ops->qkdata_export(qkdata, blob);
 
  done:
     zhpe_stats_stop(zhpe_stats_subid(ZHPQ, 30));
@@ -778,26 +784,110 @@ int zhpeq_zmmu_export(struct zhpeq_dom *zdom,
     return ret;
 }
 
-int zhpeq_zmmu_free(struct zhpeq_dom *zdom, struct zhpeq_key_data *qkdata)
+int zhpeq_qkdata_import(struct zhpeq_dom *zdom, int open_idx,
+                        const void *blob, size_t blob_len,
+                        struct zhpeq_key_data **qkdata_out)
 {
-    int                 ret = 0;
+    int                 ret = -EINVAL;
+    const struct key_data_packed *pdata = blob;
+    struct zhpeq_mr_desc_v1 *desc = NULL;
+    struct zhpeq_key_data *qkdata;
 
-    zhpe_stats_start(zhpe_stats_subid(ZHPQ, 50));
-
-    if (!qkdata)
+    if (!qkdata_out)
         goto done;
-    ret = -EINVAL;
-    if (!zdom)
+    *qkdata_out = NULL;
+    if (!blob || blob_len != sizeof(*pdata))
         goto done;
 
-#if 0
-    zhpeq_print_qkdata(__func__, __LINE__, zdom, qkdata);
-#endif
-    ret = b_ops->zmmu_free(zdom, qkdata);
+    desc = malloc(sizeof(*desc));
+    if (!desc) {
+        ret = -ENOMEM;
+        goto done;
+    }
+    qkdata = &desc->qkdata;
+
+    desc->hdr.magic = ZHPE_MAGIC;
+    desc->hdr.version = ZHPEQ_MR_V1 | ZHPEQ_MR_REMOTE;
+    desc->hdr.zdom = zdom;
+    desc->open_idx = open_idx;
+    unpack_kdata(pdata, qkdata);
+    qkdata->rsp_zaddr = qkdata->z.zaddr;
+    qkdata->z.zaddr = 0;
+    *qkdata_out = qkdata;
+    ret = 0;
 
  done:
-    zhpe_stats_stop(zhpe_stats_subid(ZHPQ, 50));
+    return ret;
+}
 
+int zhpeq_mmap(const struct zhpeq_key_data *qkdata,
+               uint32_t cache_mode, void *addr, size_t length, int prot,
+               int flags, off_t offset, void **mmap_addr,
+               struct zhpeq_mmap_desc **zmdesc)
+{
+    int                 ret = -EINVAL;
+    struct zhpeq_mr_desc_v1 *desc =
+        container_of(qkdata, struct zhpeq_mr_desc_v1, qkdata);
+
+    if (mmap_addr)
+        *mmap_addr = NULL;
+    if (zmdesc)
+        *zmdesc = NULL;
+    if (!qkdata || !mmap_addr || !zmdesc ||
+        (cache_mode & ~ZHPEQ_MR_REQ_CPU_CACHE) ||
+        desc->hdr.magic != ZHPE_MAGIC ||
+        desc->hdr.version != (ZHPEQ_MR_V1 | ZHPEQ_MR_REMOTE))
+        goto done;
+    cache_mode |= ZHPEQ_MR_REQ_CPU;
+
+#if QKDATA_DUMP
+    if (ret >= 0)
+        zhpeq_print_qkdata(__func__, __LINE__, qkdata);
+#endif
+    if (b_ops->mmap)
+        ret = b_ops->mmap(qkdata, cache_mode, addr, length, prot,
+                          flags, offset, mmap_addr, zmdesc);
+    else
+        ret = -ENOSYS;
+
+ done:
+    return ret;
+}
+
+int zhpeq_mmap_unmap(struct zhpeq_mmap_desc *zmdesc, void *addr, size_t length)
+{
+    int                 ret = -EINVAL;
+
+    if (!zmdesc)
+        goto done;
+
+#if QKDATA_DUMP
+    if (ret >= 0)
+        zhpeq_print_qkdata(__func__, __LINE__, &zmdesc->desc->qkdata);
+#endif
+    if (b_ops->mmap_unmap)
+        ret = b_ops->mmap_unmap(zmdesc, addr, length);
+    else
+        ret = -ENOSYS;
+
+ done:
+    return ret;
+}
+
+int zhpeq_mmap_commit(struct zhpeq_mmap_desc *zmdesc,
+                      const void *addr, size_t length, bool fence)
+{
+    int                 ret = -EINVAL;
+
+    if (!zmdesc)
+        goto done;
+
+    if (b_ops->mmap_commit)
+        ret = b_ops->mmap_commit(zmdesc, addr, length, fence);
+    else
+        ret = -ENOSYS;
+
+ done:
     return ret;
 }
 
@@ -899,13 +989,13 @@ int zhpeq_getaddr(struct zhpeq *zq, void *sa, size_t *sa_len)
     return ret;
 }
 
-void zhpeq_print_qkdata(const char *func, uint line, struct zhpeq_dom *zdom,
+void zhpeq_print_qkdata(const char *func, uint line,
                         const struct zhpeq_key_data *qkdata)
 {
     char                *id_str = NULL;
 
     if (b_ops->qkdata_id_str)
-        id_str = b_ops->qkdata_id_str(zdom, qkdata);
+        id_str = b_ops->qkdata_id_str(qkdata);
     printf("%s,%u:%p %s\n", func, line, qkdata, (id_str ?: ""));
     printf("%s,%u:v/z/l 0x%Lx 0x%Lx 0x%Lx\n", func, line,
            (ullong)qkdata->z.vaddr, (ullong)qkdata->z.zaddr,

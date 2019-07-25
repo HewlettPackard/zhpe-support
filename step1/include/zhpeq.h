@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2018 Hewlett Packard Enterprise Development LP.
+ * Copyright (C) 2017-2019 Hewlett Packard Enterprise Development LP.
  * All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -58,7 +58,13 @@ _EXTERN_C_BEG
 #define ZHPEQ_MR_KEY_ZERO_OFF   ZHPE_MR_FLAG0
 #define ZHPEQ_MR_FLAG1          ZHPE_MR_FLAG1
 #define ZHPEQ_MR_FLAG2          ZHPE_MR_FLAG2
-#define ZHPEQ_MR_FLAG3          ZHPE_MR_FLAG3
+
+#define ZHPEQ_MR_REQ_CPU        ZHPE_MR_REQ_CPU
+#define ZHPEQ_MR_REQ_CPU_CACHE  ZHPE_MR_REQ_CPU_CACHE
+#define ZHPEQ_MR_REQ_CPU_WB     ZHPE_MR_REQ_CPU_WB
+#define ZHPEQ_MR_REQ_CPU_WC     ZHPE_MR_REQ_CPU_WC
+#define ZHPEQ_MR_REQ_CPU_WT     ZHPE_MR_REQ_CPU_WT
+#define ZHPEQ_MR_REQ_CPU_UC     ZHPE_MR_REQ_CPU_UC
 
 enum zhpeq_atomic_size {
     ZHPEQ_ATOMIC_SIZE32         = ZHPE_HW_ATOMIC_SIZE_32,
@@ -128,6 +134,7 @@ struct zhpeq_cq_entry {
 /* Forward references to shut the compiler up. */
 struct zhpeq;
 struct zhpeq_dom;
+struct zhpeq_mmap_desc;
 
 static inline int zhpeq_rem_key_access(struct zhpeq_key_data *qkdata,
                                        uint64_t start, uint64_t len,
@@ -191,20 +198,29 @@ ssize_t zhpeq_cq_read(struct zhpeq *zq, struct zhpeq_cq_entry *entries,
 int zhpeq_mr_reg(struct zhpeq_dom *zdom, const void *buf, size_t len,
                  uint32_t access, struct zhpeq_key_data **qkdata_out);
 
-int zhpeq_mr_free(struct zhpeq_dom *zdom, struct zhpeq_key_data *qkdata);
+int zhpeq_qkdata_free(struct zhpeq_key_data *qkdata);
 
-int zhpeq_zmmu_export(struct zhpeq_dom *zdom,
-                      const struct zhpeq_key_data *qkdata,
-                      void *blob, size_t *blob_len);
+int zhpeq_qkdata_export(const struct zhpeq_key_data *qkdata,
+                        void *blob, size_t *blob_len);
 
-int zhpeq_zmmu_fam_import(struct zhpeq_dom *zdom, int open_idx,
-                          bool cpu_visible, struct zhpeq_key_data **qkdata_out);
+int zhpeq_qkdata_import(struct zhpeq_dom *zdom, int open_idx,
+                        const void *blob, size_t blob_len,
+                        struct zhpeq_key_data **qkdata_out);
 
-int zhpeq_zmmu_import(struct zhpeq_dom *zdom, int open_idx,
-                      const void *blob, size_t blob_len, bool cpu_visible,
-                      struct zhpeq_key_data **qkdata_out);
+int zhpeq_fam_qkdata(struct zhpeq_dom *zdom, int open_idx,
+                     struct zhpeq_key_data **qkdata_out);
 
-int zhpeq_zmmu_free(struct zhpeq_dom *zdom, struct zhpeq_key_data *qkdata);
+int zhpeq_zmmu_reg(struct zhpeq_key_data *qkdata);
+
+int zhpeq_mmap(const struct zhpeq_key_data *qkdata,
+               uint32_t cache_mode, void *addr, size_t length, int prot,
+               int flags, off_t offset, void **mmap_addr,
+               struct zhpeq_mmap_desc **zmdesc);
+
+int zhpeq_mmap_unmap(struct zhpeq_mmap_desc *zmdesc, void *addr, size_t length);
+
+int zhpeq_mmap_commit(struct zhpeq_mmap_desc *zmdesc,
+                      const void *addr, size_t length, bool fence);
 
 int64_t zhpeq_reserve(struct zhpeq *zq, uint32_t n_entries);
 
@@ -243,7 +259,7 @@ void zhpeq_print_info(struct zhpeq *zq);
 
 struct zhpeq_dom *zhpeq_dom(struct zhpeq *zq);
 
-void zhpeq_print_qkdata(const char *func, uint line, struct zhpeq_dom *zdom,
+void zhpeq_print_qkdata(const char *func, uint line,
                         const struct zhpeq_key_data *qkdata);
 
 void zhpeq_print_qcm(const char *func, uint line, const struct zhpeq *zq);

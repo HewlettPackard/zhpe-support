@@ -118,7 +118,7 @@ int main(int argc, char **argv)
         }
     }
     for (i = 0; tests[i].buf; i++) {
-        rc = zhpeq_mr_free(zdom, tests[i].qk);
+        rc = zhpeq_qkdata_free(tests[i].qk);
         if (rc < 0) {
             print_func_err(__func__, __LINE__, "zhpeq_mr_free", "", rc);
             goto done;

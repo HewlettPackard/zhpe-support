@@ -902,27 +902,30 @@ static int compare_fi(const void *key1, const void *key2)
 }
 
 int _fab_av_insert(const char *callf, uint line, struct fab_dom *dom,
-                   union sockaddr_in46 *saddr, fi_addr_t *fi_addr)
+                   union sockaddr_in46 *saddr, fi_addr_t *fi_addr_out)
 {
-    int                 ret;
+    int                 ret = -FI_EINVAL;
     struct av_tree_entry *ave = NULL;
-    void                **tval = NULL;
+    fi_addr_t           fi_addr;
+    void                **tval;
+
+    if (!fi_addr_out)
+        goto done;
+    *fi_addr_out = FI_ADDR_UNSPEC;
+    if (!dom || !saddr || !sockaddr_len(saddr))
+        goto done;
 
     mutex_lock(&dom->av_mutex);
-    if (!sockaddr_len(saddr)) {
-        ret = -FI_EINVAL;
-        goto done;
-    }
     tval = tsearch(saddr, &dom->av_sa_tree, compare_sa);
     if (!tval) {
         ret = -FI_ENOMEM;
         print_func_fi_err(callf, line, "tsearch", "", ret);
         goto done;
     }
-    ave = *tval;
-    if (ave != (void *)saddr) {
+    if (*tval != saddr) {
         ret = 1;
-        *fi_addr = ave->fi_addr;
+        ave = *tval;
+        *fi_addr_out = ave->fi_addr;
         ave->use_count++;
         goto done;
     }
@@ -931,12 +934,12 @@ int _fab_av_insert(const char *callf, uint line, struct fab_dom *dom,
         ret = -FI_ENOMEM;
         goto done;
     }
-    *tval = ave;
     sockaddr_cpy(&ave->sa, saddr);
     ave->fi_addr = FI_ADDR_UNSPEC;
     ave->use_count = 1;
+    *tval = ave;
 
-    ret = fi_av_insert(dom->av, saddr, 1,  fi_addr, 0, NULL);
+    ret = fi_av_insert(dom->av, saddr, 1,  &fi_addr, 0, NULL);
     if (ret < 0) {
 	print_func_fi_err(callf, line, "fi_av_insert", "", ret);
         goto done;
@@ -944,7 +947,7 @@ int _fab_av_insert(const char *callf, uint line, struct fab_dom *dom,
         ret = -FI_EINVAL;
         goto done;
     }
-    ave->fi_addr = *fi_addr;
+    *fi_addr_out = ave->fi_addr = fi_addr;
 
     /* Going to use a tree, since it will be more general and
      * we don't really just don't want o(n) in the worst case.
@@ -960,10 +963,12 @@ int _fab_av_insert(const char *callf, uint line, struct fab_dom *dom,
 
  done:
     if (ret < 0) {
-        if (tval)
+        if (ave) {
             (void)tdelete(saddr, &dom->av_sa_tree, compare_sa);
-        free(ave);
-        *fi_addr = FI_ADDR_UNSPEC;
+            if (ave->fi_addr != FI_ADDR_UNSPEC)
+                fi_av_remove(dom->av, &fi_addr, 1, 0);
+            free(ave);
+        }
     }
     mutex_unlock(&dom->av_mutex);
 
@@ -1016,7 +1021,7 @@ int _fab_av_wait_send(const char *callf, uint line, struct fab_conn *conn,
         if (retry && (ret = retry(retry_arg)))
             goto done;
         else
-            sched_yield();
+            yield();
     }
     if (ret < 0) {
 	print_func_fi_err(callf, line, "fi_tinject", "", ret);
@@ -1070,12 +1075,12 @@ int _fab_av_wait_recv(const char *callf, uint line, struct fab_conn *conn,
             if (retry && (ret = retry(retry_arg)))
                 goto done;
             else
-                sched_yield();
+                yield();
         }
         if (retry && (ret = retry(retry_arg)))
             goto done;
         else
-            sched_yield();
+            yield();
     }
 
  done:

@@ -70,12 +70,6 @@
 
 _EXTERN_C_BEG
 
-#ifndef likely
-#define likely(_x)      __builtin_expect(!!(_x), 1)
-#endif
-#ifndef unlikely
-#define unlikely(_x)    __builtin_expect(!!(_x), 0)
-#endif
 #ifndef container_of
 #define container_of(_ptr, _type, _field)                       \
     ((_type *)((char *)(_ptr) - offsetof(_type, _field)))
@@ -224,6 +218,8 @@ void zhpeu_free_ptr(void *ptr);
 #define atm_inc(_p)     atm_add(_p, 1)
 #define atm_dec(_p)     atm_sub(_p, 1)
 
+#ifdef __GNUC__
+
 #ifdef _BARRIER_DEFINED
 #warning _BARRIER_DEFINED already defined
 #undef _BARRIER_DEFINED
@@ -282,6 +278,19 @@ static inline void io_mb(void)
 #define INT64_ALIGNED   __attribute__ ((aligned (__alignof__(int64_t))));
 #define INT128_ALIGNED  __attribute__ ((aligned (__alignof__(__int128_t))));
 #define CACHE_ALIGNED   __attribute__ ((aligned (L1_CACHE_BYTES)))
+
+#define MAYBE_UNUSED    __attribute__((unused))
+#define NO_RETURN       __attribute__ ((__noreturn__))
+#define PRINTF_ARGS(_a, _b) __attribute__ ((format (printf, _a, _b)))
+
+
+#ifndef likely
+#define likely(_x)      __builtin_expect(!!(_x), 1)
+#endif
+#ifndef unlikely
+#define unlikely(_x)    __builtin_expect(!!(_x), 0)
+#endif
+#endif /* __GNUC__ */
 
 /* Two simple atomic lists:
  * "lifo" for free lists and a "snatch" list with multiple-producers and
@@ -673,8 +682,7 @@ static_assert(INET6_ADDRSTRLEN >= ZHPE_ADDRSTRLEN, "ZHPE_ADDRSTRLEN");
 
 const char *sockaddr_ntop(const void *addr, char *buf, size_t len);
 
-int zhpeu_asprintf(char **strp, const char *fmt, ...)
-    __attribute__ ((format (printf, 2, 3)));
+int zhpeu_asprintf(char **strp, const char *fmt, ...) PRINTF_ARGS(2, 3);
 
 static inline char *sockaddr_str(const void *addr)
 {
@@ -715,20 +723,15 @@ static inline char *sockaddr_str(const void *addr)
 
 void zhpeq_util_init(char *argv0, int default_log_level, bool use_syslog);
 
-void print_dbg(const char *fmt, ...)
-    __attribute__ ((format (printf, 1, 2)));
+void print_dbg(const char *fmt, ...) PRINTF_ARGS(1, 2);
 
-void print_info(const char *fmt, ...)
-    __attribute__ ((format (printf, 1, 2)));
+void print_info(const char *fmt, ...) PRINTF_ARGS(1, 2);
 
-void print_err(const char *fmt, ...)
-    __attribute__ ((format (printf, 1, 2)));
+void print_err(const char *fmt, ...) PRINTF_ARGS(1, 2);
 
-char *errf_str(const char *fmt, ...)
-    __attribute__ ((format (printf, 1, 2)));
+char *errf_str(const char *fmt, ...) PRINTF_ARGS(1, 2);
 
-void print_usage(bool use_stdout, const char *fmt, ...)
-    __attribute__ ((format (printf, 2, 3)));
+void print_usage(bool use_stdout, const char *fmt, ...) PRINTF_ARGS(2, 3);
 
 void print_errs(const char *callf, uint line, char *errf_str,
                 int err, const char *errs);
@@ -1006,6 +1009,9 @@ static inline char *_strdup_or_null(const char *callf, uint line,
 
 #define spin_unlock(...) \
     abort_posix(pthread_spin_unlock, __VA_ARGS__)
+
+#define yield(...) \
+    abort_posix(pthread_yield, __VA_ARGS__)
 
 static inline int do_munmap(void *addr, size_t length,
                             const char *callf, uint line)

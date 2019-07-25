@@ -35,6 +35,7 @@
  */
 
 #define _GNU_SOURCE
+#include <numaif.h>
 #include <search.h>
 
 #include <internal.h>
@@ -47,6 +48,13 @@ static int              dev_fd = -1;
 static pthread_mutex_t  dev_mutex = PTHREAD_MUTEX_INITIALIZER;
 static void             *dev_uuid_tree;
 static void             *dev_mr_tree;
+static uint64_t         big_rsp_zaddr;
+
+#define BIG_ZMMU_LEN    (((uint64_t)1) << 47)
+#define BIG_ZMMU_REQ_FLAGS \
+    (ZHPEQ_MR_GET_REMOTE | ZHPEQ_MR_PUT_REMOTE)
+#define BIG_ZMMU_RSP_FLAGS \
+    (ZHPEQ_MR_GET_REMOTE | ZHPEQ_MR_PUT_REMOTE | ZHPE_MR_ZMMU_ONLY)
 
 struct dev_uuid_tree_entry {
     uuid_t              uuid;
@@ -67,6 +75,8 @@ struct zdom_data {
     int32_t             node_idx;
     struct zdom_node {
         struct dev_uuid_tree_entry *uue;
+        uint64_t        big_req_zaddr;
+        uint64_t        big_req_cnt;
         uint32_t        sz_queue;
     } *nodes;
 };
@@ -337,7 +347,6 @@ static int zhpe_open(struct zhpeq *zq, void *sa)
             if (!uue)
                 ret = -ENOMEM;
             if (ret >= 0) {
-                *tval = uue;
                 memcpy(uue->uuid, sz->sz_uuid, sizeof(uue->uuid));
                 uue->use_count = 1;
                 uue->fam = ((sz->sz_queue & ZHPE_SA_TYPE_MASK) ==
@@ -361,7 +370,8 @@ static int zhpe_open(struct zhpeq *zq, void *sa)
             if (ret < 0) {
                 (void)tdelete(&sz->sz_uuid, &dev_uuid_tree, compare_uuid);
                 free(uue);
-            }
+            } else
+                *tval = uue;
         }
     } else {
         ret = -ENOMEM;
@@ -383,6 +393,8 @@ static int zhpe_open(struct zhpeq *zq, void *sa)
             ret = bdom->node_idx++;
             node = &bdom->nodes[ret];
             node->uue = uue;
+            node->big_req_zaddr = 0;
+            node->big_req_cnt = 0;
             node->sz_queue = sz->sz_queue;
         } else
             ret = -ENOSPC;
@@ -478,7 +490,7 @@ static int do_mr_reg(uint64_t vaddr, size_t len, uint32_t access,
     req->mr_reg.len = len;
     req->mr_reg.access = access;
 
-    ret = __driver_cmd(&op, sizeof(req->mr_reg),  sizeof(rsp->mr_reg));
+    ret = __driver_cmd(&op, sizeof(req->mr_reg), sizeof(rsp->mr_reg));
     if (ret >= 0)
         *zaddr = rsp->mr_reg.rsp_zaddr;
 
@@ -498,7 +510,7 @@ static int do_mr_free(uint64_t vaddr, size_t len, uint32_t access,
     req->mr_reg.access = access;
     req->mr_free.rsp_zaddr = zaddr;
 
-    return __driver_cmd(&op, sizeof(req->mr_free),  sizeof(rsp->mr_free));
+    return __driver_cmd(&op, sizeof(req->mr_free), sizeof(rsp->mr_free));
 }
 
 static int zhpe_mr_reg(struct zhpeq_dom *zdom,
@@ -510,17 +522,25 @@ static int zhpe_mr_reg(struct zhpeq_dom *zdom,
     uint64_t            end = page_up((uintptr_t)buf + len);
     uint64_t            start = page_down((uintptr_t)buf);
     uint64_t            pglen = end - start;
-    struct zhpeq_key_data *qkdata;
+    struct zhpeq_key_data *qkdata = NULL;
     void                **tval;
     struct dev_mr_tree_entry *mre;
+
+    if (!big_rsp_zaddr) {
+        ret = do_mr_reg(0, BIG_ZMMU_LEN, BIG_ZMMU_RSP_FLAGS, &big_rsp_zaddr);
+        if (ret < 0)
+            goto done;
+    }
 
     desc = malloc(sizeof(*desc));
     if (!desc)
         goto done;
     qkdata = &desc->qkdata;
+
     /* Zero access is expected to work. */
     if (!access)
         access = ZHPEQ_MR_PUT;
+
     access |= ZHPE_MR_INDIVIDUAL;
     desc->hdr.magic = ZHPE_MAGIC;
     desc->hdr.version = ZHPEQ_MR_V1;
@@ -531,13 +551,13 @@ static int zhpe_mr_reg(struct zhpeq_dom *zdom,
     qkdata->z.access = access;
 
     ret = 0;
+
     mutex_lock(&dev_mutex);
     tval = tsearch(qkdata, &dev_mr_tree, compare_qkdata);
     if (tval) {
         mre = *tval;
         if (mre != (void *)qkdata) {
-            qkdata->z.zaddr = (mre->qkdata.z.zaddr +
-                               page_off(qkdata->z.vaddr));
+            qkdata->z.zaddr = mre->qkdata.z.zaddr + page_off(qkdata->z.vaddr);
             mre->use_count++;
         } else {
             mre = malloc(sizeof(*mre));
@@ -550,10 +570,10 @@ static int zhpe_mr_reg(struct zhpeq_dom *zdom,
                 ret = -ENOMEM;
             /* mbind region to turn off NUMA balancing */
             if (ret >= 0 &&
-                mbind((void *)(uintptr_t)mre->qkdata.z.vaddr,
-                      mre->qkdata.z.len, MPOL_PREFERRED, NULL, 1, 0) == -1) {
+                mbind(TO_PTR(mre->qkdata.z.vaddr), mre->qkdata.z.len,
+                      MPOL_PREFERRED, NULL, 1, 0) == -1) {
                 ret = -errno;
-                print_func_err(__func__, __LINE__, "mbind", "", ret);
+                print_func_err(__func__, __LINE__, "mbind", "preferred", ret);
             }
             if (ret >= 0) {
                 ret = do_mr_reg(mre->qkdata.z.vaddr, mre->qkdata.z.len,
@@ -562,8 +582,8 @@ static int zhpe_mr_reg(struct zhpeq_dom *zdom,
                                    page_off(qkdata->z.vaddr));
                 /* Restore to default policy on error. (Imperfect) */
                 if (ret < 0 &&
-                    mbind((void *)(uintptr_t)mre->qkdata.z.vaddr,
-                          mre->qkdata.z.len, MPOL_DEFAULT, NULL, 1, 0) == -1)
+                    mbind(TO_PTR(mre->qkdata.z.vaddr), mre->qkdata.z.len,
+                          MPOL_DEFAULT, NULL, 1, 0) == -1)
                     print_func_err(__func__, __LINE__, "mbind", "fixup",
                                    -errno);
             }
@@ -592,6 +612,7 @@ static int zhpe_mr_free(struct zhpeq_key_data *qkdata)
     int                 ret = 0;
     void                **tval;
     struct dev_mr_tree_entry *mre;
+    int                 rc;
 
     mutex_lock(&dev_mutex);
     tval = tfind(qkdata, &dev_mr_tree, compare_qkdata);
@@ -601,23 +622,31 @@ static int zhpe_mr_free(struct zhpeq_key_data *qkdata)
             (void)tdelete(qkdata, &dev_mr_tree, compare_qkdata);
             ret = do_mr_free(mre->qkdata.z.vaddr, mre->qkdata.z.len,
                              mre->qkdata.z.access, mre->qkdata.z.zaddr);
-            if (mbind((void *)(uintptr_t)mre->qkdata.z.vaddr,
-                      mre->qkdata.z.len, MPOL_DEFAULT, NULL, 0, 0) == -1) {
-                if (ret >= 0)
-                    ret = -errno;
+            if (mbind(TO_PTR(mre->qkdata.z.vaddr), mre->qkdata.z.len,
+                      MPOL_DEFAULT, NULL, 0, 0) == -1) {
+                rc = -errno;
                 /*
                  * For the moment, suppress EFAULT errors as these can
                  * occur correctly when the mr_cache frees a registration
                  * that has been unmapped.
                  */
-                if (errno != EFAULT)
-                    print_func_err(__func__, __LINE__, "mbind", "", -errno);
+                if (rc != -EFAULT) {
+                    if (ret >= 0)
+                        ret = rc;
+                    print_func_err(__func__, __LINE__, "mbind", "default", rc);
+                }
             }
             free(mre);
         }
     } else {
         ret = -ENOENT;
         print_func_err(__func__, __LINE__, "tfind", "", ret);
+    }
+    if (!dev_mr_tree && big_rsp_zaddr) {
+        rc = do_mr_free(0, BIG_ZMMU_LEN, BIG_ZMMU_RSP_FLAGS, big_rsp_zaddr);
+        big_rsp_zaddr = 0;
+        if (ret >= 0 && rc < 0)
+            ret = rc;
     }
     mutex_unlock(&dev_mutex);
 
@@ -667,13 +696,34 @@ static int do_rmr_free(uuid_t uuid, uint64_t rsp_zaddr, size_t len,
 
 static int zhpe_zmmu_reg(struct zhpeq_key_data *qkdata)
 {
+    int                 ret = -EINVAL;
     struct zhpeq_mr_desc_v1 *desc =
         container_of(qkdata, struct zhpeq_mr_desc_v1, qkdata);
     struct zdom_data    *bdom = desc->hdr.zdom->backend_data;
     struct zdom_node    *node = &bdom->nodes[desc->open_idx];
 
-    return do_rmr_import(node->uue->uuid, qkdata->rsp_zaddr, qkdata->z.len,
-                         qkdata->z.access, &qkdata->z.zaddr, NULL);
+    if (!node->uue)
+        goto done;
+    if (!(qkdata->z.access & ZHPE_MR_INDIVIDUAL)) {
+        mutex_lock(&bdom->node_mutex);
+        if (!node->big_req_zaddr)
+            ret = do_rmr_import(node->uue->uuid,
+                                qkdata->rsp_zaddr - qkdata->z.vaddr,
+                                BIG_ZMMU_LEN, BIG_ZMMU_REQ_FLAGS,
+                                &node->big_req_zaddr, NULL);
+        else
+            ret = 0;
+        if (ret >= 0) {
+            node->big_req_cnt++;
+            qkdata->z.zaddr = node->big_req_zaddr + qkdata->z.vaddr;
+        }
+        mutex_unlock(&bdom->node_mutex);
+    } else
+        ret = do_rmr_import(node->uue->uuid, qkdata->rsp_zaddr, qkdata->z.len,
+                            qkdata->z.access, &qkdata->z.zaddr, NULL);
+
+ done:
+    return ret;
 }
 
 static int zhpe_fam_qkdata(struct zhpeq_dom *zdom, int open_idx,
@@ -718,15 +768,34 @@ static int zhpe_fam_qkdata(struct zhpeq_dom *zdom, int open_idx,
 
 static int zhpe_zmmu_free(struct zhpeq_key_data *qkdata)
 {
-    int                 ret = 0;
+    int                 ret = -EINVAL;
     struct zhpeq_mr_desc_v1 *desc =
         container_of(qkdata, struct zhpeq_mr_desc_v1, qkdata);
     struct zdom_data    *bdom = desc->hdr.zdom->backend_data;
     struct zdom_node    *node = &bdom->nodes[desc->open_idx];
 
-    ret = do_rmr_free(node->uue->uuid, qkdata->rsp_zaddr, qkdata->z.len,
-                      qkdata->z.access, qkdata->z.zaddr);
+    if (!node->uue)
+        goto done;
+    if (!(qkdata->z.access & ZHPE_MR_INDIVIDUAL)) {
+        mutex_lock(&bdom->node_mutex);
+        if (node->big_req_cnt) {
+            node->big_req_cnt--;
+            if (!node->big_req_cnt) {
+                ret = do_rmr_free(node->uue->uuid,
+                                  qkdata->rsp_zaddr - qkdata->z.vaddr,
+                                  BIG_ZMMU_LEN, BIG_ZMMU_REQ_FLAGS,
+                                  node->big_req_zaddr);
+                node->big_req_zaddr = 0;
+            } else
+                ret = 0;
+        } else
+            ret = -ENOENT;
+        mutex_unlock(&bdom->node_mutex);
+    } else
+        ret = do_rmr_free(node->uue->uuid, qkdata->rsp_zaddr,
+                          qkdata->z.len, qkdata->z.access, qkdata->z.zaddr);
 
+ done:
     return ret;
 }
 

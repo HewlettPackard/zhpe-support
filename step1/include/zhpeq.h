@@ -50,10 +50,10 @@ _EXTERN_C_BEG
 
 #define ZHPEQ_MR_GET            ZHPE_MR_GET
 #define ZHPEQ_MR_PUT            ZHPE_MR_PUT
-#define ZHPEQ_MR_SEND           ZHPE_MR_SEND
-#define ZHPEQ_MR_RECV           ZHPE_MR_RECV
 #define ZHPEQ_MR_GET_REMOTE     ZHPE_MR_GET_REMOTE
 #define ZHPEQ_MR_PUT_REMOTE     ZHPE_MR_PUT_REMOTE
+#define ZHPEQ_MR_SEND           ZHPE_MR_SEND
+#define ZHPEQ_MR_RECV           ZHPE_MR_RECV
 
 #define ZHPEQ_MR_KEY_ZERO_OFF   ZHPE_MR_FLAG0
 #define ZHPEQ_MR_FLAG1          ZHPE_MR_FLAG1
@@ -263,6 +263,10 @@ void zhpeq_print_qkdata(const char *func, uint line,
                         const struct zhpeq_key_data *qkdata);
 
 void zhpeq_print_qcm(const char *func, uint line, const struct zhpeq *zq);
+
+void zhpeq_print_wq(struct zhpeq *zq, int offset, int cnt);
+
+void zhpeq_print_cq(struct zhpeq *zq, int offset, int cnt);
 
 bool zhpeq_is_asic(void);
 

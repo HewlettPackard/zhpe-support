@@ -1213,7 +1213,6 @@ static int lfab_mr_reg(struct zhpeq_dom *zdom,
     int                 ret = -ENOMEM;
     struct zdom_data    *bdom = zdom->backend_data;
     struct fab_dom      *fab_dom = bdom->fab_dom;
-    struct zhpeq_mr_desc_v1 *desc = NULL;
     struct fid_mr       *mr = NULL;
     struct lfab_work_fi_mr_reg data = {
         .domain         = fab_dom->domain,
@@ -1221,6 +1220,8 @@ static int lfab_mr_reg(struct zhpeq_dom *zdom,
         .len            = len,
         .mr_out         = &mr,
     };
+    struct zhpeq_mr_desc_v1 *desc = NULL;
+    struct zhpeq_key_data *qkdata;
     struct free_index   old;
     struct free_index   new;
     uint32_t            index;
@@ -1228,6 +1229,8 @@ static int lfab_mr_reg(struct zhpeq_dom *zdom,
     desc = malloc(sizeof(*desc));
     if (!desc)
         goto done;
+    qkdata = &desc->qkdata;
+
     if (access & ZHPEQ_MR_GET)
        data.access |= FI_READ;
     if (access & ZHPEQ_MR_PUT)
@@ -1251,17 +1254,18 @@ static int lfab_mr_reg(struct zhpeq_dom *zdom,
             break;
     }
     bdom->lcl_mr[index] = mr;
+
+    access |= ZHPE_MR_INDIVIDUAL;
     desc->hdr.magic = ZHPE_MAGIC;
     desc->hdr.version = ZHPEQ_MR_V1;
     desc->hdr.zdom = zdom;
-    desc->qkdata.z.vaddr = (uintptr_t)buf;
-    desc->qkdata.z.len = len;
-    desc->qkdata.z.zaddr = (((uint64_t)index << KEY_SHIFT) +
-                            TO_ADDR(desc->qkdata.z.vaddr));
-    desc->qkdata.laddr = desc->qkdata.z.zaddr;
-    desc->qkdata.z.access = access;
-    *qkdata_out = &desc->qkdata;
+    qkdata->z.vaddr = (uintptr_t)buf;
+    qkdata->z.len = len;
+    qkdata->z.zaddr = ((uint64_t)index << KEY_SHIFT) + TO_ADDR(qkdata->z.vaddr);
+    qkdata->laddr = qkdata->z.zaddr;
+    qkdata->z.access = access;
 
+    *qkdata_out = qkdata;
     ret = 0;
 
  done:

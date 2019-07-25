@@ -496,7 +496,7 @@ static inline int zhpeq_rw(struct zhpeq *zq, uint32_t qindex, bool fence,
     if (len > b_attr.z.max_dma_len)
         goto done;
 
-    qindex = qindex & (zq->xqinfo.cmdq.ent - 1);
+    qindex &= (zq->xqinfo.cmdq.ent - 1);
     wqe = zq->wq + qindex;
 
     opcode |= (fence ? ZHPE_HW_OPCODE_FENCE : 0);
@@ -531,7 +531,7 @@ int zhpeq_puti(struct zhpeq *zq, uint32_t qindex, bool fence,
     if (!buf || !len || len > sizeof(wqe->imm.data))
         goto done;
 
-    qindex = qindex & (zq->xqinfo.cmdq.ent - 1);
+    qindex &= (zq->xqinfo.cmdq.ent - 1);
     wqe = zq->wq + qindex;
 
     wqe->hdr.opcode = ZHPE_HW_OPCODE_PUTIMM;
@@ -658,8 +658,9 @@ int zhpeq_mr_reg(struct zhpeq_dom *zdom, const void *buf, size_t len,
     if (!qkdata_out)
         goto done;
     *qkdata_out = NULL;
-    if (!zdom || page_up((uintptr_t)buf + len)  <= (uintptr_t)buf)
-         goto done;
+    if (!zdom || !len || page_up((uintptr_t)buf + len)  <= (uintptr_t)buf ||
+        (access & ~ZHPEQ_MR_VALID_MASK))
+        goto done;
 
     ret = b_ops->mr_reg(zdom, buf, len, access, qkdata_out);
 #if QKDATA_DUMP
@@ -840,15 +841,15 @@ int zhpeq_mmap(const struct zhpeq_key_data *qkdata,
         goto done;
     cache_mode |= ZHPEQ_MR_REQ_CPU;
 
-#if QKDATA_DUMP
-    if (ret >= 0)
-        zhpeq_print_qkdata(__func__, __LINE__, qkdata);
-#endif
     if (b_ops->mmap)
         ret = b_ops->mmap(qkdata, cache_mode, addr, length, prot,
                           flags, offset, mmap_addr, zmdesc);
     else
         ret = -ENOSYS;
+#if QKDATA_DUMP
+    if (ret >= 0)
+        zhpeq_print_qkdata(__func__, __LINE__, qkdata);
+#endif
 
  done:
     return ret;
@@ -862,8 +863,7 @@ int zhpeq_mmap_unmap(struct zhpeq_mmap_desc *zmdesc, void *addr, size_t length)
         goto done;
 
 #if QKDATA_DUMP
-    if (ret >= 0)
-        zhpeq_print_qkdata(__func__, __LINE__, &zmdesc->desc->qkdata);
+    zhpeq_print_qkdata(__func__, __LINE__, &zmdesc->desc->qkdata);
 #endif
     if (b_ops->mmap_unmap)
         ret = b_ops->mmap_unmap(zmdesc, addr, length);
@@ -929,6 +929,10 @@ ssize_t zhpeq_cq_read(struct zhpeq *zq, struct zhpeq_cq_entry *entries,
         entries[i].z.context = get_context(zq, &entries[i].z);
         zhpe_stats_stamp(zhpe_stats_subid(ZHPQ, 80), (uintptr_t)zq,
                          entries[i].z.index, (uintptr_t)entries[i].z.context);
+        if (entries[i].z.status != ZHPEQ_CQ_STATUS_SUCCESS)
+            print_err("%s,%u:head 0x%x index 0x%x status 0x%x\n",
+                      __func__, __LINE__, old, entries[i].z.index,
+                      entries[i].z.status);
         old = new;
         i++;
     }
@@ -996,12 +1000,12 @@ void zhpeq_print_qkdata(const char *func, uint line,
 
     if (b_ops->qkdata_id_str)
         id_str = b_ops->qkdata_id_str(qkdata);
-    printf("%s,%u:%p %s\n", func, line, qkdata, (id_str ?: ""));
-    printf("%s,%u:v/z/l 0x%Lx 0x%Lx 0x%Lx\n", func, line,
-           (ullong)qkdata->z.vaddr, (ullong)qkdata->z.zaddr,
-           (ullong)qkdata->z.len);
-    printf("%s,%u:a/l 0x%Lx 0x%Lx\n", func, line,
-           (ullong)qkdata->z.access, (ullong)qkdata->laddr);
+    fprintf(stderr, "%s,%u:%p %s\n", func, line, qkdata, (id_str ?: ""));
+    fprintf(stderr, "%s,%u:v/z/l 0x%Lx 0x%Lx 0x%Lx\n", func, line,
+            (ullong)qkdata->z.vaddr, (ullong)qkdata->z.zaddr,
+            (ullong)qkdata->z.len);
+    fprintf(stderr, "%s,%u:a/l 0x%Lx 0x%Lx\n", func, line,
+            (ullong)qkdata->z.access, (ullong)qkdata->laddr);
 }
 
 static void print_qcm1(const char *func, uint line, const volatile void *qcm,
@@ -1025,4 +1029,68 @@ void zhpeq_print_qcm(const char *func, uint line, const struct zhpeq *zq)
 bool zhpeq_is_asic(void)
 {
     return b_zhpe;
+}
+
+void zhpeq_print_wq(struct zhpeq *zq, int offset, int cnt)
+{
+    struct zhpeq_ht     old = atm_load_rlx(&zq->head_tail);
+    uint32_t            qmask = zq->xqinfo.cmdq.ent - 1;
+    uint                i;
+    union zhpe_hw_wq_entry *wqe;
+
+    if (offset < 0 && (uint)(-offset) > old.tail)
+        offset = -(int)old.tail;
+    for (i = old.tail + (int32_t)offset; i < old.tail && cnt > 0; i++, cnt--) {
+        wqe = &zq->wq[i & qmask];
+        switch (wqe->hdr.opcode) {
+
+        case ZHPE_HW_OPCODE_NOP:
+            fprintf(stderr, "%7d:NOP   :idx %4d\n",
+                    i, wqe->hdr.cmp_index);
+            break;
+
+        case ZHPE_HW_OPCODE_GETIMM:
+            fprintf(stderr, "%7d:GETIMM:idx %4d len 0x%x rem 0x%lx\n",
+                    i, wqe->hdr.cmp_index, wqe->imm.len, wqe->imm.rem_addr);
+            break;
+
+        case ZHPE_HW_OPCODE_PUTIMM:
+            fprintf(stderr, "%7d:PUTIMM:idx %4d len 0x%x rem 0x%lx\n",
+                    i, wqe->hdr.cmp_index, wqe->imm.len, wqe->imm.rem_addr);
+            break;
+
+        case ZHPE_HW_OPCODE_GET:
+            fprintf(stderr, "%7d:GET   :idx %4d len 0x%x rem 0x%lx lcl 0x%lx\n",
+                    i, wqe->hdr.cmp_index, wqe->dma.len, wqe->dma.rd_addr,
+                    wqe->dma.wr_addr);
+            break;
+
+        case ZHPE_HW_OPCODE_PUT:
+            fprintf(stderr, "%7d:PUT   :idx %4d len 0x%x rem 0x%lx lcl 0x%lx\n",
+                    i, wqe->hdr.cmp_index, wqe->dma.len, wqe->dma.wr_addr,
+                    wqe->dma.rd_addr);
+            break;
+
+        default:
+            fprintf(stderr, "%7d:OP 0x%02x:idx %4d\n",
+                    i, wqe->hdr.opcode, wqe->hdr.cmp_index);
+            break;
+        }
+    }
+}
+
+void zhpeq_print_cq(struct zhpeq *zq, int offset, int cnt)
+{
+    struct zhpeq_ht     old = atm_load_rlx(&zq->head_tail);
+    uint32_t            qmask = zq->xqinfo.cmplq.ent - 1;
+    uint                i;
+    union zhpe_hw_cq_entry *cqe;
+
+    if (offset < 0 && (uint)(-offset) > old.head)
+        offset = -(int)old.head;
+    for (i = old.tail + (int32_t)offset; i < old.head && cnt > 0; i++, cnt--) {
+        cqe = &zq->cq[i & qmask];
+        fprintf(stderr, "%7d:idx %4d status 0x%02x\n",
+                i, cqe->entry.index, cqe->entry.status);
+    }
 }

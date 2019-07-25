@@ -75,7 +75,7 @@ static void __attribute__((constructor)) lib_init(void)
     if (oldh.seq) {
         /* Wait for global initialization to complete. */
         while (!atm_load_rlx(&zhpeu_init_time))
-            pthread_yield();
+            yield();
         return;
     }
 

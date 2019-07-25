@@ -44,6 +44,7 @@
 
 #include <assert.h>
 #include <endian.h>
+#include <inttypes.h>
 
 #include <uuid/uuid.h>
 
@@ -144,6 +145,11 @@ static inline void iowrite64(uint64_t value, volatile void *addr)
 {
     *(volatile uint64_t *)addr = htole64(value);
 }
+
+#define ZHPEQ_MR_VALID_MASK \
+    (ZHPE_MR_GET | ZHPE_MR_PUT | ZHPE_MR_SEND | ZHPE_MR_RECV | \
+     ZHPE_MR_GET_REMOTE | ZHPE_MR_PUT_REMOTE | \
+     ZHPE_MR_FLAG0 | ZHPE_MR_FLAG1 | ZHPE_MR_FLAG2)
 
 struct key_data_packed {
     uint64_t            vaddr;

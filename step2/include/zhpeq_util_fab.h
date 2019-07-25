@@ -210,7 +210,7 @@ int _fab_av_xchg(const char *callf, uint line, struct fab_conn *conn,
     _fab_av_xchg(__func__, __LINE__, __VA_ARGS__)
 
 int _fab_av_insert(const char *callf, uint line, struct fab_dom *dom,
-                   union sockaddr_in46 *saddr, fi_addr_t *fi_addr);
+                   union sockaddr_in46 *saddr, fi_addr_t *fi_addr_out);
 
 #define fab_av_insert(...) \
     _fab_av_insert(__func__, __LINE__, __VA_ARGS__)

@@ -806,7 +806,7 @@ static int zhpe_mmap(const struct zhpeq_key_data *qkdata_orig,
 {
     int                 ret = -ENOMEM;
     const struct zhpeq_mr_desc_v1 *desc_orig =
-        container_of(qkdata_orig, struct zhpeq_mr_desc_v1, qkdata);
+        container_of(qkdata_orig, const struct zhpeq_mr_desc_v1, qkdata);
     struct zdom_data    *bdom = desc_orig->hdr.zdom->backend_data;
     struct zdom_node    *node = &bdom->nodes[desc_orig->open_idx];
     struct zhpeq_mmap_desc *zmdesc = NULL;
@@ -910,8 +910,8 @@ static int zhpe_getaddr(struct zhpeq *zq, void *sa, size_t *sa_len)
 char *zhpe_qkdata_id_str(const struct zhpeq_key_data *qkdata)
 {
     char                *ret = NULL;
-    struct zhpeq_mr_desc_v1 *desc =
-        container_of(qkdata, struct zhpeq_mr_desc_v1, qkdata);
+    const struct zhpeq_mr_desc_v1 *desc =
+        container_of(qkdata, const struct zhpeq_mr_desc_v1, qkdata);
     struct zdom_data    *bdom = desc->hdr.zdom->backend_data;
     char                uuid_str[37];
 

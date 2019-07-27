@@ -765,8 +765,8 @@ int zhpeq_qkdata_export(const struct zhpeq_key_data *qkdata,
     zhpe_stats_start(zhpe_stats_subid(ZHPQ, 30));
 
     int                 ret = -EINVAL;
-    struct zhpeq_mr_desc_v1 *desc =
-        container_of(qkdata, struct zhpeq_mr_desc_v1, qkdata);
+    const struct zhpeq_mr_desc_v1 *desc =
+        container_of(qkdata, const struct zhpeq_mr_desc_v1, qkdata);
 
     if (!qkdata || !blob || !blob_len ||
         *blob_len < sizeof(struct key_data_packed) ||
@@ -827,8 +827,8 @@ int zhpeq_mmap(const struct zhpeq_key_data *qkdata,
                struct zhpeq_mmap_desc **zmdesc)
 {
     int                 ret = -EINVAL;
-    struct zhpeq_mr_desc_v1 *desc =
-        container_of(qkdata, struct zhpeq_mr_desc_v1, qkdata);
+    const struct zhpeq_mr_desc_v1 *desc =
+        container_of(qkdata, const struct zhpeq_mr_desc_v1, qkdata);
 
     if (mmap_addr)
         *mmap_addr = NULL;

@@ -1347,8 +1347,8 @@ static int lfab_zmmu_free(struct zhpeq_key_data *qkdata)
 static int lfab_qkdata_export(const struct zhpeq_key_data *qkdata,
                               struct key_data_packed *blob)
 {
-    struct zhpeq_mr_desc_v1 *desc =
-        container_of(qkdata, struct zhpeq_mr_desc_v1, qkdata);
+    const struct zhpeq_mr_desc_v1 *desc =
+        container_of(qkdata, const struct zhpeq_mr_desc_v1, qkdata);
     struct zdom_data    *bdom = desc->hdr.zdom->backend_data;
 
     pack_kdata(qkdata, blob,

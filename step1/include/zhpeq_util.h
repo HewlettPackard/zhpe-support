@@ -70,12 +70,19 @@
 
 _EXTERN_C_BEG
 
-#ifndef container_of
-#define container_of(_ptr, _type, _field)                       \
-    ((_type *)((char *)(_ptr) - offsetof(_type, _field)))
+/* Type checking container_of */
+#ifdef container_of
+#undef container_of
 #endif
+#define container_of(ptr, type, member)                         \
+({                                                              \
+    typeof( ((type *)0)->member ) *_ptr = (ptr);                \
+    (type *)((char *)_ptr - offsetof(type, member));            \
+})
 
+#ifndef ARRAY_SIZE
 #define ARRAY_SIZE(_x)  (sizeof(_x) / sizeof(_x[0]))
+#endif
 
 #define TO_PTR(_int)    (void *)(uintptr_t)(_int)
 

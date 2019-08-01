@@ -83,7 +83,8 @@ struct zdom_data {
 
 /* For the moment, we will do all driver I/O synchronously.*/
 
-static int __driver_cmd(union zhpe_op *op, size_t req_len, size_t rsp_len)
+static int __driver_cmd(union zhpe_op *op, size_t req_len, size_t rsp_len,
+                        bool err_print)
 {
     int                 ret = 0;
     int                 opcode = op->hdr.opcode;
@@ -117,7 +118,7 @@ static int __driver_cmd(union zhpe_op *op, size_t req_len, size_t rsp_len)
     if (!expected_saw("index", 0, op->hdr.index))
         goto done;
     ret = op->hdr.status;
-    if (ret < 0)
+    if (ret < 0 && err_print)
         print_err("%s,%u:zhpe command 0x%02x returned error %d:%s\n",
                   __func__, __LINE__, op->hdr.opcode,
                   -ret, strerror(-ret));
@@ -127,12 +128,13 @@ static int __driver_cmd(union zhpe_op *op, size_t req_len, size_t rsp_len)
     return ret;
 }
 
-static int driver_cmd(union zhpe_op *op, size_t req_len, size_t rsp_len)
+static int driver_cmd(union zhpe_op *op, size_t req_len, size_t rsp_len,
+                      bool err_print)
 {
     int                 ret;
 
     mutex_lock(&dev_mutex);
-    ret = __driver_cmd(op, req_len, rsp_len);
+    ret = __driver_cmd(op, req_len, rsp_len, err_print);
     mutex_unlock(&dev_mutex);
 
     return ret;
@@ -153,7 +155,7 @@ static int zhpe_lib_init(struct zhpeq_attr *attr)
     }
 
     req->hdr.opcode = ZHPE_OP_INIT;
-    ret = driver_cmd(&op, sizeof(req->init), sizeof(rsp->init));
+    ret = driver_cmd(&op, sizeof(req->init), sizeof(rsp->init), true);
     if (ret < 0)
         goto done;
 
@@ -197,12 +199,30 @@ static int compare_uuid(const void *key1, const void *key2)
     return uuid_compare(*u1, *u2);
 }
 
-static int uuid_free(uuid_t *uu)
+static int do_uuid_free(uuid_t uuid)
 {
-    int                 ret = 0;
+    int                 ret;
     union zhpe_op       op;
     union zhpe_req      *req = &op.req;
     union zhpe_rsp      *rsp = &op.rsp;
+
+    req->hdr.opcode = ZHPE_OP_UUID_FREE;
+    memcpy(req->uuid_free.uuid, uuid, sizeof(req->uuid_free.uuid));
+    ret =__driver_cmd(&op, sizeof(req->uuid_free), sizeof(rsp->uuid_free),
+                      false);
+    if (ret < 0) {
+        if (ret != -ENOENT)
+            print_func_err(__func__, __LINE__, "__driver_cmd", "", ret);
+        else
+            ret = 0;
+    }
+
+    return ret;
+}
+
+static int uuid_free(uuid_t *uu)
+{
+    int                 ret = 0;
     void                **tval;
     struct dev_uuid_tree_entry *uue;
 
@@ -212,12 +232,8 @@ static int uuid_free(uuid_t *uu)
         uue = *tval;
         if (!--(uue->use_count)) {
             (void)tdelete(uu, &dev_uuid_tree, compare_uuid);
-            if (uuid_compare(*uu, zhpeq_uuid)) {
-                req->hdr.opcode = ZHPE_OP_UUID_FREE;
-                memcpy(req->uuid_free.uuid, *uu, sizeof(req->uuid_free.uuid));
-                ret =__driver_cmd(&op, sizeof(req->uuid_free),
-                                  sizeof(rsp->uuid_free));
-            }
+            if (uuid_compare(*uu, zhpeq_uuid))
+                ret = do_uuid_free(*uu);
             free(uue);
         }
     } else {
@@ -286,7 +302,7 @@ static int zhpe_qalloc(struct zhpeq *zq, int wqlen, int cqlen,
     req->xqalloc.traffic_class = traffic_class;
     req->xqalloc.priority = priority;
     req->xqalloc.slice_mask = slice_mask;
-    ret = driver_cmd(&op, sizeof(req->xqalloc), sizeof(rsp->xqalloc));
+    ret = driver_cmd(&op, sizeof(req->xqalloc), sizeof(rsp->xqalloc), true);
     if (ret < 0)
         goto done;
     zq->fd = dev_fd;
@@ -365,7 +381,7 @@ static int zhpe_open(struct zhpeq *zq, void *sa)
                     req->uuid_import.uu_flags = 0;
                 }
                 ret = __driver_cmd(&op, sizeof(req->uuid_import),
-                                   sizeof(rsp->uuid_import));
+                                   sizeof(rsp->uuid_import), true);
             }
             if (ret < 0) {
                 (void)tdelete(&sz->sz_uuid, &dev_uuid_tree, compare_uuid);
@@ -436,7 +452,7 @@ static int zhpe_qfree(struct zhpeq *zq)
 
     req->hdr.opcode = ZHPE_OP_XQFREE;
     req->xqfree.info = zq->xqinfo;
-    ret = driver_cmd(&op, sizeof(req->xqfree), sizeof(rsp->xqfree));
+    ret = driver_cmd(&op, sizeof(req->xqfree), sizeof(rsp->xqfree), true);
 
     return ret;
 }
@@ -490,7 +506,7 @@ static int do_mr_reg(uint64_t vaddr, size_t len, uint32_t access,
     req->mr_reg.len = len;
     req->mr_reg.access = access;
 
-    ret = __driver_cmd(&op, sizeof(req->mr_reg), sizeof(rsp->mr_reg));
+    ret = __driver_cmd(&op, sizeof(req->mr_reg), sizeof(rsp->mr_reg), true);
     if (ret >= 0)
         *zaddr = rsp->mr_reg.rsp_zaddr;
 
@@ -510,7 +526,7 @@ static int do_mr_free(uint64_t vaddr, size_t len, uint32_t access,
     req->mr_reg.access = access;
     req->mr_free.rsp_zaddr = zaddr;
 
-    return __driver_cmd(&op, sizeof(req->mr_free), sizeof(rsp->mr_free));
+    return __driver_cmd(&op, sizeof(req->mr_free), sizeof(rsp->mr_free), true);
 }
 
 static int zhpe_mr_reg(struct zhpeq_dom *zdom,
@@ -667,7 +683,8 @@ static int do_rmr_import(uuid_t uuid, uint64_t rsp_zaddr, size_t len,
     req->rmr_import.rsp_zaddr = rsp_zaddr;
     req->rmr_import.len = len;
     req->rmr_import.access = access;
-    ret = driver_cmd(&op, sizeof(req->rmr_import), sizeof(rsp->rmr_import));
+    ret = driver_cmd(&op, sizeof(req->rmr_import), sizeof(rsp->rmr_import),
+                       true);
     if (ret >= 0) {
         *req_zaddr = rsp->rmr_import.req_addr;
         if (pgoff)
@@ -680,6 +697,7 @@ static int do_rmr_import(uuid_t uuid, uint64_t rsp_zaddr, size_t len,
 static int do_rmr_free(uuid_t uuid, uint64_t rsp_zaddr, size_t len,
                        uint32_t access, uint64_t req_zaddr)
 {
+    int                 ret;
     union zhpe_op       op;
     union zhpe_req      *req = &op.req;
     union zhpe_rsp      *rsp = &op.rsp;
@@ -691,7 +709,15 @@ static int do_rmr_free(uuid_t uuid, uint64_t rsp_zaddr, size_t len,
     req->rmr_free.access = access;
     req->rmr_free.rsp_zaddr = rsp_zaddr;
 
-    return driver_cmd(&op, sizeof(req->rmr_free), sizeof(rsp->rmr_free));
+    ret = driver_cmd(&op, sizeof(req->rmr_free), sizeof(rsp->rmr_free), false);
+    if (ret < 0) {
+        if (ret != -ENOENT)
+            print_func_err(__func__, __LINE__, "__driver_cmd", "", ret);
+        else
+            ret = 0;
+    }
+
+    return ret;
 }
 
 static int zhpe_zmmu_reg(struct zhpeq_key_data *qkdata)
@@ -785,6 +811,8 @@ static int zhpe_zmmu_free(struct zhpeq_key_data *qkdata)
                                   qkdata->rsp_zaddr - qkdata->z.vaddr,
                                   BIG_ZMMU_LEN, BIG_ZMMU_REQ_FLAGS,
                                   node->big_req_zaddr);
+                if (ret < 0 && ret != -ENOENT)
+                    print_func_err(__func__, __LINE__, "__driver_cmd", "", ret);
                 node->big_req_zaddr = 0;
             } else
                 ret = 0;

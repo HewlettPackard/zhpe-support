@@ -837,7 +837,12 @@ int zhpeq_mmap(const struct zhpeq_key_data *qkdata,
     if (!qkdata || !mmap_addr || !zmdesc ||
         (cache_mode & ~ZHPEQ_MR_REQ_CPU_CACHE) ||
         desc->hdr.magic != ZHPE_MAGIC ||
-        desc->hdr.version != (ZHPEQ_MR_V1 | ZHPEQ_MR_REMOTE))
+        desc->hdr.version != (ZHPEQ_MR_V1 | ZHPEQ_MR_REMOTE) ||
+        !length || page_off(offset) ||
+        page_off(qkdata->z.vaddr) || page_off(qkdata->z.len) ||
+        offset + length > desc->qkdata.z.len || (prot & PROT_EXEC) ||
+        ((prot & PROT_READ) && !(qkdata->z.access & ZHPEQ_MR_GET_REMOTE)) ||
+        ((prot & PROT_WRITE) && !(qkdata->z.access & ZHPEQ_MR_PUT_REMOTE)))
         goto done;
     cache_mode |= ZHPEQ_MR_REQ_CPU;
 
@@ -875,19 +880,16 @@ int zhpeq_mmap_unmap(struct zhpeq_mmap_desc *zmdesc, void *addr, size_t length)
 }
 
 int zhpeq_mmap_commit(struct zhpeq_mmap_desc *zmdesc,
-                      const void *addr, size_t length, bool fence)
+                      const void *addr, size_t length, bool fence,
+                      bool invalidate)
 {
-    int                 ret = -EINVAL;
-
-    if (!zmdesc)
-        goto done;
+    int                 ret;
 
     if (b_ops->mmap_commit)
-        ret = b_ops->mmap_commit(zmdesc, addr, length, fence);
+        ret = b_ops->mmap_commit(zmdesc, addr, length, fence, invalidate);
     else
         ret = -ENOSYS;
 
- done:
     return ret;
 }
 

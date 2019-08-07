@@ -580,13 +580,13 @@ static int lfab_qalloc(struct zhpeq *zq, int cmd_qlen, int cmp_qlen,
     zq->fd = -1;
     /* Use xqinfo for compatiblity with asic code. */
     zq->xqinfo.qcm.size =
-        roundup64(ZHPE_XDM_QCM_CMPL_QUEUE_TAIL_TOGGLE_OFFSET + 8, page_size);
+        page_up(ZHPE_XDM_QCM_CMPL_QUEUE_TAIL_TOGGLE_OFFSET + 8);
     zq->xqinfo.qcm.off = 0;
     zq->xqinfo.cmdq.ent = cmd_qlen;
-    zq->xqinfo.cmdq.size = roundup64(cmd_qlen * ZHPE_ENTRY_LEN, page_size);
+    zq->xqinfo.cmdq.size = page_up(cmd_qlen * ZHPE_ENTRY_LEN);
     zq->xqinfo.cmdq.off = 0;
     zq->xqinfo.cmplq.ent = cmp_qlen;
-    zq->xqinfo.cmplq.size = roundup64(cmp_qlen * ZHPE_ENTRY_LEN, page_size);
+    zq->xqinfo.cmplq.size = page_up(cmp_qlen * ZHPE_ENTRY_LEN);
     zq->xqinfo.cmplq.off = 0;
 
     return 0;

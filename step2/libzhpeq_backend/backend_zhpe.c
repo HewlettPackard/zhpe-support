@@ -851,6 +851,9 @@ static int zhpe_mmap(const struct zhpeq_key_data *qkdata_orig,
     *desc  = *desc_orig;
     zmdesc->desc = desc;
     qkdata = &desc->qkdata;
+    qkdata->z.vaddr += offset;
+    qkdata->z.len -= offset;
+    qkdata->rsp_zaddr += offset;
     qkdata->z.access |= cache_mode | ZHPEQ_MR_REQ_CPU;
 
     ret = do_rmr_import(node->uue->uuid, qkdata->rsp_zaddr, qkdata->z.len,
@@ -895,9 +898,18 @@ static int zhpe_mmap_unmap(struct zhpeq_mmap_desc *zmdesc,
 }
 
 static int zhpe_mmap_commit(struct zhpeq_mmap_desc *zmdesc,
-                            const void *addr, size_t length, bool fence)
+                            const void *addr, size_t length, bool fence,
+                            bool invalidate)
 {
-    clwb_range(addr, length, fence);
+    if (!addr && !length && zmdesc) {
+        addr = TO_PTR(zmdesc->desc->qkdata.z.vaddr);
+        length = zmdesc->desc->qkdata.z.len;
+    }
+
+    if (invalidate)
+        clflush_range(addr, length, fence);
+    else
+        clwb_range(addr, length, fence);
     /* FIXME: add error checking */
 
     return 0;

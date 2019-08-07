@@ -111,14 +111,15 @@ static int do_mem_setup(struct stuff *conn)
     int                 ret = -EEXIST;
     struct fab_conn     *fab_conn = &conn->fab_conn;
     const struct args   *args = conn->args;
+    size_t              req = args->mmap_len + page_size;
 
     /* Size of an array of entries plus a tail index. */
-    ret = fab_mrmem_alloc(fab_conn, &fab_conn->mrmem, args->mmap_len, 0);
+    ret = fab_mrmem_alloc(fab_conn, &fab_conn->mrmem, req, 0);
     if (ret < 0)
         goto done;
     memset(fab_conn->mrmem.mem, 0, args->mmap_len);
     /* Make sure there are no dirty lines in cache. */
-    clflush_range(fab_conn->mrmem.mem, args->mmap_len, true);
+    conn->ext_ops->commit(NULL, fab_conn->mrmem.mem, req, true, true);
 
  done:
     return ret;
@@ -181,6 +182,7 @@ static int do_server_op(struct stuff *conn)
     int                 ret = 0;
     struct fab_conn     *fab_conn = &conn->fab_conn;
     const struct args   *args = conn->args;
+    void                *buf = (char *)fab_conn->mrmem.mem + page_size;
     struct fi_context2  ctx;
     size_t              tx_avail;
     size_t              rx_avail;
@@ -199,18 +201,15 @@ static int do_server_op(struct stuff *conn)
             goto done;
     }
     /* Eliminate any  prefetched cache lines. */
-    clflush_range(fab_conn->mrmem.mem, args->mmap_len, true);
+    conn->ext_ops->commit(NULL, buf, args->mmap_len, true, true);
     /* Compare ramp. */
-    for (i = 0, p = fab_conn->mrmem.mem; i < args->mmap_len;
-         i += sizeof(*p), p++) {
+    for (i = 0, p =  buf; i < args->mmap_len; i += sizeof(*p), p++) {
         if (*p != (typeof(*p))(i | 1))
             print_err("off 0x%08lx saw 0x%04x\n", i, *p);
     }
     /* Rewrite ramp. */
-    for (i = 0, p = fab_conn->mrmem.mem; i < args->mmap_len;
-         i+= sizeof(*p), p++) {
+    for (i = 0, p = buf; i < args->mmap_len; i+= sizeof(*p), p++)
         *p = i;
-    }
     /* Tell client ramp ready. */
     ret = fi_send(fab_conn->ep, NULL, 0, NULL, 0, &ctx);
     if (ret < 0)
@@ -261,7 +260,7 @@ static int do_client_op(struct stuff *conn)
     lat_write = now - start;
     /* Commit buffer. */
     start = now;
-    ret = conn->ext_ops->commit(conn->mdesc, 0, 0, true);
+    ret = conn->ext_ops->commit(conn->mdesc, 0, 0, true, false);
     if (ret < 0) {
         print_func_fi_err(__func__, __LINE__, "ext_commit", "", ret);
         goto done;
@@ -292,7 +291,7 @@ static int do_client_op(struct stuff *conn)
 
     /* Flush buffer. */
     start = get_cycles(NULL);
-    clflush_range(conn->mdesc->addr, conn->mdesc->length, true);
+    conn->ext_ops->commit(conn->mdesc, NULL, 0, true, true);
     now = get_cycles(NULL);
     lat_flush = now - start;
     /* Compare ramp. */
@@ -378,6 +377,14 @@ static int do_server_one(const struct args *oargs, int conn_fd)
                         args->ep_type, fab_dom);
     if (ret < 0)
         goto done;
+
+    /* Get ext ops and mmap remote region. */
+    ret = fi_open_ops(&fab_dom->fabric->fid, FI_ZHPE_OPS_V1, 0,
+                      (void **)&conn.ext_ops, NULL);
+    if (ret < 0) {
+        print_func_err(__func__, __LINE__, "fi_open_ops", FI_ZHPE_OPS_V1, ret);
+        goto done;
+    }
 
     if (args->ep_type == FI_EP_RDM) {
         ret = fab_ep_setup(fab_conn, NULL, 1, 1);
@@ -532,6 +539,14 @@ static int do_client(const struct args *args)
     if (ret < 0)
         goto done;
 
+    /* Get ext ops and mmap remote region. */
+    ret = fi_open_ops(&fab_dom->fabric->fid, FI_ZHPE_OPS_V1, 0,
+                      (void **)&conn.ext_ops, NULL);
+    if (ret < 0) {
+        print_func_err(__func__, __LINE__, "fi_open_ops", FI_ZHPE_OPS_V1, ret);
+        goto done;
+    }
+
     if (args->ep_type == FI_EP_RDM) {
         ret = fab_ep_setup(fab_conn, NULL, 0, 0);
         if (ret < 0)
@@ -565,15 +580,8 @@ static int do_client(const struct args *args)
     if (ret < 0)
         goto done;
 
-    /* Get ext ops and mmap remote region. */
-    ret = fi_open_ops(&fab_dom->fabric->fid, FI_ZHPE_OPS_V1, 0,
-                      (void **)&conn.ext_ops, NULL);
-    if (ret < 0) {
-        print_func_err(__func__, __LINE__, "fi_open_ops", FI_ZHPE_OPS_V1, ret);
-        goto done;
-    }
     ret = conn.ext_ops->mmap(NULL, args->mmap_len, PROT_READ | PROT_WRITE,
-                             MAP_SHARED, 0, fab_conn->ep, conn.dest_av,
+                             MAP_SHARED, page_size, fab_conn->ep, conn.dest_av,
                              conn.remote_key, FI_ZHPE_MMAP_CACHE_WB,
                              &conn.mdesc);
     if (ret < 0) {

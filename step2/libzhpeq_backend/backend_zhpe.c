@@ -829,7 +829,7 @@ static int zhpe_zmmu_free(struct zhpeq_key_data *qkdata)
 
 static int zhpe_mmap(const struct zhpeq_key_data *qkdata_orig,
                      uint32_t cache_mode, void *addr, size_t length,
-                     int prot, int flags, off_t offset, void **mmap_addr,
+                     int prot, int flags, off_t offset,
                      struct zhpeq_mmap_desc **zmdesc_out)
 {
     int                 ret = -ENOMEM;
@@ -849,8 +849,8 @@ static int zhpe_mmap(const struct zhpeq_key_data *qkdata_orig,
     if (!desc)
         goto done;
     *desc  = *desc_orig;
-    zmdesc->desc = desc;
     qkdata = &desc->qkdata;
+    zmdesc->qkdata = qkdata;
     qkdata->z.vaddr += offset;
     qkdata->z.len -= offset;
     qkdata->rsp_zaddr += offset;
@@ -863,16 +863,15 @@ static int zhpe_mmap(const struct zhpeq_key_data *qkdata_orig,
         goto done;
     }
 
-    *mmap_addr = do_mmap(addr, length, prot, flags, dev_fd, pgoff, &ret);
+    zmdesc->addr = do_mmap(addr, length, prot, flags, dev_fd, pgoff, &ret);
     if (ret < 0)
         goto done;
-    zmdesc->mmap_addr = *mmap_addr;
 
  done:
     if (ret >= 0)
         *zmdesc_out = zmdesc;
     else if (zmdesc) {
-        if (zmdesc->desc)
+        if (zmdesc->qkdata)
             zhpeq_qkdata_free(qkdata);
         free(zmdesc);
     }
@@ -880,16 +879,15 @@ static int zhpe_mmap(const struct zhpeq_key_data *qkdata_orig,
     return ret;
 }
 
-static int zhpe_mmap_unmap(struct zhpeq_mmap_desc *zmdesc,
-                           void *addr, size_t length)
+static int zhpe_mmap_unmap(struct zhpeq_mmap_desc *zmdesc)
 {
     int                 ret;
-    struct zhpeq_mr_desc_v1 *desc = zmdesc->desc;
+    struct zhpeq_key_data *qkdata = zmdesc->qkdata;
     int                 rc;
 
-    ret = munmap(addr, length);
+    ret = munmap(zmdesc->addr, qkdata->z.len);
 
-    rc = zhpe_zmmu_free(&desc->qkdata);
+    rc = zhpe_zmmu_free(qkdata);
     if (ret >= 0)
         ret = rc;
     free(zmdesc);
@@ -902,8 +900,8 @@ static int zhpe_mmap_commit(struct zhpeq_mmap_desc *zmdesc,
                             bool invalidate)
 {
     if (!addr && !length && zmdesc) {
-        addr = TO_PTR(zmdesc->desc->qkdata.z.vaddr);
-        length = zmdesc->desc->qkdata.z.len;
+        addr = zmdesc->addr;
+        length = zmdesc->qkdata->z.len;
     }
 
     if (invalidate)

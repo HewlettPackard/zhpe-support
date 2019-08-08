@@ -83,10 +83,9 @@ struct backend_ops {
     int                 (*mmap)(const struct zhpeq_key_data *qkdata,
                                 uint32_t cache_mode, void *addr,
                                 size_t length, int prot, int flags,
-                                off_t offset, void **mmap_addr,
-                                     struct zhpeq_mmap_desc **zmdesc_out);
-    int                 (*mmap_unmap)(struct zhpeq_mmap_desc *zmdesc,
-                                      void *addr, size_t length);
+                                off_t offset,
+                                struct zhpeq_mmap_desc **zmdesc_out);
+    int                 (*mmap_unmap)(struct zhpeq_mmap_desc *zmdesc);
     int                 (*mmap_commit)(struct zhpeq_mmap_desc *zmdesc,
                                        const void *addr, size_t length,
                                        bool fence, bool invalidate);
@@ -201,10 +200,9 @@ union zhpeq_mr_desc {
     struct zhpeq_mr_desc_v1 v1;
 };
 
-struct zhpeq_mmap_desc {
+struct zhpeq_mmap_desc_private {
+    struct zhpeq_mmap_desc pub;
     struct zhpeq_mr_desc_v1 *desc;
-    void                *mmap_addr;
-    void                *backend_data;
 };
 
 /* FIXME: probably works for now, but ditch bit fields. */

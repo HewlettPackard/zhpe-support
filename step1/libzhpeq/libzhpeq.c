@@ -823,19 +823,15 @@ int zhpeq_qkdata_import(struct zhpeq_dom *zdom, int open_idx,
 
 int zhpeq_mmap(const struct zhpeq_key_data *qkdata,
                uint32_t cache_mode, void *addr, size_t length, int prot,
-               int flags, off_t offset, void **mmap_addr,
-               struct zhpeq_mmap_desc **zmdesc)
+               int flags, off_t offset, struct zhpeq_mmap_desc **zmdesc)
 {
     int                 ret = -EINVAL;
     const struct zhpeq_mr_desc_v1 *desc =
         container_of(qkdata, const struct zhpeq_mr_desc_v1, qkdata);
 
-    if (mmap_addr)
-        *mmap_addr = NULL;
     if (zmdesc)
         *zmdesc = NULL;
-    if (!qkdata || !mmap_addr || !zmdesc ||
-        (cache_mode & ~ZHPEQ_MR_REQ_CPU_CACHE) ||
+    if (!qkdata || !zmdesc || (cache_mode & ~ZHPEQ_MR_REQ_CPU_CACHE) ||
         desc->hdr.magic != ZHPE_MAGIC ||
         desc->hdr.version != (ZHPEQ_MR_V1 | ZHPEQ_MR_REMOTE) ||
         !length || page_off(offset) ||
@@ -848,7 +844,7 @@ int zhpeq_mmap(const struct zhpeq_key_data *qkdata,
 
     if (b_ops->mmap)
         ret = b_ops->mmap(qkdata, cache_mode, addr, length, prot,
-                          flags, offset, mmap_addr, zmdesc);
+                          flags, offset, zmdesc);
     else
         ret = -ENOSYS;
 #if QKDATA_DUMP
@@ -868,10 +864,10 @@ int zhpeq_mmap_unmap(struct zhpeq_mmap_desc *zmdesc, void *addr, size_t length)
         goto done;
 
 #if QKDATA_DUMP
-    zhpeq_print_qkdata(__func__, __LINE__, &zmdesc->desc->qkdata);
+    zhpeq_print_qkdata(__func__, __LINE__, zmdesc->qkdata);
 #endif
     if (b_ops->mmap_unmap)
-        ret = b_ops->mmap_unmap(zmdesc, addr, length);
+        ret = b_ops->mmap_unmap(zmdesc);
     else
         ret = -ENOSYS;
 

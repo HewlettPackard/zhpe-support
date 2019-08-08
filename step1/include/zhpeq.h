@@ -131,10 +131,15 @@ struct zhpeq_cq_entry {
     struct zhpe_cq_entry z;
 };
 
+/* Public portions of structures. */
+struct zhpeq_mmap_desc {
+    struct zhpeq_key_data *qkdata;
+    void                *addr;
+};
+
 /* Forward references to shut the compiler up. */
 struct zhpeq;
 struct zhpeq_dom;
-struct zhpeq_mmap_desc;
 
 static inline int zhpeq_rem_key_access(struct zhpeq_key_data *qkdata,
                                        uint64_t start, uint64_t len,
@@ -214,8 +219,7 @@ int zhpeq_zmmu_reg(struct zhpeq_key_data *qkdata);
 
 int zhpeq_mmap(const struct zhpeq_key_data *qkdata,
                uint32_t cache_mode, void *addr, size_t length, int prot,
-               int flags, off_t offset, void **mmap_addr,
-               struct zhpeq_mmap_desc **zmdesc);
+               int flags, off_t offset, struct zhpeq_mmap_desc **zmdesc);
 
 int zhpeq_mmap_unmap(struct zhpeq_mmap_desc *zmdesc, void *addr, size_t length);
 

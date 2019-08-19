@@ -896,7 +896,7 @@ static int zhpe_mmap_unmap(struct zhpeq_mmap_desc *zmdesc)
 
 static int zhpe_mmap_commit(struct zhpeq_mmap_desc *zmdesc,
                             const void *addr, size_t length, bool fence,
-                            bool invalidate)
+                            bool invalidate, bool wait)
 {
     if (!addr && !length && zmdesc) {
         addr = zmdesc->addr;

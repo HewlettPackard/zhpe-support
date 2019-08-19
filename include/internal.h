@@ -88,7 +88,7 @@ struct backend_ops {
     int                 (*mmap_unmap)(struct zhpeq_mmap_desc *zmdesc);
     int                 (*mmap_commit)(struct zhpeq_mmap_desc *zmdesc,
                                        const void *addr, size_t length,
-                                       bool fence, bool invalidate);
+                                       bool fence, bool invalidate, bool wait);
     void                (*print_info)(struct zhpeq *zq);
     int                 (*getaddr)(struct zhpeq *zq, void *sa, size_t *sa_len);
     char                *(*qkdata_id_str)(const struct zhpeq_key_data *qkdata);

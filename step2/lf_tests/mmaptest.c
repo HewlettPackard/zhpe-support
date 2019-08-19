@@ -119,7 +119,7 @@ static int do_mem_setup(struct stuff *conn)
         goto done;
     memset(fab_conn->mrmem.mem, 0, args->mmap_len);
     /* Make sure there are no dirty lines in cache. */
-    conn->ext_ops->commit(NULL, fab_conn->mrmem.mem, req, true, true);
+    conn->ext_ops->commit(NULL, fab_conn->mrmem.mem, req, true, true, true);
 
  done:
     return ret;
@@ -201,7 +201,7 @@ static int do_server_op(struct stuff *conn)
             goto done;
     }
     /* Eliminate any  prefetched cache lines. */
-    conn->ext_ops->commit(NULL, buf, args->mmap_len, true, true);
+    conn->ext_ops->commit(NULL, buf, args->mmap_len, true, true, true);
     /* Compare ramp. */
     for (i = 0, p =  buf; i < args->mmap_len; i += sizeof(*p), p++) {
         if (*p != (typeof(*p))(i | 1))
@@ -260,7 +260,7 @@ static int do_client_op(struct stuff *conn)
     lat_write = now - start;
     /* Commit buffer. */
     start = now;
-    ret = conn->ext_ops->commit(conn->mdesc, 0, 0, true, false);
+    ret = conn->ext_ops->commit(conn->mdesc, 0, 0, true, false, true);
     if (ret < 0) {
         print_func_fi_err(__func__, __LINE__, "ext_commit", "", ret);
         goto done;
@@ -291,7 +291,7 @@ static int do_client_op(struct stuff *conn)
 
     /* Flush buffer. */
     start = get_cycles(NULL);
-    conn->ext_ops->commit(conn->mdesc, NULL, 0, true, true);
+    conn->ext_ops->commit(conn->mdesc, NULL, 0, true, true, true);
     now = get_cycles(NULL);
     lat_flush = now - start;
     /* Compare ramp. */

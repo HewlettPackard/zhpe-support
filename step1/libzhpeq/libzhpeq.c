@@ -877,12 +877,12 @@ int zhpeq_mmap_unmap(struct zhpeq_mmap_desc *zmdesc, void *addr, size_t length)
 
 int zhpeq_mmap_commit(struct zhpeq_mmap_desc *zmdesc,
                       const void *addr, size_t length, bool fence,
-                      bool invalidate)
+                      bool invalidate, bool wait)
 {
     int                 ret;
 
     if (b_ops->mmap_commit)
-        ret = b_ops->mmap_commit(zmdesc, addr, length, fence, invalidate);
+        ret = b_ops->mmap_commit(zmdesc, addr, length, fence, invalidate, wait);
     else
         ret = -ENOSYS;
 

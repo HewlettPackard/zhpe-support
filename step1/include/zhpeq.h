@@ -225,7 +225,7 @@ int zhpeq_mmap_unmap(struct zhpeq_mmap_desc *zmdesc, void *addr, size_t length);
 
 int zhpeq_mmap_commit(struct zhpeq_mmap_desc *zmdesc,
                       const void *addr, size_t length, bool fence,
-                      bool invalidate);
+                      bool invalidate, bool wait);
 
 int64_t zhpeq_reserve(struct zhpeq *zq, uint32_t n_entries);
 

@@ -557,7 +557,6 @@ static int zhpe_mr_reg(struct zhpeq_dom *zdom,
     if (!access)
         access = ZHPEQ_MR_PUT;
 
-    access |= ZHPE_MR_INDIVIDUAL;
     desc->hdr.magic = ZHPE_MAGIC;
     desc->hdr.version = ZHPEQ_MR_V1;
     desc->hdr.zdom = zdom;

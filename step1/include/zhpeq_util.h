@@ -40,6 +40,7 @@
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <netdb.h>
 #include <pthread.h>
 #include <stdbool.h>
@@ -214,6 +215,9 @@ void zhpeu_free_ptr(void *ptr);
 
 #define atm_sub(_p, _v) \
     atomic_fetch_sub_explicit(_p, _v, memory_order_acq_rel)
+
+#define atm_xchg(_p, _v) \
+    atomic_exchange_explicit(_p, _v, memory_order_acq_rel)
 
 #define atm_xor(_p, _v) \
     atomic_fetch_xor_explicit(_p, _v, memory_order_acq_rel)

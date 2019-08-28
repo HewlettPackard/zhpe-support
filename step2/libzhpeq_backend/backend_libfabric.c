@@ -93,6 +93,13 @@ enum engine_state {
  * deleting all the sockets derived from it. Seems stupid.
  */
 
+/* A results structure with space for atomics operands. */
+union results {
+    char                data[ZHPE_IMM_MAX];
+    uint32_t            operands32[2];
+    uint64_t            operands64[2];
+};
+
 struct context {
     union {
         struct fi_context2  opaque;
@@ -100,7 +107,7 @@ struct context {
     };
     struct fab_conn_plus *fab_plus;
     struct stuff        *conn;
-    struct zhpe_result  *result;
+    union results       *result;
     uint16_t            cmp_index;
     uint8_t             result_len;
 #if ZHPE_IO_RECORD
@@ -157,11 +164,6 @@ struct stuff {
     struct fi_rma_iov   rma_iov;
     void                *ldsc;
     struct fi_msg_rma   msg;
-    struct fi_ioc       atm_op_ioc;
-    struct fi_ioc       atm_cmp_ioc;
-    struct fi_ioc       atm_res_ioc;
-    struct fi_rma_ioc   atm_rma_ioc;
-    struct fi_msg_atomic atm_msg;
     uint32_t            cq_tail;
     bool                allocated;
 };
@@ -179,7 +181,7 @@ struct fab_conn_plus {
     struct context      *context;
     size_t              context_entries;
     struct stailq_head  context_free;
-    struct zhpe_result  *results;
+    union results       *results;
     struct fid_mr       *results_mr;
     void                *results_desc;
 };
@@ -553,15 +555,6 @@ static struct stuff *stuff_alloc(void)
     ret->msg.iov_count = 1;
     ret->msg.rma_iov = &ret->rma_iov;
     ret->msg.rma_iov_count = 1;
-    ret->atm_op_ioc.count = 1;
-    ret->atm_cmp_ioc.count = 1;
-    ret->atm_res_ioc.count = 1;
-    ret->atm_rma_ioc.count = 1;
-    ret->atm_msg.msg_iov = &ret->atm_op_ioc;
-    ret->atm_msg.desc = &ret->ldsc;
-    ret->atm_msg.iov_count = 1;
-    ret->atm_msg.rma_iov = &ret->atm_rma_ioc;
-    ret->atm_msg.rma_iov_count = 1;
 
  done:
     if (err < 0) {
@@ -757,7 +750,7 @@ static inline void cq_write(void *vcontext, int status)
         context->result_len = 0;
     }
     smp_wmb();
-    /* The following two events can be seen out of order: don't care. */
+    /* The following two events can be seen out of order: do not care. */
     cqe->entry.valid = cq_valid(conn->cq_tail, qmask);
     conn->cq_tail++;
     iowrite64(conn->cq_tail & qmask,
@@ -775,6 +768,8 @@ static void cq_update(void *arg, void *vcqe, bool err)
 
     if (err) {
         cqerr = vcqe;
+        /* sockets in 1.6.2 code may not provide context on error */
+        assert(cqerr->op_context);
         cq_write(cqerr->op_context, -cqerr->err);
     } else {
         cqe = vcqe;
@@ -978,63 +973,6 @@ static bool lfab_zq(struct stuff *conn)
                 }
                 print_func_fi_err(__func__, __LINE__,
                                   "fi_readmsg", "", rc);
-                cq_write(context, rc);
-                break;
-            }
-            break;
-
-        case ZHPE_HW_OPCODE_ATM_ADD:
-        case ZHPE_HW_OPCODE_ATM_CAS:
-            conn->atm_msg.context = context;
-            /* Return data in local results buffer.
-             * No NULL descriptors! Use results buffer for sent data, too.
-             */
-            sendbuf = context->result->data;
-            if ((wqe->atm.size & ZHPE_HW_ATOMIC_SIZE_MASK) ==
-                ZHPE_HW_ATOMIC_SIZE_64) {
-                conn->atm_msg.datatype = FI_UINT64;
-                context->result_len = sizeof(uint64_t);
-            } else {
-                conn->atm_msg.datatype = FI_UINT32;
-                context->result_len = sizeof(uint32_t);
-            }
-            memcpy(sendbuf, wqe->atm.operands, sizeof(wqe->atm.operands));
-            laddr = (uintptr_t)sendbuf;
-            conn->ldsc = fab_plus->results_desc;
-            conn->atm_op_ioc.addr = TO_PTR(TO_ADDR(laddr));
-            conn->atm_res_ioc.addr = conn->atm_op_ioc.addr;
-            conn->atm_cmp_ioc.addr =
-                conn->atm_op_ioc.addr + sizeof(wqe->atm.operands[0]);
-            raddr = wqe->atm.rem_addr;
-            conn->atm_rma_ioc.addr = TO_ADDR(raddr);
-            conn->atm_rma_ioc.key = bdom->rkey[TO_KEYIDX(raddr)].rkey;
-            conn->atm_msg.addr = bdom->rkey[TO_KEYIDX(raddr)].av_idx;
-            if ((wqe->hdr.opcode & ~ZHPE_HW_OPCODE_FENCE) !=
-                ZHPE_HW_OPCODE_ATM_ADD) {
-                conn->atm_msg.op = FI_CSWAP;
-                rc = fi_compare_atomicmsg(fab_conn->ep, &conn->atm_msg,
-                                          &conn->atm_cmp_ioc, &conn->ldsc, 1,
-                                          &conn->atm_res_ioc,
-                                          &fab_plus->results_desc, 1, flags);
-            } else {
-                conn->atm_msg.op = FI_SUM;
-                rc = fi_fetch_atomicmsg(fab_conn->ep, &conn->atm_msg,
-                                        &conn->atm_res_ioc,
-                                        &fab_plus->results_desc, 1, flags);
-            }
-            record_io_start(rc, conn, wqe->hdr.opcode, conn->atm_msg.addr,
-                            conn->atm_msg.msg_iov[0].addr,
-                            conn->atm_msg.desc[0],
-                            conn->atm_msg.rma_iov[0].addr,
-                            conn->atm_msg.rma_iov[0].key,
-                            context->result_len, conn->msg.context);
-            if (rc < 0) {
-                if (rc == -FI_EAGAIN) {
-                    cleanup_eagain(conn, context);
-                    goto eagain;
-                }
-                print_func_fi_errn(__func__, __LINE__,
-                                   "fi_atomicmsg", conn->atm_msg.op, true, rc);
                 cq_write(context, rc);
                 break;
             }

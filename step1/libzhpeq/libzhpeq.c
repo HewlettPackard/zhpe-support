@@ -610,69 +610,70 @@ int zhpeq_geti(struct zhpeq *zq, uint32_t qindex, bool fence,
     return ret;
 }
 
+static int set_atomic_operands(union zhpe_hw_wq_entry *wqe,
+                               enum zhpeq_atomic_size datasize,
+                               uint64_t op1, uint64_t op2)
+{
+    switch (datasize) {
+
+    case ZHPEQ_ATOMIC_SIZE32:
+        wqe->atm.size |= ZHPE_HW_ATOMIC_SIZE_32;
+        wqe->atm.operands32[0] = op1;
+        wqe->atm.operands32[1] = op2;
+        return 0;
+
+    case ZHPEQ_ATOMIC_SIZE64:
+        wqe->atm.size |= ZHPE_HW_ATOMIC_SIZE_64;
+        wqe->atm.operands64[0] = op1;
+        wqe->atm.operands64[1] = op2;
+        return 0;
+
+    default:
+        return -EINVAL;
+    }
+}
+
 int zhpeq_atomic(struct zhpeq *zq, uint32_t qindex, bool fence, bool retval,
                  enum zhpeq_atomic_size datasize, enum zhpeq_atomic_op op,
-                 uint64_t remote_addr, const union zhpeq_atomic *operands,
-                 void *context)
+                 uint64_t remote_addr, const uint64_t *operands, void *context)
 {
-    int                 ret = -EINVAL;
+    int                 ret = 0;
     union zhpe_hw_wq_entry *wqe;
-    size_t              n_operands;
 
-    if (!zq)
+    if (!zq) {
+        ret = -EINVAL;
         goto done;
-    if (!operands)
-        goto done;
+    }
 
     qindex = qindex & (zq->xqinfo.cmdq.ent - 1);
     wqe = zq->wq + qindex;
 
     wqe->hdr.opcode = (fence ? ZHPE_HW_OPCODE_FENCE : 0);
     set_context(zq, wqe, context);
+    wqe->atm.size = (retval ? ZHPE_HW_ATOMIC_RETURN : 0);
+    wqe->atm.rem_addr = remote_addr;
 
     switch (op) {
 
     case ZHPEQ_ATOMIC_ADD:
         wqe->hdr.opcode |= ZHPE_HW_OPCODE_ATM_ADD;
-        n_operands = 1;
+        ret = set_atomic_operands(wqe, datasize, operands[0], 0);
         break;
 
     case ZHPEQ_ATOMIC_CAS:
-        wqe->hdr.opcode |= ZHPE_HW_OPCODE_ATM_CAS;
-        n_operands = 2;
+        ret = wqe->hdr.opcode |= ZHPE_HW_OPCODE_ATM_CAS;
+        set_atomic_operands(wqe, datasize, operands[1], operands[0]);
         break;
 
     case ZHPEQ_ATOMIC_SWAP:
         wqe->hdr.opcode |= ZHPE_HW_OPCODE_ATM_SWAP;
-        n_operands = 1;
+        ret = set_atomic_operands(wqe, datasize, operands[0], 0);
         break;
 
     default:
-        goto done;
-    }
-
-    wqe->atm.size = (retval ? ZHPE_HW_ATOMIC_RETURN : 0);
-
-    switch (datasize) {
-
-    case ZHPEQ_ATOMIC_SIZE32:
-        wqe->atm.size |= ZHPE_HW_ATOMIC_SIZE_32;
+        ret = -EINVAL;
         break;
-
-    case ZHPEQ_ATOMIC_SIZE64:
-        wqe->atm.size |= ZHPE_HW_ATOMIC_SIZE_64;
-        break;
-
-    default:
-        goto done;
     }
-
-    wqe->hdr.cmp_index = qindex;
-    wqe->atm.rem_addr = remote_addr;
-    while (n_operands-- > 0)
-        wqe->atm.operands[n_operands] = operands[n_operands].z;
-
-    ret = 0;
 
  done:
     return ret;
@@ -1059,6 +1060,57 @@ bool zhpeq_is_asic(void)
     return b_zhpe;
 }
 
+static uint wq_opcode(union zhpe_hw_wq_entry *wqe)
+{
+    return le16toh(wqe->hdr.opcode & ZHPE_HW_OPCODE_MASK);
+}
+
+static uint wq_fence(union zhpe_hw_wq_entry *wqe)
+{
+    return !!(le16toh(wqe->hdr.opcode & ZHPE_HW_OPCODE_FENCE));
+}
+
+static uint wq_index(union zhpe_hw_wq_entry *wqe)
+{
+    return le16toh(wqe->hdr.cmp_index);
+}
+
+static void wq_print_imm(union zhpe_hw_wq_entry *wqe, uint i, const char *opstr)
+{
+    struct zhpe_hw_wq_imm *imm = &wqe->imm;
+
+    fprintf(stderr, "%7d:%-7s:f %u idx 0x%04x len 0x%x rem 0x%lx\n",
+            i, opstr, wq_fence(wqe), wq_index(wqe),
+            imm->len, le64toh(imm->rem_addr));
+}
+
+static void wq_print_dma(union zhpe_hw_wq_entry *wqe, uint i, const char *opstr)
+{
+    struct zhpe_hw_wq_dma *dma = &wqe->dma;
+
+    fprintf(stderr, "%7d:%-7s:f %u idx 0x%04x len 0x%x rd 0x%lx wr 0x%lx\n",
+            i, opstr, wq_fence(wqe), wq_index(wqe),
+            le32toh(dma->len), le64toh(dma->rd_addr), le64toh(dma->wr_addr));
+}
+
+static void wq_print_atm(union zhpe_hw_wq_entry *wqe, uint i, const char *opstr)
+{
+    struct zhpe_hw_wq_atomic *atm = &wqe->atm;
+    uint64_t            operands[2];
+
+    if ((atm->size & ZHPE_HW_ATOMIC_SIZE_MASK) == ZHPE_HW_ATOMIC_SIZE_32) {
+        operands[0] = le32toh(atm->operands32[0]);
+        operands[1] = le32toh(atm->operands32[1]);
+    } else {
+        operands[0] = le64toh(atm->operands64[0]);
+        operands[1] = le64toh(atm->operands64[1]);
+    }
+    fprintf(stderr, "%7d:%-7s:f %u idx 0x%04x size 0x%x rem 0x%lx"
+            " operands 0x%lx 0x%lx\n",
+            i, opstr, wq_fence(wqe), wq_index(wqe),
+            atm->size, le64toh(atm->rem_addr), operands[0], operands[1]);
+}
+
 void zhpeq_print_wq(struct zhpeq *zq, int offset, int cnt)
 {
     struct zhpeq_ht     old = atm_load_rlx(&zq->head_tail);
@@ -1070,38 +1122,44 @@ void zhpeq_print_wq(struct zhpeq *zq, int offset, int cnt)
         offset = -(int)old.tail;
     for (i = old.tail + (int32_t)offset; i < old.tail && cnt > 0; i++, cnt--) {
         wqe = &zq->wq[i & qmask];
-        switch (wqe->hdr.opcode) {
+        switch (wq_opcode(wqe)) {
 
         case ZHPE_HW_OPCODE_NOP:
-            fprintf(stderr, "%7d:NOP   :idx %4d\n",
-                    i, wqe->hdr.cmp_index);
+            fprintf(stderr, "%7d:%-7s:f %u idx 0x%04x\n",
+                    i, "NOP", wq_fence(wqe), wq_index(wqe));
             break;
 
         case ZHPE_HW_OPCODE_GETIMM:
-            fprintf(stderr, "%7d:GETIMM:idx %4d len 0x%x rem 0x%lx\n",
-                    i, wqe->hdr.cmp_index, wqe->imm.len, wqe->imm.rem_addr);
+            wq_print_imm(wqe, i, "GETIMM");
             break;
 
         case ZHPE_HW_OPCODE_PUTIMM:
-            fprintf(stderr, "%7d:PUTIMM:idx %4d len 0x%x rem 0x%lx\n",
-                    i, wqe->hdr.cmp_index, wqe->imm.len, wqe->imm.rem_addr);
+            wq_print_imm(wqe, i, "PUTIMM");
             break;
 
         case ZHPE_HW_OPCODE_GET:
-            fprintf(stderr, "%7d:GET   :idx %4d len 0x%x rem 0x%lx lcl 0x%lx\n",
-                    i, wqe->hdr.cmp_index, wqe->dma.len, wqe->dma.rd_addr,
-                    wqe->dma.wr_addr);
+            wq_print_dma(wqe, i, "GET");
             break;
 
         case ZHPE_HW_OPCODE_PUT:
-            fprintf(stderr, "%7d:PUT   :idx %4d len 0x%x rem 0x%lx lcl 0x%lx\n",
-                    i, wqe->hdr.cmp_index, wqe->dma.len, wqe->dma.wr_addr,
-                    wqe->dma.rd_addr);
+            wq_print_dma(wqe, i, "PUT");
+            break;
+
+        case ZHPE_HW_OPCODE_ATM_ADD:
+            wq_print_atm(wqe, i, "ATMADD");
+            break;
+
+        case ZHPE_HW_OPCODE_ATM_CAS:
+            wq_print_atm(wqe, i, "ATMCAS");
+            break;
+
+        case ZHPE_HW_OPCODE_ATM_SWAP:
+            wq_print_atm(wqe, i, "ATMSWAP");
             break;
 
         default:
-            fprintf(stderr, "%7d:OP 0x%02x:idx %4d\n",
-                    i, wqe->hdr.opcode, wqe->hdr.cmp_index);
+            fprintf(stderr, "%7d:OP 0x%02x:f %u idx %0x04x\n",
+                    i, wq_opcode(wqe), wq_fence(wqe), wq_index(wqe));
             break;
         }
     }
@@ -1113,12 +1171,18 @@ void zhpeq_print_cq(struct zhpeq *zq, int offset, int cnt)
     uint32_t            qmask = zq->xqinfo.cmplq.ent - 1;
     uint                i;
     union zhpe_hw_cq_entry *cqe;
+    char                *d;
 
     if (offset < 0 && (uint)(-offset) > old.head)
         offset = -(int)old.head;
     for (i = old.tail + (int32_t)offset; i < old.head && cnt > 0; i++, cnt--) {
         cqe = &zq->cq[i & qmask];
-        fprintf(stderr, "%7d:idx %4d status 0x%02x\n",
-                i, cqe->entry.index, cqe->entry.status);
+        /* Print the first 8 bytes of the result */
+        d = cqe->entry.result.data;
+        fprintf(stderr, "%7d:v %u idx 0x%04x status 0x%02x"
+                " data %02x%02x%x02%02x%02x%02x%02x%02x\n",
+                i, cqe->entry.valid, le16toh(cqe->entry.index),
+                cqe->entry.status,
+                d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]);
     }
 }

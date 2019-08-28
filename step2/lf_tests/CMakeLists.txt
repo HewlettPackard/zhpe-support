@@ -1,3 +1,6 @@
+add_executable(atomtest atomtest.c)
+target_link_libraries(atomtest PUBLIC zhpeq_util_fab zhpeq)
+
 add_executable(burst burst.c)
 target_link_libraries(burst PUBLIC zhpeq_util_fab)
 
@@ -17,5 +20,5 @@ add_executable(ringpong ringpong.c)
 target_link_libraries(ringpong PUBLIC zhpeq_util_fab)
 
 install(
-  TARGETS burst famtest gettest mmaptest regtest ringpong
+  TARGETS atomtest burst famtest gettest mmaptest regtest ringpong
   DESTINATION libexec)

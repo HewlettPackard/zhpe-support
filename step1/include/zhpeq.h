@@ -67,11 +67,13 @@ _EXTERN_C_BEG
 #define ZHPEQ_MR_REQ_CPU_UC     ZHPE_MR_REQ_CPU_UC
 
 enum zhpeq_atomic_size {
+    ZHPEQ_ATOMIC_SIZE_NONE      = ZHPE_HW_ATOMIC_RETURN,
     ZHPEQ_ATOMIC_SIZE32         = ZHPE_HW_ATOMIC_SIZE_32,
     ZHPEQ_ATOMIC_SIZE64         = ZHPE_HW_ATOMIC_SIZE_64,
 };
 
 enum zhpeq_atomic_op {
+    ZHPEQ_ATOMIC_NONE           = ZHPE_HW_OPCODE_NOP,
     ZHPEQ_ATOMIC_SWAP           = ZHPE_HW_OPCODE_ATM_SWAP,
     ZHPEQ_ATOMIC_ADD            = ZHPE_HW_OPCODE_ATM_ADD,
     ZHPEQ_ATOMIC_AND            = ZHPE_HW_OPCODE_ATM_AND,
@@ -82,10 +84,6 @@ enum zhpeq_atomic_op {
     ZHPEQ_ATOMIC_UMIN           = ZHPE_HW_OPCODE_ATM_UMIN,
     ZHPEQ_ATOMIC_UMAX           = ZHPE_HW_OPCODE_ATM_UMAX,
     ZHPEQ_ATOMIC_CAS            = ZHPE_HW_OPCODE_ATM_CAS,
-};
-
-union zhpeq_atomic {
-    union zhpe_atomic   z;
 };
 
 #define ZHPEQ_CQ_STATUS_SUCCESS ZHPE_HW_CQ_STATUS_SUCCESS
@@ -259,7 +257,7 @@ int zhpeq_nop(struct zhpeq *zq, uint32_t qindex, bool fence,
 
 int zhpeq_atomic(struct zhpeq *zq, uint32_t qindex, bool fence, bool retval,
                  enum zhpeq_atomic_size datasize, enum zhpeq_atomic_op op,
-                 uint64_t remote_addr, const union zhpeq_atomic *operands,
+                 uint64_t remote_addr, const uint64_t *operands,
                  void *context);
 
 void zhpeq_print_info(struct zhpeq *zq);

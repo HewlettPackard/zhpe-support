@@ -580,6 +580,7 @@ int _fab_mrmem_alloc(const char *callf, uint line,
         goto done;
     }
     memset(mrmem->mem, 0, len);
+    mrmem->len = len;
 
     if (!access)
         access = (FI_READ | FI_WRITE | FI_REMOTE_READ | FI_REMOTE_WRITE);
@@ -617,7 +618,7 @@ ssize_t _fab_completions(const char *callf, uint line,
     ssize_t             rc;
     ssize_t             len;
     ssize_t             i;
-    struct fi_cq_tagged_entry  fi_cqe[1];
+    struct fi_cq_tagged_entry fi_cqe[1];
     struct fi_cq_err_entry fi_cqerr;
 
     /* The verbs rdm code forces all entries to be tagged, but the msg

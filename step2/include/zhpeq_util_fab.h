@@ -57,6 +57,7 @@ _EXTERN_C_BEG
 struct fab_mrmem {
     struct fid_mr       *mr;
     void                *mem;
+    size_t              len;
 };
 
 struct fab_info {

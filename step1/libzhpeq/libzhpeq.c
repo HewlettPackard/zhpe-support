@@ -353,7 +353,7 @@ int64_t zhpeq_reserve(struct zhpeq *zq, uint32_t n_entries)
     if (!zq)
         goto done;
     qmask = zq->xqinfo.cmdq.ent - 1;
-    if (!zq || n_entries < 1 || n_entries > qmask)
+    if (n_entries < 1 || n_entries > qmask)
         goto done;
 
     ret = 0;
@@ -366,6 +366,36 @@ int64_t zhpeq_reserve(struct zhpeq *zq, uint32_t n_entries)
         new.head = old.head;
         ret = old.tail;
         new.tail = old.tail + n_entries;
+        if (atm_cmpxchg(&zq->head_tail, &old, new))
+            break;
+    }
+
+ done:
+    return ret;
+}
+
+int64_t zhpeq_reserve_next(struct zhpeq *zq, int64_t last)
+{
+    int64_t             ret = -EINVAL;
+    uint32_t            qmask;
+    uint32_t            avail;
+    struct zhpeq_ht     old;
+    struct zhpeq_ht     new;
+
+    if (!zq)
+        goto done;
+    qmask = zq->xqinfo.cmdq.ent - 1;
+
+    ret = 0;
+    for (old = atm_load_rlx(&zq->head_tail) ;;) {
+        avail = qmask - (old.tail - old.head);
+        if (avail < 1 || last != old.tail - 1) {
+            ret = -EAGAIN;
+            break;
+        }
+        new.head = old.head;
+        ret = old.tail;
+        new.tail = old.tail + 1;
         if (atm_cmpxchg(&zq->head_tail, &old, new))
             break;
     }

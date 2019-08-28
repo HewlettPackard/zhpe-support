@@ -229,6 +229,8 @@ int zhpeq_mmap_commit(struct zhpeq_mmap_desc *zmdesc,
 
 int64_t zhpeq_reserve(struct zhpeq *zq, uint32_t n_entries);
 
+int64_t zhpeq_reserve_next(struct zhpeq *zq, int64_t last);
+
 int zhpeq_commit(struct zhpeq *zq, uint32_t qindex, uint32_t n_entries);
 
 int zhpeq_signal(struct zhpeq *zq);

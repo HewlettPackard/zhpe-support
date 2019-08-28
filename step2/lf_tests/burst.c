@@ -161,12 +161,12 @@ static ssize_t do_progress(struct fab_conn *fab_conn,
      * FIXME: Should rx be necessary for one-sided?
      */
     rc = fab_completions(fab_conn->tx_cq, 0, NULL, NULL);
-    if (ret >= 0) {
+    if (rc >= 0) {
         if (tx_cmp)
             *tx_cmp += rc;
         else
             assert(!rc);
-    } else
+    } else if (ret >= 0)
         ret = rc;
 
     rc = fab_completions(fab_conn->rx_cq, 0, NULL, NULL);
@@ -189,7 +189,7 @@ static int do_server_burst(struct stuff *conn)
     uint64_t            i;
 
     /* Do a send-receive for the final handshake. */
-    ret = fi_recv(fab_conn->ep, NULL, 0, NULL, 0, &ctx);
+    ret = fi_recv(fab_conn->ep, NULL, 0, NULL, FI_ADDR_UNSPEC, &ctx);
     if (ret < 0) {
         print_func_fi_err(__func__, __LINE__, "fi_recv", "", ret);
         goto done;
@@ -308,7 +308,7 @@ static int do_client_burst(struct stuff *conn)
         goto done;
 
     /* Do a send-receive for the final handshake. */
-    ret = fi_send(fab_conn->ep, NULL, 0, NULL, 0, &conn->ctx[0]);
+    ret = fi_send(fab_conn->ep, NULL, 0, NULL, conn->dest_av, &conn->ctx[0]);
     if (ret < 0) {
         print_func_fi_err(__func__, __LINE__, "fi_send", "", ret);
         goto done;
@@ -627,6 +627,7 @@ int main(int argc, char **argv)
         case 'd':
             if (args.domain)
                 usage(false);
+            args.domain = optarg;
             break;
 
         case 'o':

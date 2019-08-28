@@ -307,12 +307,12 @@ static ssize_t do_progress(struct fab_conn *fab_conn,
      * FIXME: Should rx be necessary for one-sided?
      */
     rc = fab_completions(fab_conn->tx_cq, 0, NULL, NULL);
-    if (ret >= 0) {
+    if (rc >= 0) {
         if (tx_cmp)
             *tx_cmp += rc;
         else
             assert(!rc);
-    } else
+    } else if (ret >= 0)
         ret = rc;
 
     rc = fab_completions(fab_conn->rx_cq, 0, NULL, NULL);
@@ -422,7 +422,7 @@ static int do_server_pong(struct stuff *conn)
             goto done;
     }
     /* Do a send-receive for the final handshake. */
-    ret = fi_recv(fab_conn->ep, NULL, 0, NULL, 0, &conn->ctx[0]);
+    ret = fi_recv(fab_conn->ep, NULL, 0, NULL, FI_ADDR_UNSPEC, &conn->ctx[0]);
     if (ret < 0) {
         print_func_fi_err(__func__, __LINE__, "fi_recv", "", ret);
         goto done;
@@ -593,7 +593,7 @@ static int do_client_pong(struct stuff *conn)
     }
     lat_total1 = get_cycles(NULL) - lat_total1;
     /* Do a send-receive for the final handshake. */
-    ret = fi_send(fab_conn->ep, NULL, 0, NULL, 0, &conn->ctx[0]);
+    ret = fi_send(fab_conn->ep, NULL, 0, NULL, conn->dest_av, &conn->ctx[0]);
     if (ret < 0) {
         print_func_fi_err(__func__, __LINE__, "fi_send", "", ret);
         goto done;
@@ -628,7 +628,8 @@ static int do_server_sink(struct stuff *conn)
 
     /* Do a send-receive for the final handshake. */
     ret = fi_recv(fab_conn->ep, conn->rx_addr, args->ring_entry_len,
-                  fi_mr_desc(fab_conn->mrmem.mr), 0, &conn->ctx[0]);
+                  fi_mr_desc(fab_conn->mrmem.mr), FI_ADDR_UNSPEC,
+                  &conn->ctx[0]);
     if (ret < 0) {
         print_func_fi_err(__func__, __LINE__, "fi_recv", "", ret);
         goto done;
@@ -679,7 +680,7 @@ static int do_client_unidir(struct stuff *conn)
          */
         now = get_cycles(NULL);
         ret = do_progress(fab_conn, &tx_avail_shadow, NULL);
-                lat_comp += get_cycles(NULL) - now;
+        lat_comp += get_cycles(NULL) - now;
         if (ret < 0)
             goto done;
         if (!tx_avail) {
@@ -754,7 +755,7 @@ static int do_client_unidir(struct stuff *conn)
     lat_total1 = get_cycles(NULL) - lat_total1;
     /* Do a send-receive for the final handshake. */
     ret = fi_send(fab_conn->ep, conn->tx_addr + tx_off, args->ring_entry_len,
-                  fi_mr_desc(fab_conn->mrmem.mr), 0, &conn->ctx[0]);
+                  fi_mr_desc(fab_conn->mrmem.mr), conn->dest_av, &conn->ctx[0]);
     if (ret < 0) {
         print_func_fi_err(__func__, __LINE__, "fi_send", "", ret);
         goto done;
@@ -1128,6 +1129,7 @@ int main(int argc, char **argv)
         case 'd':
             if (args.domain)
                 usage(false);
+            args.domain = optarg;
             break;
 
         case 'o':

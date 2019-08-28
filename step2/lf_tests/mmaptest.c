@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2019 Hewlett Packard Enterprise Development LP.
+ * Copyright (C) 2019 Hewlett Packard Enterprise Development LP.
  * All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -157,12 +157,12 @@ static ssize_t do_progress(struct fab_conn *fab_conn,
      * FIXME: Should rx be necessary for one-sided?
      */
     rc = fab_completions(fab_conn->tx_cq, 0, NULL, NULL);
-    if (ret >= 0) {
+    if (rc >= 0) {
         if (tx_cmp)
             *tx_cmp += rc;
         else
             assert(!rc);
-    } else
+    } else if (ret >= 0)
         ret = rc;
 
     rc = fab_completions(fab_conn->rx_cq, 0, NULL, NULL);
@@ -190,7 +190,7 @@ static int do_server_op(struct stuff *conn)
     size_t              i;
 
     /* Wait for ramp. */
-    ret = fi_recv(fab_conn->ep, NULL, 0, NULL, 0, &ctx);
+    ret = fi_recv(fab_conn->ep, NULL, 0, NULL, FI_ADDR_UNSPEC, &ctx);
     if (ret < 0) {
         print_func_fi_err(__func__, __LINE__, "fi_recv", "", ret);
         goto done;
@@ -211,16 +211,18 @@ static int do_server_op(struct stuff *conn)
     for (i = 0, p = buf; i < args->mmap_len; i+= sizeof(*p), p++)
         *p = i;
     /* Tell client ramp ready. */
-    ret = fi_send(fab_conn->ep, NULL, 0, NULL, 0, &ctx);
-    if (ret < 0)
+    ret = fi_send(fab_conn->ep, NULL, 0, NULL, conn->dest_av, &ctx);
+    if (ret < 0) {
+        print_func_fi_err(__func__, __LINE__, "fi_send", "", ret);
         goto done;
+    }
     for (tx_avail = 0; !tx_avail;) {
             ret = do_progress(fab_conn, &tx_avail, NULL);
             if (ret < 0)
                 goto done;
     }
     /* Do a send-receive for the final handshake. */
-    ret = fi_recv(fab_conn->ep, NULL, 0, NULL, 0, &ctx);
+    ret = fi_recv(fab_conn->ep, NULL, 0, NULL, FI_ADDR_UNSPEC, &ctx);
     if (ret < 0) {
         print_func_fi_err(__func__, __LINE__, "fi_recv", "", ret);
         goto done;
@@ -269,16 +271,18 @@ static int do_client_op(struct stuff *conn)
     lat_commit = now - start;
 
     /* Tell server ramp is ready. */
-    ret = fi_send(fab_conn->ep, NULL, 0, NULL, 0, &ctx);
-    if (ret < 0)
+    ret = fi_send(fab_conn->ep, NULL, 0, NULL, conn->dest_av, &ctx);
+    if (ret < 0) {
+        print_func_fi_err(__func__, __LINE__, "fi_send", "", ret);
         goto done;
+    }
     for (tx_avail = 0; !tx_avail;) {
             ret = do_progress(fab_conn, &tx_avail, NULL);
             if (ret < 0)
                 goto done;
     }
     /* Wait for ramp ready. */
-    ret = fi_recv(fab_conn->ep, NULL, 0, NULL, 0, &ctx);
+    ret = fi_recv(fab_conn->ep, NULL, 0, NULL, FI_ADDR_UNSPEC, &ctx);
     if (ret < 0) {
         print_func_fi_err(__func__, __LINE__, "fi_recv", "", ret);
         goto done;
@@ -312,9 +316,11 @@ static int do_client_op(struct stuff *conn)
     }
 
     /* Do a send-receive for the final handshake. */
-    ret = fi_send(fab_conn->ep, NULL, 0, NULL, 0, &ctx);
-    if (ret < 0)
+    ret = fi_send(fab_conn->ep, NULL, 0, NULL, conn->dest_av, &ctx);
+    if (ret < 0) {
+        print_func_fi_err(__func__, __LINE__, "fi_send", "", ret);
         goto done;
+    }
     for (tx_avail = 0; !tx_avail;) {
             ret = do_progress(fab_conn, &tx_avail, NULL);
             if (ret < 0)

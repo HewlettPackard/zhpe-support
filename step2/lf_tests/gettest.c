@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2018 Hewlett Packard Enterprise Development LP.
+ * Copyright (C) 2017-2019 Hewlett Packard Enterprise Development LP.
  * All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -36,8 +36,6 @@
 
 #include <zhpeq_util_fab.h>
 
-#include <sys/queue.h>
-
 #define BACKLOG         (10)
 #ifdef DEBUG
 #define TIMEOUT         (-1)
@@ -70,22 +68,12 @@ struct mem_wire_msg {
     uint64_t            remote_addr;
 };
 
-struct rx_queue {
-    STAILQ_ENTRY(rx_queue) list;
-    union {
-        void            *buf;
-        uint64_t        idx;
-    };
-};
-
 enum {
     TX_NONE,
     TX_WARMUP,
     TX_RUNNING,
     TX_LAST,
 };
-
-STAILQ_HEAD(rx_queue_head, rx_queue);
 
 struct args {
     const char          *provider;
@@ -113,9 +101,6 @@ struct stuff {
     struct fi_context2  *ctx;
     void                *tx_addr;
     void                *rx_addr;
-    uint64_t            *ring_timestamps;
-    struct rx_queue     *rx_rcv;
-    void                *rx_data;
     size_t              ring_entry_aligned;
     size_t              ring_ops;
     size_t              ring_warmup;
@@ -155,8 +140,6 @@ static void stuff_free(struct stuff *stuff)
     fab_conn_free(&stuff->fab_listener);
     fab_dom_free(&stuff->fab_dom);
 
-    free(stuff->rx_rcv);
-    free(stuff->ring_timestamps);
     free(stuff->ctx);
 
     FD_CLOSE(stuff->sock_fd);
@@ -206,15 +189,6 @@ static int do_mem_setup(struct stuff *conn)
         goto done;
     }
 
-    req = sizeof(*conn->ring_timestamps) * args->ring_entries;
-    ret = -posix_memalign((void **)&conn->ring_timestamps, page_size, req);
-    if (ret < 0) {
-        conn->ring_timestamps = NULL;
-        print_func_errn(__func__, __LINE__, "posix_memalign", true,
-                        req, ret);
-        goto done;
-    }
-
  done:
     return ret;
 }
@@ -252,12 +226,12 @@ static ssize_t do_progress(struct fab_conn *fab_conn,
      * FIXME: Should rx be necessary for one-sided?
      */
     rc = fab_completions(fab_conn->tx_cq, 0, NULL, NULL);
-    if (ret >= 0) {
+    if (rc >= 0) {
         if (tx_cmp)
             *tx_cmp += rc;
         else
             assert(!rc);
-    } else
+    } else if (ret >= 0)
         ret = rc;
 
     rc = fab_completions(fab_conn->rx_cq, 0, NULL, NULL);
@@ -279,7 +253,7 @@ static int do_server_source(struct stuff *conn)
     size_t              rx_avail;
 
     /* Do a send-receive for the final handshake. */
-    ret = fi_recv(fab_conn->ep, NULL, 0, NULL, 0, &conn->ctx[0]);
+    ret = fi_recv(fab_conn->ep, NULL, 0, NULL, FI_ADDR_UNSPEC, &conn->ctx[0]);
     if (ret < 0) {
         print_func_fi_err(__func__, __LINE__, "fi_recv", "", ret);
         goto done;
@@ -323,18 +297,23 @@ static int do_client_get(struct stuff *conn)
          (tx_count++, tx_avail--, tx_off = next_roff(conn, tx_off),
           tx_ctx = next_ctx(conn, tx_ctx))) {
 
-        now = get_cycles(NULL);
-        /* Check for tx slots. */
-        while (!tx_avail) {
-            ret = do_progress(fab_conn, &tx_avail, NULL);
-            if (ret < 0)
-                goto done;
+        /*
+         * Fix possible issues with out-of-order completion by exhausting
+         * tx_avail and then waiting for all outstanding I/Os to complete.
+         */
+        if (!tx_avail) {
+            while (tx_avail != conn->tx_avail) {
+                now = get_cycles(NULL);
+                ret = do_progress(fab_conn, &tx_avail, NULL);
+                lat_comp += get_cycles(NULL) - now;
+                if (ret < 0)
+                    goto done;
+            }
         }
-        lat_comp += get_cycles(NULL) - now;
 
         /* Compute delta based on cycles/ops. */
         if (args->seconds_mode)
-            delta = now - start;
+            delta = get_cycles(NULL) - start;
         else
             delta = tx_count;
 
@@ -382,16 +361,18 @@ static int do_client_get(struct stuff *conn)
     while (tx_avail != conn->tx_avail) {
         now = get_cycles(NULL);
         ret = do_progress(fab_conn, &tx_avail, NULL);
+        lat_comp += get_cycles(NULL) - now;
         if (ret < 0)
             goto done;
-        tx_avail += ret;
     }
     lat_total1 = get_cycles(NULL) - lat_total1;
 
     /* Do a send-receive for the final handshake. */
-    ret = fi_send(fab_conn->ep, NULL, 0, NULL, 0, &conn->ctx[0]);
-    if (ret < 0)
+    ret = fi_send(fab_conn->ep, NULL, 0, NULL, conn->dest_av, &conn->ctx[0]);
+    if (ret < 0) {
+        print_func_fi_err(__func__, __LINE__, "fi_send", "", ret);
         goto done;
+    }
     for (tx_avail = 0; !tx_avail;) {
             ret = do_progress(fab_conn, &tx_avail, NULL);
             if (ret < 0)

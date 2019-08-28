@@ -68,11 +68,8 @@ static ssize_t do_progress(struct fid_cq *cq, size_t *cmp)
     ssize_t             ret = 0;
     ssize_t             rc;
 
-    /* Check both tx and rx sides to make progress.
-     * FIXME: Should rx be necessary for one-sided?
-     */
     rc = fab_completions(cq, 0, NULL, NULL);
-    if (ret >= 0)
+    if (rc >= 0)
         *cmp += rc;
     else
         ret = rc;

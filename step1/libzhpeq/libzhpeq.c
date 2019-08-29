@@ -181,13 +181,15 @@ int zhpeq_free(struct zhpeq *zq)
     if (!zq)
         goto done;
     /* Stop the queue. */
-    iowrite64(1, zq->qcm + ZHPE_XDM_QCM_STOP_OFFSET);
-    for (;;) {
-        active.u64 =
-            ioread64(zq->qcm + ZHPE_XDM_QCM_ACTIVE_STATUS_ERROR_OFFSET);
-        if (!active.bits.active)
-            break;
-        sched_yield();
+    if (zq->qcm) {
+        iowrite64(1, zq->qcm + ZHPE_XDM_QCM_STOP_OFFSET);
+        for (;;) {
+            active.u64 =
+                ioread64(zq->qcm + ZHPE_XDM_QCM_ACTIVE_STATUS_ERROR_OFFSET);
+            if (!active.bits.active)
+                break;
+            sched_yield();
+        }
     }
     if (b_ops->qfree_pre)
         rc = b_ops->qfree_pre(zq);
@@ -203,10 +205,14 @@ int zhpeq_free(struct zhpeq *zq)
     rc = do_munmap(zq->cq, zq->xqinfo.cmplq.size);
     if (ret >= 0 && rc < 0)
         ret = rc;
+
     /* Call the driver to free the queue. */
-    rc = b_ops->qfree(zq);
-    if (ret >= 0 && rc < 0)
-        ret = rc;
+    if (zq->xqinfo.qcm.size) {
+        rc = b_ops->qfree(zq);
+        if (ret >= 0 && rc < 0)
+            ret = rc;
+    }
+
     /* Free queue memory. */
     free(zq->context);
     free(zq);

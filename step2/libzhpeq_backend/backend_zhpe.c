@@ -683,7 +683,7 @@ static int do_rmr_import(uuid_t uuid, uint64_t rsp_zaddr, size_t len,
     req->rmr_import.len = len;
     req->rmr_import.access = access;
     ret = driver_cmd(&op, sizeof(req->rmr_import), sizeof(rsp->rmr_import),
-                       true);
+                     true);
     if (ret >= 0) {
         *req_zaddr = rsp->rmr_import.req_addr;
         if (pgoff)
@@ -853,7 +853,7 @@ static int zhpe_mmap(const struct zhpeq_key_data *qkdata_orig,
     qkdata->z.vaddr += offset;
     qkdata->z.len -= offset;
     qkdata->rsp_zaddr += offset;
-    qkdata->z.access |= cache_mode | ZHPEQ_MR_REQ_CPU;
+    qkdata->z.access |= cache_mode | ZHPEQ_MR_REQ_CPU | ZHPE_MR_INDIVIDUAL;
 
     ret = do_rmr_import(node->uue->uuid, qkdata->rsp_zaddr, qkdata->z.len,
                         qkdata->z.access, &qkdata->z.zaddr, &pgoff);

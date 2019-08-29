@@ -219,7 +219,7 @@ int zhpeq_mmap(const struct zhpeq_key_data *qkdata,
                uint32_t cache_mode, void *addr, size_t length, int prot,
                int flags, off_t offset, struct zhpeq_mmap_desc **zmdesc);
 
-int zhpeq_mmap_unmap(struct zhpeq_mmap_desc *zmdesc, void *addr, size_t length);
+int zhpeq_mmap_unmap(struct zhpeq_mmap_desc *zmdesc);
 
 int zhpeq_mmap_commit(struct zhpeq_mmap_desc *zmdesc,
                       const void *addr, size_t length, bool fence,

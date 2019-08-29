@@ -887,7 +887,7 @@ int zhpeq_mmap(const struct zhpeq_key_data *qkdata,
     return ret;
 }
 
-int zhpeq_mmap_unmap(struct zhpeq_mmap_desc *zmdesc, void *addr, size_t length)
+int zhpeq_mmap_unmap(struct zhpeq_mmap_desc *zmdesc)
 {
     int                 ret = -EINVAL;
 

@@ -93,8 +93,17 @@ struct stuff {
 
 static void stuff_free(struct stuff *stuff)
 {
+    int                 rc;
+
     if (!stuff)
         return;
+
+    /* Unmap. */
+    if (stuff->mdesc) {
+        rc = stuff->ext_ops->munmap(stuff->mdesc);
+        if (rc < 0)
+            print_func_fi_err(__func__, __LINE__, "ext_munmap", "", rc);
+    }
 
     fab_conn_free(&stuff->fab_conn);
     fab_conn_free(&stuff->fab_listener);
@@ -113,11 +122,10 @@ static int do_mem_setup(struct stuff *conn)
     const struct args   *args = conn->args;
     size_t              req = args->mmap_len + page_size;
 
-    /* Size of an array of entries plus a tail index. */
     ret = fab_mrmem_alloc(fab_conn, &fab_conn->mrmem, req, 0);
     if (ret < 0)
         goto done;
-    memset(fab_conn->mrmem.mem, 0, args->mmap_len);
+    memset(fab_conn->mrmem.mem, 0, req);
     /* Make sure there are no dirty lines in cache. */
     conn->ext_ops->commit(NULL, fab_conn->mrmem.mem, req, true, true, true);
 
@@ -307,13 +315,6 @@ static int do_client_op(struct stuff *conn)
     }
     now = get_cycles(NULL);
     lat_read = now - start;
-
-    /* Unmap. */
-    ret = conn->ext_ops->munmap(conn->mdesc);
-    if (ret < 0) {
-        print_func_fi_err(__func__, __LINE__, "ext_munmap", "", ret);
-        goto done;
-    }
 
     /* Do a send-receive for the final handshake. */
     ret = fi_send(fab_conn->ep, NULL, 0, NULL, conn->dest_av, &ctx);

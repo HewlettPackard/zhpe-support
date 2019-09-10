@@ -35,12 +35,11 @@
  */
 
 #define _GNU_SOURCE
+#include <cpuid.h>
 #include <numaif.h>
 #include <search.h>
 
 #include <internal.h>
-
-#include <numaif.h>
 
 #define NODE_CHUNKS     (128)
 
@@ -898,16 +897,27 @@ static int zhpe_mmap_commit(struct zhpeq_mmap_desc *zmdesc,
                             const void *addr, size_t length, bool fence,
                             bool invalidate, bool wait)
 {
+    uint                eax;
+    uint                ebx;
+    uint                ecx;
+    uint                edx;
+
     if (!addr && !length && zmdesc) {
         addr = zmdesc->addr;
         length = zmdesc->qkdata->z.len;
     }
 
-    if (invalidate)
+    if (invalidate) {
         clflush_range(addr, length, fence);
-    else
+        io_mb();
+    } else
         clwb_range(addr, length, fence);
-    /* FIXME: add error checking */
+    if (wait) {
+        /* We assume the driver enabled mcommit if it is possible. */
+        if (__get_cpuid(CPUID_8000_0008, &eax, &ebx, &ecx, &edx) &&
+            (ebx & CPUID_8000_0008_EBX_MCOMMIT))
+            mcommit();
+    }
 
     return 0;
 }

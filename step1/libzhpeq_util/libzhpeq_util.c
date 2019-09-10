@@ -282,10 +282,10 @@ static void x86_clflush_range(const void *addr, size_t len,  bool fence)
         (const char *)((uintptr_t)addr & ~zhpeu_init_time->l1sz);
     const char          *e = (const char *)addr + len;
 
-    for (; p < e; p += zhpeu_init_time->l1sz)
-        _mm_clflush(p);
     if (fence)
         io_wmb();
+    for (; p < e; p += zhpeu_init_time->l1sz)
+        _mm_clflush(p);
 }
 
 static void x86_clflushopt_range(const void *addr, size_t len, bool fence)
@@ -294,10 +294,10 @@ static void x86_clflushopt_range(const void *addr, size_t len, bool fence)
         (const char *)((uintptr_t)addr & ~zhpeu_init_time->l1sz);
     const char          *e = (const char *)addr + len;
 
-    for (; p < e; p += zhpeu_init_time->l1sz)
-        _mm_clflushopt((void *)p);
     if (fence)
         io_wmb();
+    for (; p < e; p += zhpeu_init_time->l1sz)
+        _mm_clflushopt((void *)p);
 }
 
 static void x86_clwb_range(const void *addr, size_t len, bool fence)
@@ -310,8 +310,6 @@ static void x86_clwb_range(const void *addr, size_t len, bool fence)
         io_wmb();
     for (; p < e; p += zhpeu_init_time->l1sz)
         _mm_clwb((void *)p);
-    if (fence)
-        io_wmb();
 }
 
 #endif

@@ -116,6 +116,14 @@ struct zhpeq_dom {
     void                *backend_data;
 };
 
+struct zhpeq_hist {
+    uint32_t            qhead;
+    uint32_t            qtail;
+    uint32_t            qnew;
+    uint32_t            xhead;
+    uint32_t            xtail;
+};
+
 struct zhpeq {
     struct zhpeq_dom    *zdom;
     struct zhpe_xqinfo  xqinfo;
@@ -128,6 +136,10 @@ struct zhpeq {
     struct zhpeq_ht     head_tail CACHE_ALIGNED;
     struct free_index   context_free;
     uint32_t            tail_commit CACHE_ALIGNED;
+#if ZHPEQ_RECORD
+    uint32_t            hist_idx;
+    struct zhpeq_hist   hist[0];
+#endif
 };
 
 static inline uint8_t cq_valid(uint32_t idx, uint32_t qmask)

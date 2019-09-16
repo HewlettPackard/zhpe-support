@@ -232,6 +232,7 @@ int zhpeq_alloc(struct zhpeq_dom *zdom, int cmd_qlen, int cmp_qlen,
     };
     int                 flags;
     size_t              i;
+    size_t              req;
 
     if (!zq_out)
         goto done;
@@ -245,7 +246,11 @@ int zhpeq_alloc(struct zhpeq_dom *zdom, int cmd_qlen, int cmp_qlen,
         goto done;
 
     ret = -ENOMEM;
-    zq = calloc_cachealigned(1, sizeof(*zq));
+    req = sizeof(*zq);
+#if ZHPEQ_RECORD
+    req += sizeof(zq->hist[0]) * cmd_qlen;
+#endif
+    zq = calloc_cachealigned(1, req);
     if (!zq)
         goto done;
     zq->zdom = zdom;
@@ -416,6 +421,7 @@ int zhpeq_commit(struct zhpeq *zq, uint32_t qindex, uint32_t n_entries)
     uint32_t            qmask;
     uint32_t            old;
     uint32_t            new;
+    uint32_t            i MAYBE_UNUSED;
 
     if (!zq)
         goto done;
@@ -424,7 +430,6 @@ int zhpeq_commit(struct zhpeq *zq, uint32_t qindex, uint32_t n_entries)
 
 #ifdef HAVE_ZHPE_STATS
     zhpe_stats_pause_all();
-    uint32_t            i;
     union zhpe_hw_wq_entry *wqe;
 
     for (i = 0; i < n_entries; i++) {
@@ -442,6 +447,14 @@ int zhpeq_commit(struct zhpeq *zq, uint32_t qindex, uint32_t n_entries)
         goto done;
     }
     new = old + n_entries;
+#if ZHPEQ_RECORD
+    i = atm_inc(&zq->hist_idx) & qmask;
+    zq->hist[i].qhead = zq->head_tail.head;
+    zq->hist[i].qtail = old;
+    zq->hist[i].qnew = new;
+    zq->hist[i].xhead = ioread64(zq->qcm + ZHPE_XDM_QCM_CMD_QUEUE_HEAD_OFFSET);
+    zq->hist[i].xtail = ioread64(zq->qcm + ZHPE_XDM_QCM_CMD_QUEUE_TAIL_OFFSET);
+#endif
     io_wmb();
     iowrite64(new & qmask,
               zq->qcm + ZHPE_XDM_QCM_CMD_QUEUE_TAIL_OFFSET);

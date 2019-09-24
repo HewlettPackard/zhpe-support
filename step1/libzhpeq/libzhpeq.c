@@ -102,7 +102,7 @@ int zhpeq_init(int api_version)
             goto done;
 
         mutex_lock(&init_mutex);
-        if (b_ops->lib_init)
+        if (b_ops && b_ops->lib_init)
             ret = b_ops->lib_init(&b_attr);
         init_status = (ret <= 0 ? ret : 0);
         mutex_unlock(&init_mutex);

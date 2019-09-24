@@ -1367,7 +1367,7 @@ void zhpeq_backend_libfabric_init(int fd)
     backend_dom = getenv("ZHPE_BACKEND_LIBFABRIC_DOM");
     eng.do_auto = !!getenv("ZHPE_BACKEND_LIBFABRIC_AUTO");
 
-    if (fd != -1)
+    if (fd != -1 || !backend_prov)
         return;
 
     zhpeq_register_backend(ZHPE_BACKEND_LIBFABRIC, &ops);

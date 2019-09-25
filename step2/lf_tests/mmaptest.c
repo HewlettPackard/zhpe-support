@@ -120,7 +120,7 @@ static int do_mem_setup(struct stuff *conn)
     int                 ret = -EEXIST;
     struct fab_conn     *fab_conn = &conn->fab_conn;
     const struct args   *args = conn->args;
-    size_t              req = args->mmap_len + page_size;
+    size_t              req = page_up(args->mmap_len + page_size);
 
     ret = fab_mrmem_alloc(fab_conn, &fab_conn->mrmem, req, 0);
     if (ret < 0)

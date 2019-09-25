@@ -1021,8 +1021,9 @@ static inline char *_strdup_or_null(const char *callf, uint line,
 #define spin_unlock(...) \
     abort_posix(pthread_spin_unlock, __VA_ARGS__)
 
-#define yield(...) \
-    abort_posix(pthread_yield, __VA_ARGS__)
+void zhpeu_yield(void);
+
+#define yield()         zhpeu_yield()
 
 static inline int do_munmap(void *addr, size_t length,
                             const char *callf, uint line)

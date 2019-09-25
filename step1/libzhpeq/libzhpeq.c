@@ -188,7 +188,7 @@ int zhpeq_free(struct zhpeq *zq)
                 ioread64(zq->qcm + ZHPE_XDM_QCM_ACTIVE_STATUS_ERROR_OFFSET);
             if (!active.bits.active)
                 break;
-            sched_yield();
+            yield();
         }
     }
     if (b_ops->qfree_pre)
@@ -480,7 +480,7 @@ static inline void set_context(struct zhpeq *zq, union zhpe_hw_wq_entry *wqe,
     for (old = atm_load_rlx(&zq->context_free);;) {
         if (unlikely(old.index == FREE_END)) {
             /* Tiny race between head moving and context slot freed. */
-            sched_yield();
+            yield();
             old = atm_load_rlx(&zq->context_free);
             continue;
         }

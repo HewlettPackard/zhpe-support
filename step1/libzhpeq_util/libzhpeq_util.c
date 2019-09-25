@@ -1157,3 +1157,9 @@ void *zhpeu_calloc_aligned(size_t alignment, size_t nmemb, size_t size,
 
     return ret;
 }
+
+/* Don't want to require _GNU_SOURCE in header. */
+void zhpeu_yield(void)
+{
+    abort_posix(pthread_yield,);
+}

@@ -653,7 +653,7 @@ static int do_server_sink(struct stuff *conn)
     volatile uint8_t    *rx_addr = conn->rx_addr;
 
     while (*rx_addr != TX_LAST)
-        sched_yield();
+        yield();
     zhpeq_print_info(conn->zq);
 
     return ret;

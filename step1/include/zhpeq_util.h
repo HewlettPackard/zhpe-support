@@ -1085,7 +1085,7 @@ static inline uint64_t roundup_pow_of_2(uint64_t val)
     if (!val || !(val & (val - 1)))
         return val;
 
-    return ((uint64_t)1 << (fls64(val + 1)));
+    return ((uint64_t)1 << (fls64(val) + 1));
 }
 
 static inline uint64_t page_off(uint64_t addr)

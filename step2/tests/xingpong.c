@@ -182,7 +182,7 @@ static int do_mem_setup(struct stuff *conn)
          goto done;
     }
     memset(conn->tx_addr, TX_NONE, req);
-    conn->rx_addr = conn->tx_addr + off;
+    conn->rx_addr = (char *)conn->tx_addr + off;
 
     ret = zhpeq_mr_reg(conn->zdom, conn->tx_addr, req,
                        (ZHPEQ_MR_GET | ZHPEQ_MR_PUT |
@@ -212,8 +212,7 @@ static int do_mem_setup(struct stuff *conn)
     if (!args->copy_mode)
         goto done;
 
-    req = off = sizeof(*conn->rx_rcv) * args->ring_entries;
-    req += conn->ring_end_off;
+    req = sizeof(*conn->rx_rcv) * args->ring_entries + conn->ring_end_off;
     ret = -posix_memalign((void **)&conn->rx_rcv, page_size, req);
     if (ret < 0) {
         conn->rx_rcv = NULL;
@@ -221,7 +220,7 @@ static int do_mem_setup(struct stuff *conn)
                         req, ret);
         goto done;
     }
-    conn->rx_data = (void *)conn->rx_rcv + off;
+    conn->rx_data = (void *)(conn->rx_rcv + args->ring_entries);
 
  done:
     return ret;
@@ -337,7 +336,8 @@ static void random_rx_rcv(struct stuff *conn, struct rx_queue_head *rx_head)
     /* Set buf to equivalent slot in rx_data. */
     t = 0;
     STAILQ_FOREACH(tp, rx_head, list) {
-        tp->buf = conn->rx_data + (tp - conn->rx_rcv) * args->ring_entry_len;
+        tp->buf = ((char *)conn->rx_data +
+                   (tp - conn->rx_rcv) * args->ring_entry_len);
         t++;
     }
     if (t != args->ring_entries) {
@@ -423,8 +423,8 @@ static int do_server_pong(struct stuff *conn)
         /* Receive packets up to window or first miss. */
         for (window = RX_WINDOW; window > 0 && tx_flag_in != TX_LAST;
              window--, rx_count++, rx_off = next_roff(conn, rx_off)) {
-            tx_addr = conn->tx_addr + rx_off;
-            rx_addr = conn->rx_addr + rx_off;
+            tx_addr = (void *)((char *)conn->tx_addr + rx_off);
+            rx_addr = (void *)((char *)conn->rx_addr + rx_off);
             if (!(tx_flag_new = *rx_addr))
                 break;
             if (tx_flag_new != tx_flag_in) {
@@ -526,7 +526,7 @@ static int do_client_pong(struct stuff *conn)
         for (window = RX_WINDOW; window > 0 && tx_flag_in != TX_LAST;
              (window--, rx_count++, ring_avail++,
               rx_off = next_roff(conn, rx_off))) {
-            rx_addr = conn->rx_addr + rx_off;
+            rx_addr = (void *)((char *)conn->rx_addr + rx_off);
             if (!(tx_flag_in = *rx_addr))
                 break;
             *rx_addr = 0;
@@ -603,7 +603,7 @@ static int do_client_pong(struct stuff *conn)
             }
 
             /* Write buffer to same offset in server.*/
-            tx_addr = conn->tx_addr + tx_off;
+            tx_addr = (void *)((char *)conn->tx_addr + tx_off);
             zq_tx_addr = conn->zq_local_tx_zaddr + tx_off;
             zq_rx_addr = conn->zq_remote_rx_zaddr + tx_off;
             if (!tx_off)
@@ -741,7 +741,7 @@ static int do_client_unidir(struct stuff *conn)
         }
 
         /* Write buffer to same offset in server.*/
-        tx_addr = conn->tx_addr + tx_off;
+        tx_addr = (void *)((char *)conn->tx_addr + tx_off);
         zq_tx_addr = conn->zq_local_tx_zaddr + tx_off;
         zq_rx_addr = conn->zq_remote_rx_zaddr + tx_off;
         /* Write op flag. */
@@ -1144,8 +1144,9 @@ int main(int argc, char **argv)
         args.service = argv[optind++];
         args.node = argv[optind++];
         if (parse_kb_uint64_t(__func__, __LINE__, "entry_len",
-                              argv[optind++], &args.ring_entry_len, 0, 1,
-                              SIZE_MAX, PARSE_KB | PARSE_KIB) < 0 ||
+                              argv[optind++], &args.ring_entry_len, 0,
+                              sizeof(uint8_t), SIZE_MAX,
+                              PARSE_KB | PARSE_KIB) < 0 ||
             parse_kb_uint64_t(__func__, __LINE__, "ring_entries",
                               argv[optind++], &args.ring_entries, 0, 1,
                               SIZE_MAX, PARSE_KB | PARSE_KIB) < 0 ||

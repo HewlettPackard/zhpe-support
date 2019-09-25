@@ -182,10 +182,11 @@ int zhpeq_free(struct zhpeq *zq)
         goto done;
     /* Stop the queue. */
     if (zq->qcm) {
-        iowrite64(1, zq->qcm + ZHPE_XDM_QCM_STOP_OFFSET);
+        iowrite64(1, (char *)zq->qcm + ZHPE_XDM_QCM_STOP_OFFSET);
         for (;;) {
             active.u64 =
-                ioread64(zq->qcm + ZHPE_XDM_QCM_ACTIVE_STATUS_ERROR_OFFSET);
+                ioread64((char *)zq->qcm +
+                         ZHPE_XDM_QCM_ACTIVE_STATUS_ERROR_OFFSET);
             if (!active.bits.active)
                 break;
             yield();
@@ -296,12 +297,13 @@ int zhpeq_alloc(struct zhpeq_dom *zdom, int cmd_qlen, int cmp_qlen,
     }
 
     /* Initialize completion tail to zero and set toggle bit. */
-    iowrite64(tail.u64, zq->qcm + ZHPE_XDM_QCM_CMPL_QUEUE_TAIL_TOGGLE_OFFSET);
+    iowrite64(tail.u64,
+              (char *)zq->qcm + ZHPE_XDM_QCM_CMPL_QUEUE_TAIL_TOGGLE_OFFSET);
     /* Intialize command head and tail to zero. */
-    iowrite64(0, zq->qcm + ZHPE_XDM_QCM_CMD_QUEUE_HEAD_OFFSET);
-    iowrite64(0, zq->qcm + ZHPE_XDM_QCM_CMD_QUEUE_TAIL_OFFSET);
+    iowrite64(0, (char *)zq->qcm + ZHPE_XDM_QCM_CMD_QUEUE_HEAD_OFFSET);
+    iowrite64(0, (char *)zq->qcm + ZHPE_XDM_QCM_CMD_QUEUE_TAIL_OFFSET);
     /* Start the queue. */
-    iowrite64(0, zq->qcm + ZHPE_XDM_QCM_STOP_OFFSET);
+    iowrite64(0, (char *)zq->qcm + ZHPE_XDM_QCM_STOP_OFFSET);
     ret = 0;
 
  done:
@@ -457,7 +459,7 @@ int zhpeq_commit(struct zhpeq *zq, uint32_t qindex, uint32_t n_entries)
 #endif
     io_wmb();
     iowrite64(new & qmask,
-              zq->qcm + ZHPE_XDM_QCM_CMD_QUEUE_TAIL_OFFSET);
+              (char *)zq->qcm + ZHPE_XDM_QCM_CMD_QUEUE_TAIL_OFFSET);
     io_wmb();
     atm_store_rlx(&zq->tail_commit, new);
     ret = 0;
@@ -1060,7 +1062,7 @@ static void print_qcm1(const char *func, uint line, const volatile void *qcm,
                       uint offset)
 {
     printf("%s,%u:qcm[0x%03x] = 0x%lx\n",
-           func, line, offset, ioread64(qcm + offset));
+           func, line, offset, ioread64((char *)qcm + offset));
 }
 
 void zhpeq_print_qcm(const char *func, uint line, const struct zhpeq *zq)

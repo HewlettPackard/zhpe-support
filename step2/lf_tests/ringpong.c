@@ -199,7 +199,7 @@ static int do_mem_setup(struct stuff *conn)
     if (ret < 0)
         goto done;
     conn->tx_addr = fab_conn->mrmem.mem;
-    conn->rx_addr = conn->tx_addr + off;
+    conn->rx_addr = (char *)conn->tx_addr + off;
 
     req = sizeof(*conn->ctx) * conn->tx_avail;
     ret = -posix_memalign((void **)&conn->ctx, page_size, req);
@@ -222,8 +222,7 @@ static int do_mem_setup(struct stuff *conn)
     if (!args->copy_mode)
         goto done;
 
-    req = off = sizeof(*conn->rx_rcv) * args->ring_entries;
-    req += conn->ring_end_off;
+    req = sizeof(*conn->rx_rcv) * args->ring_entries + conn->ring_end_off;
     ret = -posix_memalign((void **)&conn->rx_rcv, page_size, req);
     if (ret < 0) {
         conn->rx_rcv = NULL;
@@ -231,7 +230,7 @@ static int do_mem_setup(struct stuff *conn)
                         req, ret);
         goto done;
     }
-    conn->rx_data = (void *)conn->rx_rcv + off;
+    conn->rx_data = (void *)(conn->rx_rcv + args->ring_entries);
 
  done:
     return ret;
@@ -289,7 +288,8 @@ static void random_rx_rcv(struct stuff *conn, struct rx_queue_head *rx_head)
     /* Set buf to equivalent slot in rx_data. */
     t = 0;
     STAILQ_FOREACH(tp, rx_head, list) {
-        tp->buf = conn->rx_data + (tp - conn->rx_rcv) * args->ring_entry_len;
+        tp->buf = ((char *)conn->rx_data +
+                   (tp - conn->rx_rcv) * args->ring_entry_len);
         t++;
     }
     if (t != args->ring_entries) {
@@ -347,6 +347,7 @@ static int do_server_pong(struct stuff *conn)
     size_t              window;
     uint8_t             *tx_addr;
     volatile uint8_t    *rx_addr;
+    uint64_t            rem_addr;
     uint8_t             tx_flag_new;
     size_t              rx_avail;
 
@@ -361,8 +362,8 @@ static int do_server_pong(struct stuff *conn)
         /* Receive packets up to window or first miss. */
         for (window = RX_WINDOW; window > 0 && tx_flag_in != TX_LAST;
              window--, rx_count++, rx_off = next_roff(conn, rx_off)) {
-            tx_addr = conn->tx_addr + rx_off;
-            rx_addr = conn->rx_addr + rx_off;
+            tx_addr = (void *)((char *)conn->tx_addr + rx_off);
+            rx_addr = (void *)((char *)conn->rx_addr + rx_off);
             if (!(tx_flag_new = *rx_addr))
                 break;
             if (tx_flag_new != tx_flag_in) {
@@ -403,12 +404,11 @@ static int do_server_pong(struct stuff *conn)
               tx_off = next_roff(conn, tx_off),
               tx_ctx = next_ctx(conn, tx_ctx))) {
             /* Reflect buffer to same offset in client.*/
-            tx_addr = conn->tx_addr + tx_off;
-            rx_addr = (void *)conn->remote_addr + tx_off;
+            tx_addr = (void *)((char *)conn->tx_addr + tx_off);
+            rem_addr = conn->remote_addr + tx_off;
             ret = fi_write(fab_conn->ep, tx_addr, args->ring_entry_len,
                            fi_mr_desc(fab_conn->mrmem.mr), conn->dest_av,
-                           (uintptr_t)rx_addr, conn->remote_key,
-                           &conn->ctx[tx_ctx]);
+                           rem_addr, conn->remote_key, &conn->ctx[tx_ctx]);
             if (ret < 0) {
                 print_func_fi_err(__func__, __LINE__, "fi_write", "", ret);
                 goto done;
@@ -474,6 +474,7 @@ static int do_client_pong(struct stuff *conn)
     size_t              window;
     uint8_t             *tx_addr;
     volatile uint8_t    *rx_addr;
+    uint64_t            rem_addr;
 
     start = get_cycles(NULL);
     for (tx_count = rx_count = warmup_count = 0;
@@ -482,7 +483,7 @@ static int do_client_pong(struct stuff *conn)
         for (window = RX_WINDOW; window > 0 && tx_flag_in != TX_LAST;
              (window--, rx_count++, ring_avail++,
               rx_off = next_roff(conn, rx_off))) {
-            rx_addr = conn->rx_addr + rx_off;
+            rx_addr = (void *)((char *)conn->rx_addr + rx_off);
             if (!(tx_flag_in = *rx_addr))
                 break;
             *rx_addr = 0;
@@ -560,8 +561,8 @@ static int do_client_pong(struct stuff *conn)
             }
 
             /* Write buffer to same offset in server.*/
-            tx_addr = conn->tx_addr + tx_off;
-            rx_addr = (void *)conn->remote_addr + tx_off;
+            tx_addr = (void *)((char *)conn->tx_addr + tx_off);
+            rem_addr = conn->remote_addr + tx_off;
             if (!tx_off)
                 tx_idx = 0;
             /* Write op flag. */
@@ -571,8 +572,7 @@ static int do_client_pong(struct stuff *conn)
             conn->ring_timestamps[tx_idx++] = now;
             ret = fi_write(fab_conn->ep, tx_addr, args->ring_entry_len,
                            fi_mr_desc(fab_conn->mrmem.mr), conn->dest_av,
-                           (uintptr_t)rx_addr, conn->remote_key,
-                           &conn->ctx[tx_ctx]);
+                           rem_addr, conn->remote_key, &conn->ctx[tx_ctx]);
             lat_write += get_cycles(NULL) - now;
             if (ret < 0) {
                 print_func_fi_err(__func__, __LINE__, "fi_write", "", ret);
@@ -623,13 +623,10 @@ static int do_server_sink(struct stuff *conn)
 {
     int                 ret = 0;
     struct fab_conn     *fab_conn = &conn->fab_conn;
-    const struct args   *args = conn->args;
     size_t              rx_avail;
 
     /* Do a send-receive for the final handshake. */
-    ret = fi_recv(fab_conn->ep, conn->rx_addr, args->ring_entry_len,
-                  fi_mr_desc(fab_conn->mrmem.mr), FI_ADDR_UNSPEC,
-                  &conn->ctx[0]);
+    ret = fi_recv(fab_conn->ep, NULL, 0, NULL, FI_ADDR_UNSPEC, &conn->ctx[0]);
     if (ret < 0) {
         print_func_fi_err(__func__, __LINE__, "fi_recv", "", ret);
         goto done;
@@ -667,7 +664,7 @@ static int do_client_unidir(struct stuff *conn)
     uint64_t            now;
     uint64_t            tx_count;
     void                *tx_addr;
-    void                *rx_addr;
+    uint64_t            rem_addr;
 
     start = get_cycles(NULL);
     for (tx_count = warmup_count = 0; tx_flag_out != TX_LAST;
@@ -731,13 +728,12 @@ static int do_client_unidir(struct stuff *conn)
         }
 
         /* Write buffer to same offset in server.*/
-        tx_addr = conn->tx_addr + tx_off;
-        rx_addr = (void *)conn->remote_addr + tx_off;
+        tx_addr = (void *)((char *)conn->tx_addr + tx_off);
+        rem_addr = conn->remote_addr + tx_off;
         now = get_cycles(NULL);
         ret = fi_write(fab_conn->ep, tx_addr, args->ring_entry_len,
                        fi_mr_desc(fab_conn->mrmem.mr), conn->dest_av,
-                       (uintptr_t)rx_addr, conn->remote_key,
-                       &conn->ctx[tx_ctx]);
+                       rem_addr, conn->remote_key, &conn->ctx[tx_ctx]);
         lat_write += get_cycles(NULL) - now;
         if (ret < 0) {
             print_func_fi_err(__func__, __LINE__, "fi_write", "", ret);
@@ -754,8 +750,7 @@ static int do_client_unidir(struct stuff *conn)
     }
     lat_total1 = get_cycles(NULL) - lat_total1;
     /* Do a send-receive for the final handshake. */
-    ret = fi_send(fab_conn->ep, conn->tx_addr + tx_off, args->ring_entry_len,
-                  fi_mr_desc(fab_conn->mrmem.mr), conn->dest_av, &conn->ctx[0]);
+    ret = fi_send(fab_conn->ep, NULL, 0, NULL, conn->dest_av, &conn->ctx[0]);
     if (ret < 0) {
         print_func_fi_err(__func__, __LINE__, "fi_send", "", ret);
         goto done;
@@ -1201,8 +1196,9 @@ int main(int argc, char **argv)
         args.service = argv[optind++];
         args.node = argv[optind++];
         if (parse_kb_uint64_t(__func__, __LINE__, "entry_len",
-                              argv[optind++], &args.ring_entry_len, 0, 1,
-                              SIZE_MAX, PARSE_KB | PARSE_KIB) < 0 ||
+                              argv[optind++], &args.ring_entry_len, 0,
+                              sizeof(uint8_t), SIZE_MAX,
+                              PARSE_KB | PARSE_KIB) < 0 ||
             parse_kb_uint64_t(__func__, __LINE__, "ring_entries",
                               argv[optind++], &args.ring_entries, 0, 1,
                               SIZE_MAX, PARSE_KB | PARSE_KIB) < 0 ||

@@ -64,7 +64,7 @@ static void ep_init(struct zhpel_data *lf_data, struct zhpel_eps *lf_eps, int i)
                                 (lf_eps->n_eps, sizeof(*lf_eps->rcnts)));
         lf_eps->wcnts = NULLCHK(calloc,
                                 (lf_eps->n_eps, sizeof(*lf_eps->wcnts)));
-        lf_eps->mem = lf_data->mem + lf_data->mem_off;
+        lf_eps->mem = (char *)lf_data->mem + lf_data->mem_off;
         lf_data->mem_off += lf_eps->per_thr_size * lf_eps->n_eps;
     }
     if (lf_data->sep) {

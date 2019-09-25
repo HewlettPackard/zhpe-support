@@ -754,7 +754,7 @@ static inline void cq_write(void *vcontext, int status)
     cqe->entry.valid = cq_valid(conn->cq_tail, qmask);
     conn->cq_tail++;
     iowrite64(conn->cq_tail & qmask,
-              zq->qcm + ZHPE_XDM_QCM_CMPL_QUEUE_TAIL_TOGGLE_OFFSET);
+              (char *)zq->qcm + ZHPE_XDM_QCM_CMPL_QUEUE_TAIL_TOGGLE_OFFSET);
  done:
     /* Place context on free list. */
     STAILQ_INSERT_TAIL(&context->fab_plus->context_free,
@@ -805,9 +805,11 @@ static bool lfab_zq(struct stuff *conn)
     char                *sendbuf;
     struct stailq_entry *stailq_entry;
 
-    wq_head = ioread64(zq->qcm + ZHPE_XDM_QCM_CMD_QUEUE_HEAD_OFFSET) & qmask;
+    wq_head = (ioread64((char *)zq->qcm + ZHPE_XDM_QCM_CMD_QUEUE_HEAD_OFFSET) &
+               qmask);
     smp_rmb();
-    wq_tail = ioread64(zq->qcm + ZHPE_XDM_QCM_CMD_QUEUE_TAIL_OFFSET) & qmask;
+    wq_tail = (ioread64((char *)zq->qcm + ZHPE_XDM_QCM_CMD_QUEUE_TAIL_OFFSET) &
+               qmask);
     for (; wq_head != wq_tail; wq_head = (wq_head + 1) & qmask) {
 
         wqe = zq->wq + wq_head;
@@ -990,7 +992,7 @@ static bool lfab_zq(struct stuff *conn)
     (void)fab_completions(fab_conn->tx_cq, 0, cq_update, zq);
 
  done:
-    iowrite64(wq_head, zq->qcm + ZHPE_XDM_QCM_CMD_QUEUE_HEAD_OFFSET);
+    iowrite64(wq_head, (char *)zq->qcm + ZHPE_XDM_QCM_CMD_QUEUE_HEAD_OFFSET);
     /* FIXME: Problematic: orderly shutdown handshake needed in libfabric.
      * Key revocation needs to be skipped. Must deal with outstanding
      * av processing.

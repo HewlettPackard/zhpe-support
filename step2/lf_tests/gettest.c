@@ -178,7 +178,7 @@ static int do_mem_setup(struct stuff *conn)
     if (ret < 0)
         goto done;
     conn->tx_addr = fab_conn->mrmem.mem;
-    conn->rx_addr = conn->tx_addr + off;
+    conn->rx_addr = (char *)conn->tx_addr + off;
 
     req = sizeof(*conn->ctx) * conn->tx_avail;
     ret = -posix_memalign((void **)&conn->ctx, page_size, req);
@@ -289,8 +289,8 @@ static int do_client_get(struct stuff *conn)
     size_t              warmup_count;
     uint64_t            now;
     uint64_t            tx_count;
-    void                *tx_addr;
     void                *rx_addr;
+    uint64_t            rem_addr;
 
     start = get_cycles(NULL);
     for (tx_count = warmup_count = 0; tx_flag_out != TX_LAST;
@@ -345,13 +345,12 @@ static int do_client_get(struct stuff *conn)
         }
 
         /* Write buffer to same offset in server.*/
-        rx_addr = conn->tx_addr + tx_off;
-        tx_addr = (void *)conn->remote_addr + tx_off;
+        rx_addr = (char *)conn->tx_addr + tx_off;
+        rem_addr = conn->remote_addr + tx_off;
         now = get_cycles(NULL);
         ret = fi_read(fab_conn->ep, rx_addr, args->ring_entry_len,
                       fi_mr_desc(fab_conn->mrmem.mr), conn->dest_av,
-                      (uintptr_t)tx_addr, conn->remote_key,
-                      &conn->ctx[tx_ctx]);
+                      rem_addr, conn->remote_key, &conn->ctx[tx_ctx]);
         lat_write += get_cycles(NULL) - now;
         if (ret < 0) {
             print_func_fi_err(__func__, __LINE__, "fi_read", "", ret);
@@ -784,8 +783,9 @@ int main(int argc, char **argv)
         args.service = argv[optind++];
         args.node = argv[optind++];
         if (parse_kb_uint64_t(__func__, __LINE__, "entry_len",
-                              argv[optind++], &args.ring_entry_len, 0, 1,
-                              SIZE_MAX, PARSE_KB | PARSE_KIB) < 0 ||
+                              argv[optind++], &args.ring_entry_len, 0,
+                              sizeof(uint8_t), SIZE_MAX,
+                              PARSE_KB | PARSE_KIB) < 0 ||
             parse_kb_uint64_t(__func__, __LINE__, "ring_entries",
                               argv[optind++], &args.ring_entries, 0, 1,
                               SIZE_MAX, PARSE_KB | PARSE_KIB) < 0 ||

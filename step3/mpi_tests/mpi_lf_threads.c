@@ -111,7 +111,7 @@ static void *cli_func(void *vcli_thr)
         n_srv--;
     per_node_size = args->stripe_size / n_srv;
     for (l = 0, rops = 0, wops = 0 ; l < args->loops; l++) {
-        lstripe = lf_eps->mem + cli_thr->rank * lf_eps->per_thr_size;
+        lstripe = (char *)lf_eps->mem + cli_thr->rank * lf_eps->per_thr_size;
         roff = ((lf_data->rank * lf_eps->n_eps +
                  cli_thr->rank) *
                 lf_eps->per_thr_size / n_srv);
@@ -132,7 +132,7 @@ static void *cli_func(void *vcli_thr)
             print_info("%s,%u:rank %ld thr %ld loop %ld, writes complete\n",
                        __func__, __LINE__, lf_data->rank, cli_thr->rank, l + 1);
 
-        lstripe = lf_eps->mem + cli_thr->rank * lf_eps->per_thr_size;
+        lstripe = (char *)lf_eps->mem + cli_thr->rank * lf_eps->per_thr_size;
         roff = ((lf_data->rank * lf_eps->n_eps + cli_thr->rank) *
                 lf_eps->per_thr_size / n_srv);
         for (s = 0 ; s < args->stripes ; s++, roff += per_node_size) {

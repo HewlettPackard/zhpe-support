@@ -907,10 +907,9 @@ static int zhpe_mmap_commit(struct zhpeq_mmap_desc *zmdesc,
         length = zmdesc->qkdata->z.len;
     }
 
-    if (invalidate) {
+    if (invalidate)
         clflush_range(addr, length, fence);
-        io_mb();
-    } else
+    else
         clwb_range(addr, length, fence);
     if (wait) {
         /* We assume the driver enabled mcommit if it is possible. */
@@ -918,6 +917,8 @@ static int zhpe_mmap_commit(struct zhpeq_mmap_desc *zmdesc,
             (ebx & CPUID_8000_0008_EBX_MCOMMIT))
             mcommit();
     }
+    if (invalidate)
+        io_mb();
 
     return 0;
 }

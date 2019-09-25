@@ -279,7 +279,7 @@ char *get_cpuinfo_val(FILE *fp, char *buf, size_t buf_size,
 static void x86_clflush_range(const void *addr, size_t len,  bool fence)
 {
     const char          *p =
-        (const char *)((uintptr_t)addr & ~zhpeu_init_time->l1sz);
+        (const char *)((uintptr_t)addr & ~(zhpeu_init_time->l1sz - 1));
     const char          *e = (const char *)addr + len;
 
     if (fence)
@@ -291,7 +291,7 @@ static void x86_clflush_range(const void *addr, size_t len,  bool fence)
 static void x86_clflushopt_range(const void *addr, size_t len, bool fence)
 {
     const char          *p =
-        (const char *)((uintptr_t)addr & ~zhpeu_init_time->l1sz);
+        (const char *)((uintptr_t)addr & ~(zhpeu_init_time->l1sz - 1));
     const char          *e = (const char *)addr + len;
 
     if (fence)
@@ -303,7 +303,7 @@ static void x86_clflushopt_range(const void *addr, size_t len, bool fence)
 static void x86_clwb_range(const void *addr, size_t len, bool fence)
 {
     const char          *p =
-        (const char *)((uintptr_t)addr & ~zhpeu_init_time->l1sz);
+        (const char *)((uintptr_t)addr & ~(zhpeu_init_time->l1sz - 1));
     const char          *e = (const char *)addr + len;
 
     if (fence)

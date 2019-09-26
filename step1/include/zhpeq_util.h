@@ -276,6 +276,11 @@ static inline void io_mb(void)
 
 #define L1_CACHE_BYTES  (64UL)
 
+static inline void nop(void)
+{
+    asm volatile("nop");
+}
+
 #endif
 
 #ifndef _BARRIER_DEFINED

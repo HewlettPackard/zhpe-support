@@ -278,14 +278,15 @@ static int lfab_eng_work_queue(struct engine *eng, zhpeu_worker worker,
     }
     if (likely(ret >= 0)) {
         zhpeu_work_queue(&eng->work_head, &work, worker, data,
-                        true, false, !eng->do_auto);
+                        true, false, false);
         if (eng->do_auto)
-            zhpeu_work_wait(&eng->work_head, &work, false, true);
+            zhpeu_work_wait(&eng->work_head, &work, false, false);
         else
-            while (zhpeu_work_process(&eng->work_head, true, true));
+            while (zhpeu_work_process(&eng->work_head, false, false));
+
         ret = work.status;
-    } else
-        mutex_unlock(&eng->work_head.thr_wait.mutex);
+    }
+    mutex_unlock(&eng->work_head.thr_wait.mutex);
 
     zhpeu_work_destroy(&work);
 

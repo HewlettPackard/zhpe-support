@@ -1058,6 +1058,27 @@ int zhpeu_asprintf(char **strp, const char *fmt, ...)
     return ret;
 }
 
+bool zhpeu_work_process(struct zhpeu_work_head *head, bool lock, bool unlock)
+{
+    bool                ret = false;
+    struct zhpeu_work   *work;
+
+    if (lock)
+        mutex_lock(&head->thr_wait.mutex);
+    while ((work = STAILQ_FIRST(&head->work_list))) {
+        ret = work->worker(head, work);
+        if (ret)
+            break;
+        STAILQ_REMOVE_HEAD(&head->work_list, lentry);
+        work->worker = NULL;
+        cond_broadcast(&work->cond);
+    }
+    if (unlock)
+        mutex_unlock(&head->thr_wait.mutex);
+
+    return ret;
+}
+
 #undef posix_memalign
 
 int zhpeu_posix_memalign(void **memptr, size_t alignment, size_t size,

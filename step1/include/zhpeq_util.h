@@ -1307,27 +1307,7 @@ static inline void zhpeu_work_queue(struct zhpeu_work_head *head,
         mutex_unlock(&head->thr_wait.mutex);
 }
 
-static inline bool zhpeu_work_process(struct zhpeu_work_head *head,
-                                      bool lock, bool unlock)
-{
-    bool                ret = false;
-    struct zhpeu_work   *work;
-
-    if (lock)
-        mutex_lock(&head->thr_wait.mutex);
-    while ((work = STAILQ_FIRST(&head->work_list))) {
-        ret = work->worker(head, work);
-        if (ret)
-            break;
-        STAILQ_REMOVE_HEAD(&head->work_list, lentry);
-        work->worker = NULL;
-        cond_broadcast(&work->cond);
-    }
-    if (unlock)
-        mutex_unlock(&head->thr_wait.mutex);
-
-    return ret;
-}
+bool zhpeu_work_process(struct zhpeu_work_head *head, bool lock, bool unlock);
 
 _EXTERN_C_END
 

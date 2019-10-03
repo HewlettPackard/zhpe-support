@@ -1082,6 +1082,12 @@ int _fab_av_wait_recv(const char *callf, uint line, struct fab_conn *conn,
             goto done;
         else
             yield();
+        /*
+         * The utility code assumes that an error/completion available
+         * that there is no reason to call the progress function because
+         * progress is occuring. Calling with count == 0 forces progress.
+         */
+        (void)_fab_cq_read(callf, line, conn->rx_cq, NULL, 0, NULL);
     }
 
  done:

@@ -38,6 +38,9 @@
 
 #include <rdma/fi_ext_zhpe.h>
 
+#define PROVIDER        "zhpe"
+#define EP_TYPE         FI_EP_RDM
+
 struct args {
     uint64_t            nfams;
     uint64_t            fam_size;
@@ -104,7 +107,7 @@ static int do_fam(const struct args *args)
     fab_dom_init(fab_dom);
     fab_conn_init(fab_dom, fab_conn);
 
-    ret = fab_dom_setup(NULL, NULL, true, "zhpe", NULL, FI_EP_RDM, fab_dom);
+    ret = fab_dom_setup(NULL, NULL, true, PROVIDER, NULL, EP_TYPE, fab_dom);
     if (ret < 0)
         goto done;
     ret = fab_ep_setup(fab_conn, NULL, 0, 0);

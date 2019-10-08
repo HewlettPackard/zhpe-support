@@ -39,6 +39,9 @@
 #include <zhpe_stats.h>
 #include <zhpeq_util_fab.h>
 
+#define PROVIDER        "zhpe"
+#define EP_TYPE         FI_EP_RDM
+
 struct args {
     uint64_t            start_size;
     uint64_t            steps;
@@ -69,7 +72,7 @@ static int do_reg(const struct args *args)
         print_func_errn(__func__, __LINE__, "mmap", buf_size, false, ret);
         goto done;
     }
-    ret = fab_dom_setup(NULL, NULL, true, "zhpe", NULL, FI_EP_RDM, &fab_dom);
+    ret = fab_dom_setup(NULL, NULL, true, PROVIDER, NULL, EP_TYPE, &fab_dom);
     if (ret < 0)
         goto done;
 

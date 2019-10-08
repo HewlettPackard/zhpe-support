@@ -59,10 +59,6 @@ struct cli_wire_msg {
     uint8_t             ep_type;
 };
 
-struct svr_wire_msg {
-    uint16_t            port;
-};
-
 struct mem_wire_msg {
     uint64_t            remote_key;
     uint64_t            remote_addr;
@@ -407,7 +403,6 @@ static int do_server_one(const struct args *oargs, int conn_fd)
     union sockaddr_in46 addr;
     size_t              addr_len;
     struct cli_wire_msg cli_msg;
-    struct svr_wire_msg svr_msg;
     char                *s;
 
     fab_dom_init(fab_dom);
@@ -434,8 +429,8 @@ static int do_server_one(const struct args *oargs, int conn_fd)
     args->once_mode = !!cli_msg.once_mode;
     args->ep_type = cli_msg.ep_type;
 
-    ret = fab_dom_setup(NULL, NULL, true, args->provider, args->domain,
-                        args->ep_type, fab_dom);
+    ret = fab_dom_setup(NULL, NULL, true,
+                        args->provider, args->domain, args->ep_type, fab_dom);
     if (ret < 0)
         goto done;
 
@@ -460,8 +455,7 @@ static int do_server_one(const struct args *oargs, int conn_fd)
             print_func_fi_err(__func__, __LINE__, "fi_getname", "", ret);
             goto done;
         }
-        svr_msg.port = addr.sin_port;
-        ret = sock_send_blob(conn.sock_fd, &svr_msg, sizeof(svr_msg));
+        ret = sock_send_blob(conn.sock_fd, &addr, sizeof(addr));
         if (ret < 0)
             goto done;
 
@@ -560,9 +554,8 @@ static int do_client(const struct args *args)
     struct fab_dom      *fab_dom = &conn.fab_dom;
     struct fab_conn     *fab_conn = &conn.fab_conn;
     struct fab_conn     *fab_listener = &conn.fab_listener;
-    union sockaddr_in46 *sockaddr;
+    union sockaddr_in46 addr;
     struct cli_wire_msg cli_msg;
-    struct svr_wire_msg svr_msg;
 
     fab_dom_init(fab_dom);
     fab_conn_init(fab_dom, fab_conn);
@@ -591,7 +584,7 @@ static int do_client(const struct args *args)
     if (ret < 0)
         goto done;
 
-    ret = fab_dom_setup(args->service, args->node, false,
+    ret = fab_dom_setup(NULL, NULL, true,
                         args->provider, args->domain, args->ep_type, fab_dom);
     if (ret < 0)
         goto done;
@@ -604,20 +597,16 @@ static int do_client(const struct args *args)
         if (ret < 0)
             goto done;
     } else {
-        /* Read port. */
-        ret = sock_recv_fixed_blob(conn.sock_fd, &svr_msg, sizeof(svr_msg));
+        ret = sock_recv_fixed_blob(conn.sock_fd, &addr, sizeof(addr));
         if (ret < 0)
             goto done;
 
-        sockaddr = fab_conn_info(fab_conn)->dest_addr;
-        switch (sockaddr->addr4.sin_family) {
-        case AF_INET:
-            sockaddr->addr4.sin_port = svr_msg.port;
-            break;
-        case AF_INET6:
-            sockaddr->addr6.sin6_port = svr_msg.port;
-            break;
+        fab_conn_info(fab_conn)->dest_addr = sockaddr_dup(&addr);
+        if (!fab_conn_info(fab_conn)->dest_addr) {
+            ret = -FI_ENOMEM;
+            goto done;
         }
+
         /* Connect at the libfabric level. */
         ret = fab_connect(timeout, 0, 0, fab_conn);
         if (ret < 0)

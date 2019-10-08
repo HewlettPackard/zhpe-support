@@ -39,6 +39,9 @@
 
 #include <rdma/fi_ext_zhpe.h>
 
+#define PROVIDER        "zhpe"
+#define EP_TYPE         FI_EP_RDM
+
 #define BACKLOG         (10)
 #ifdef DEBUG
 #define TIMEOUT         (-1)
@@ -48,8 +51,6 @@
 
 /* As global variables for debugger */
 static int              timeout = TIMEOUT;
-
-#define PROVIDER        "zhpe"
 
 struct cli_wire_msg {
     bool                once_mode;
@@ -986,7 +987,7 @@ static int do_server_one(const struct args *oargs, int conn_fd)
 
     args->once_mode = !!cli_msg.once_mode;
 
-    ret = fab_dom_setup(NULL, NULL, true, PROVIDER, NULL, FI_EP_RDM, fab_dom);
+    ret = fab_dom_setup(NULL, NULL, true, PROVIDER, NULL, EP_TYPE, fab_dom);
     if (ret < 0)
         goto done;
     ret = fab_ep_setup(fab_conn, NULL, 0, 0);
@@ -1100,8 +1101,7 @@ static void *do_client_thread(void *vconn)
         ret = sock_send_blob(conn->sock_fd, &cli_msg, sizeof(cli_msg));
         if (ret < 0)
             goto done;
-        ret = fab_dom_setup(args->service, args->node, false, PROVIDER, NULL,
-                            FI_EP_RDM, fab_dom);
+        ret = fab_dom_setup(NULL, NULL, true, PROVIDER, NULL, EP_TYPE, fab_dom);
         if (ret < 0)
             goto done;
     }

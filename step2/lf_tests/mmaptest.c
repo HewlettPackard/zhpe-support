@@ -40,6 +40,9 @@
 
 #include <rdma/fi_ext_zhpe.h>
 
+#define PROVIDER        "zhpe"
+#define EP_TYPE         FI_EP_RDM
+
 #define BACKLOG         (10)
 #ifdef DEBUG
 #define TIMEOUT         (-1)
@@ -57,11 +60,6 @@ static int              timeout = TIMEOUT;
 struct cli_wire_msg {
     uint64_t            mmap_len;
     bool                once_mode;
-    uint8_t             ep_type;
-};
-
-struct svr_wire_msg {
-    uint16_t            port;
 };
 
 struct mem_wire_msg {
@@ -69,13 +67,10 @@ struct mem_wire_msg {
 };
 
 struct args {
-    const char          *provider;
-    const char          *domain;
     const char          *node;
     const char          *service;
     uint64_t            mmap_len;
     bool                once_mode;
-    uint8_t             ep_type;
 };
 
 struct stuff {
@@ -353,11 +348,7 @@ static int do_server_one(const struct args *oargs, int conn_fd)
     struct fab_dom      *fab_dom = &conn.fab_dom;
     struct fab_conn     *fab_conn = &conn.fab_conn;
     struct fab_conn     *fab_listener = &conn.fab_listener;
-    union sockaddr_in46 addr;
-    size_t              addr_len;
     struct cli_wire_msg cli_msg;
-    struct svr_wire_msg svr_msg;
-    char                *s;
 
     fab_dom_init(fab_dom);
     fab_conn_init(fab_dom, fab_conn);
@@ -367,21 +358,11 @@ static int do_server_one(const struct args *oargs, int conn_fd)
     ret = sock_recv_fixed_blob(conn.sock_fd, &cli_msg, sizeof(cli_msg));
     if (ret < 0)
         goto done;
-    ret = sock_recv_string(conn.sock_fd, &s);
-    if (ret < 0)
-        goto done;
-    args->provider = s;
-    ret = sock_recv_string(conn.sock_fd, &s);
-    if (ret < 0)
-        goto done;
-    args->domain = s;
 
     args->mmap_len = be64toh(cli_msg.mmap_len);
     args->once_mode = !!cli_msg.once_mode;
-    args->ep_type = cli_msg.ep_type;
 
-    ret = fab_dom_setup(NULL, NULL, true, args->provider, args->domain,
-                        args->ep_type, fab_dom);
+    ret = fab_dom_setup(NULL, NULL, true, PROVIDER, NULL, EP_TYPE, fab_dom);
     if (ret < 0)
         goto done;
 
@@ -393,38 +374,12 @@ static int do_server_one(const struct args *oargs, int conn_fd)
         goto done;
     }
 
-    if (args->ep_type == FI_EP_RDM) {
-        ret = fab_ep_setup(fab_conn, NULL, 1, 1);
-        if (ret < 0)
-            goto done;
-        ret = fab_av_xchg(fab_conn, conn.sock_fd, timeout, &conn.dest_av);
-        if (ret < 0)
-            goto done;
-    } else {
-        ret = fab_listener_setup(BACKLOG, fab_listener);
-        if (ret < 0)
-            goto done;
-
-        /* And send our port to the client. */
-        addr_len = sizeof(addr);
-        ret = fi_getname(&fab_listener->pep->fid, &addr, &addr_len);
-        if (ret >= 0 && !sockaddr_valid(&addr, addr_len, true))
-            ret = -EAFNOSUPPORT;
-        if (ret < 0) {
-            print_func_fi_err(__func__, __LINE__, "fi_getname", "", ret);
-            goto done;
-        }
-        svr_msg.port = addr.sin_port;
-        ret = sock_send_blob(conn.sock_fd, &svr_msg, sizeof(svr_msg));
-        if (ret < 0)
-            goto done;
-
-        /* Now let's wait for a connection request at the libfabric level. */
-        ret = fab_listener_wait_and_accept(fab_listener, timeout,
-                                           1, 1, fab_conn);
-        if (ret < 0)
-            goto done;
-    }
+    ret = fab_ep_setup(fab_conn, NULL, 0, 0);
+    if (ret < 0)
+        goto done;
+    ret = fab_av_xchg(fab_conn, conn.sock_fd, timeout, &conn.dest_av);
+    if (ret < 0)
+        goto done;
 
     /* Now let's exchange the memory parameters to the other side. */
     ret = do_mem_setup(&conn);
@@ -438,8 +393,6 @@ static int do_server_one(const struct args *oargs, int conn_fd)
 
  done:
     stuff_free(&conn);
-    free((void *)args->provider);
-    free((void *)args->domain);
 
     if (ret >= 0)
         ret = (cli_msg.once_mode ? 1 : 0);
@@ -513,9 +466,7 @@ static int do_client(const struct args *args)
     struct fab_dom      *fab_dom = &conn.fab_dom;
     struct fab_conn     *fab_conn = &conn.fab_conn;
     struct fab_conn     *fab_listener = &conn.fab_listener;
-    union sockaddr_in46 *sockaddr;
     struct cli_wire_msg cli_msg;
-    struct svr_wire_msg svr_msg;
 
     fab_dom_init(fab_dom);
     fab_conn_init(fab_dom, fab_conn);
@@ -529,20 +480,12 @@ static int do_client(const struct args *args)
     /* Write the ring parameters to the server. */
     cli_msg.mmap_len = htobe64(args->mmap_len);
     cli_msg.once_mode = args->once_mode;
-    cli_msg.ep_type = args->ep_type;
 
     ret = sock_send_blob(conn.sock_fd, &cli_msg, sizeof(cli_msg));
     if (ret < 0)
         goto done;
-    ret = sock_send_string(conn.sock_fd, args->provider);
-    if (ret < 0)
-        goto done;
-    ret = sock_send_string(conn.sock_fd, args->domain);
-    if (ret < 0)
-        goto done;
 
-    ret = fab_dom_setup(args->service, args->node, false,
-                        args->provider, args->domain, args->ep_type, fab_dom);
+    ret = fab_dom_setup(NULL, NULL, true, PROVIDER, NULL, EP_TYPE, fab_dom);
     if (ret < 0)
         goto done;
 
@@ -554,33 +497,12 @@ static int do_client(const struct args *args)
         goto done;
     }
 
-    if (args->ep_type == FI_EP_RDM) {
-        ret = fab_ep_setup(fab_conn, NULL, 0, 0);
-        if (ret < 0)
-            goto done;
-        ret = fab_av_xchg(fab_conn, conn.sock_fd, timeout, &conn.dest_av);
-        if (ret < 0)
-            goto done;
-    } else {
-        /* Read port. */
-        ret = sock_recv_fixed_blob(conn.sock_fd, &svr_msg, sizeof(svr_msg));
-        if (ret < 0)
-            goto done;
-
-        sockaddr = fab_conn_info(fab_conn)->dest_addr;
-        switch (sockaddr->addr4.sin_family) {
-        case AF_INET:
-            sockaddr->addr4.sin_port = svr_msg.port;
-            break;
-        case AF_INET6:
-            sockaddr->addr6.sin6_port = svr_msg.port;
-            break;
-        }
-        /* Connect at the libfabric level. */
-        ret = fab_connect(timeout, 0, 0, fab_conn);
-        if (ret < 0)
-            goto done;
-    }
+    ret = fab_ep_setup(fab_conn, NULL, 0, 0);
+    if (ret < 0)
+        goto done;
+    ret = fab_av_xchg(fab_conn, conn.sock_fd, timeout, &conn.dest_av);
+    if (ret < 0)
+        goto done;
 
     /* Now let's exchange the memory parameters to the other side. */
     ret = do_mem_xchg(&conn, true);
@@ -627,8 +549,6 @@ int main(int argc, char **argv)
 {
     int                 ret = 1;
     struct args         args = {
-        .provider       = "zhpe",
-        .ep_type        = FI_EP_RDM,
     };
     bool                client_opt = false;
     int                 opt;

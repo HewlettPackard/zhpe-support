@@ -141,73 +141,96 @@ int _fab_mrmem_alloc_aligned(const char *callf, uint line,
   mdesc will only get used once.
   Also, we're on a single node.
 */
-struct mrmem_tracker {
-    size_t    cnt;
-    size_t    nbr;
-    size_t    mrmem_cnt;
-    bool    dirtylist[1000];
-    struct  fab_mrmem  * mrmemlist[1000];
+struct mdesc_holder {
+    struct  mdesc_holder * next;
+    struct  mdesc_holder * prev;
+    struct  fab_mrmem * mrmem;
+    struct  fi_zhpe_mmap_desc  * mmap_desc;
+    // also need to track mmap_desc
 };
 
 static struct fab_dom * fab_dom;
 static struct fab_conn * local_fab_conn;
-static struct mrmem_tracker * mrmem_tracker;
 static struct fi_zhpe_ext_ops_v1 * ext_ops;
 static fi_addr_t local_fi_addr;
+
+static struct mdesc_holder * head_mdesc_holder;
+static size_t mdesc_nbr;  // take a number
+static size_t mdesc_cntr; // wait your turn
 
 struct args {
     const char *domain;
 };
 
 /* active addresses will never be reused so we don't need to check length. */
-static int find_and_clear_mrmem (void * addr)
+static int find_and_remove_holder (void * addr)
 {
     int ret = -1;
     size_t mynum;
+    struct mdesc_holder *cur;
 
-    mynum = atm_inc(&mrmem_tracker->nbr);
+    if ( head_mdesc_holder == NULL )
+       return (ret);
 
-    /* ask John if this is terrible */
-    while (mynum < mrmem_tracker->cnt);
+    mynum = atm_inc(&mdesc_nbr);
 
-    int i;
-    struct fab_mrmem ** p;
-    p = mrmem_tracker->mrmemlist;
-    for (i = mrmem_tracker->mrmem_cnt; i > 0 &&  p[i-1]->mem != addr && ! mrmem_tracker->dirtylist[i-1] ; i--);
+    while (mynum < mdesc_cntr);
 
-    if (i >= 0) {
-        i--;
-        mrmem_tracker->dirtylist[i]=false;
-        ret = i;
-    }
+    cur = head_mdesc_holder;
 
-    atm_inc(&mrmem_tracker->cnt);
-    return(ret);
-}
+    while (cur != NULL) {
+        if (cur->mmap_desc->addr == addr) {
+            if (cur->prev != NULL)
+                cur->prev->next = cur->next;
 
-static void mrmem_tracker_teardown()
-{
-    int ret=-1;
-    size_t mynum;
+            if (cur->next != NULL)
+                cur->next->prev = cur->prev;
 
-    mynum = atm_inc(&mrmem_tracker->nbr);
-    while (mynum < mrmem_tracker->cnt);
-
-    for (int i=mrmem_tracker->mrmem_cnt-1; i >= 0; i--) {
-        if ( mrmem_tracker->dirtylist[i] ) {
-            ret = ext_ops->munmap((struct fi_zhpe_mmap_desc *)(mrmem_tracker->mrmemlist[i]->mr->mem_desc));
-            if ( ret != 0 )
-                print_func_err(__func__, __LINE__, "tracker_teardown_munmap", FI_ZHPE_OPS_V1, ret);
-            mrmem_tracker->dirtylist[i] = false;
+            if (head_mdesc_holder == cur)
+                head_mdesc_holder = NULL;
+            ret = ext_ops->munmap((struct fi_zhpe_mmap_desc *)(cur->mmap_desc));
+            free(cur);
+            cur = NULL;
+        } else {
+            cur = cur->next;
         }
     }
 
-    atm_inc(&mrmem_tracker->cnt);
+    atm_inc(&mdesc_cntr);
+    return(ret);
+}
+
+static void mrmem_holder_teardown()
+{
+    size_t mynum;
+    struct mdesc_holder *cur;
+    struct mdesc_holder *holder;
+    int ret;
+
+    if ( head_mdesc_holder == NULL )
+       return;
+
+    mynum = atm_inc(&mdesc_nbr);
+
+    while (mynum < mdesc_cntr);
+
+    cur = head_mdesc_holder;
+
+    while (cur != NULL) {
+        holder = cur;
+        ret = ext_ops->munmap((struct fi_zhpe_mmap_desc *)(cur->mmap_desc));
+        if ( ret != 0 )
+            print_func_err(__func__, __LINE__, "mrmem_holder_teardown", FI_ZHPE_OPS_V1, ret);
+        cur = holder->next;
+        free(holder);
+    }
+
+    atm_inc(&mdesc_cntr);
 }
 
 void libzhpe_mmap_teardown(void)
 {
-    mrmem_tracker_teardown();
+    mrmem_holder_teardown();
     fab_conn_free(local_fab_conn);
 }
 
@@ -220,14 +243,13 @@ int zhpe_mmap_init(void){
     if (ret != 0)
         goto done;
 
+    mdesc_nbr = 0;
+    mdesc_cntr = 0;
+
     fab_dom = calloc(1, sizeof(struct fab_dom));
     local_fab_conn = calloc(1, sizeof(struct fab_conn));
-    mrmem_tracker = calloc(1, sizeof(struct mrmem_tracker));
+    head_mdesc_holder = NULL;
     ext_ops = calloc(1, sizeof(struct fi_zhpe_ext_ops_v1));
-
-    mrmem_tracker->cnt = 0;
-    mrmem_tracker->nbr = 0;
-    mrmem_tracker->mrmem_cnt = 0;
 
     zhpeq_util_init("zhpe_mmap", LOG_INFO, false);
 
@@ -270,14 +292,22 @@ void * zhpe_mmap_alloc(size_t mmap_len)
     struct fab_mrmem * mrmem;
     size_t length;
     struct fid_ep     * local_fi_ep;
+    struct fi_zhpe_mmap_desc * mmap_desc;
+    struct mdesc_holder * holder;
+    size_t mynum;
 
     length = page_up(mmap_len);
     mrmem = calloc(1, sizeof(struct fab_mrmem));
+    mmap_desc = calloc(1, sizeof(struct fi_zhpe_mmap_desc));
+    holder = calloc(1, sizeof(struct mdesc_holder));
+    holder->mrmem = mrmem;
+    holder->mmap_desc = mmap_desc;
+    holder->prev = NULL;
 
-    /* alloc mrmem */
-    ret = fab_mrmem_alloc_aligned(local_fab_conn, mrmem, length, 0, 2*1024*1024UL);
+    /* alloc mrmem -- do not alloc aligned */
+    ret = fab_mrmem_alloc(local_fab_conn, holder->mrmem, length, 0);
     if (ret != 0) {
-        print_func_err(__func__, __LINE__, "fab_mrmem_alloc_aligned",
+        print_func_err(__func__, __LINE__, "fab_mrmem_alloc",
             FI_ZHPE_OPS_V1, ret);
         goto done;
       }
@@ -288,25 +318,30 @@ void * zhpe_mmap_alloc(size_t mmap_len)
 
     ret = ext_ops->mmap(NULL, length, PROT_READ | PROT_WRITE,
                              MAP_SHARED, 0, local_fi_ep, local_fi_addr,
-                             remote_mr_key, FI_ZHPE_MMAP_CACHE_WB, (struct fi_zhpe_mmap_desc **)&mrmem->mr->mem_desc);
+                             remote_mr_key, FI_ZHPE_MMAP_CACHE_WB, &holder->mmap_desc);
     if (ret < 0) {
         print_func_err(__func__, __LINE__, "ext_mmap", FI_ZHPE_OPS_V1, ret);
         goto done;
     }
 
-    size_t mynum;
-    mynum = atm_inc(&mrmem_tracker->nbr);
-    while (mynum < mrmem_tracker->cnt);
+    mynum = atm_inc(&mdesc_nbr);
 
-    uint64_t idx = atm_inc(&mrmem_tracker->mrmem_cnt);
-    mrmem_tracker->mrmemlist[idx]=mrmem;
-    mrmem_tracker->dirtylist[idx]=true;
+    while (mynum < mdesc_cntr);
 
-    atm_inc(&mrmem_tracker->cnt);
-    return mrmem->mr->mem_desc;
+    if ( head_mdesc_holder == NULL ) {
+        holder->next = NULL;
+        head_mdesc_holder = holder;
+    } else {
+        head_mdesc_holder->prev=holder;
+        holder->next = head_mdesc_holder;
+        head_mdesc_holder = holder;
+    }
+
+    atm_inc(&mdesc_cntr);
 
   done:
-    return NULL;
+
+    return holder->mmap_desc->addr;
 }
 
 /* ask John if we need to handle if someone tries to free the same thing twice? */
@@ -314,19 +349,10 @@ int zhpe_mmap_free(void *buf)
 {
     int ret = -1;
 
-    int idx;
 
-    idx = find_and_clear_mrmem (buf);
-    if (idx < 0) {
-        print_func_err(__func__, __LINE__, "find_and_clear_mrmem", FI_ZHPE_OPS_V1, ret);
-        goto done;
-    }
-
-    struct fi_zhpe_mmap_desc * mdesc = (struct fi_zhpe_mmap_desc *) mrmem_tracker->mrmemlist[idx]->mr->mem_desc;
-
-    ret = ext_ops->munmap(mdesc);
-    if (ret != 0) {
-        print_func_err(__func__, __LINE__, "ext_munmap", FI_ZHPE_OPS_V1, ret);
+    ret = find_and_remove_holder (buf);
+    if (ret < 0) {
+        print_func_err(__func__, __LINE__, "zhpe_mmap_free", FI_ZHPE_OPS_V1, ret);
         goto done;
     }
 

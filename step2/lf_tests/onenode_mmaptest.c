@@ -65,13 +65,16 @@ int main(int argc, char **argv)
 
     /* params for mmap */
     uint64_t            mmap_len;
-    uint64_t            length;
-    void                *buf=NULL;
+    size_t            length;
+    void          * buf;
 
     uint16_t *p;
 
-    if (argc != 1)
+    zhpeq_util_init(argv[0], LOG_INFO, false);
+
+    if (argc != 2)
         usage(true);
+
 
     ret = zhpe_mmap_init();
     if (ret < 0) {
@@ -87,14 +90,14 @@ int main(int argc, char **argv)
             usage(false);
     length = page_up(mmap_len);
 
-    ret = zhpe_mmap_alloc(length, buf);
+    buf = zhpe_mmap_alloc(length);
     if (ret < 0) {
         print_func_err(__func__, __LINE__, "zhpe_mmap_alloc", FI_ZHPE_OPS_V1, ret);
         goto done;
     }
 
     printf("Writing to new buf:\n");
-    for (i = 0, p = buf; i < mmap_len; i += sizeof (*p), p++)
+    for (i = 0, p = (uint16_t *) buf; i < mmap_len; i += sizeof (*p), p++)
         *p = (i | 1);
 
 
@@ -108,7 +111,7 @@ int main(int argc, char **argv)
             ret++;
         }
     }
-    print_err("Saw %d errors\n", ret);
+    print_err("Saw %d errors out of %lu\n", ret,i);
     ret = zhpe_mmap_free(buf);
     if (ret < 0) {
         print_func_err(__func__, __LINE__, "zhpe_mmap_free", FI_ZHPE_OPS_V1, ret);

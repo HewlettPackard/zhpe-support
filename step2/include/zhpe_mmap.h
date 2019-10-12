@@ -48,7 +48,7 @@ _EXTERN_C_BEG
 int zhpe_mmap_init(void);
 int zhpe_mmap_finalize(void);
 
-int zhpe_mmap_alloc(uint64_t length, void *buf);
+void * zhpe_mmap_alloc(size_t length);
 int zhpe_mmap_free(void *buf);
 
 _EXTERN_C_END

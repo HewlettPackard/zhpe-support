@@ -205,10 +205,11 @@ int main(int argc, char **argv)
 
     struct fi_zhpe_mmap_desc * mdesc;
 
+    zhpeq_util_init(argv[0], LOG_INFO, false);
+
     if (argc == 1)
         usage(true);
 
-    zhpeq_util_init(argv[0], LOG_INFO, false);
 
     /* set up fab_dom */
     fab_dom_init(&fab_dom);

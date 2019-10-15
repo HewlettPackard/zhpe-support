@@ -151,7 +151,7 @@ struct mdesc_holder {
 
 static struct fab_conn * local_fab_conn;
 static struct fi_zhpe_ext_ops_v1 * ext_ops;
-static fi_addr_t local_fi_addr;
+static fi_addr_t * local_fi_addr;
 
 static struct mdesc_holder * head_mdesc_holder;
 static size_t mdesc_nbr;  // take a number
@@ -169,6 +169,7 @@ static int holder_free( struct mdesc_holder * cur)
     if (ret < 0)
         print_func_err(__func__, __LINE__, "holder_free", "munmap", ret);
     cur->mmap_desc = NULL;
+
     fab_mrmem_free(cur->mrmem);
     free(cur);
     return ret;
@@ -194,14 +195,15 @@ static int find_and_remove_holder (void * addr)
         if (cur->mmap_desc->addr == addr) {
             ret = 0;
 
-            if (cur->prev != NULL)
-                cur->prev->next = cur->next;
-
-            if (cur->next != NULL)
-                cur->next->prev = cur->prev;
-
-            if (head_mdesc_holder == cur)
+            if ((cur->prev == NULL) && (cur->next == NULL))
                 head_mdesc_holder = NULL;
+            else if (head_mdesc_holder == cur) {
+                     head_mdesc_holder = cur->next;
+                     cur->next->prev = NULL;
+                 } else {
+                     cur->prev->next = cur->next;
+                     cur->next->prev = cur->prev;
+                 }
             holder_free(cur);
             cur = NULL;
         } else {
@@ -277,8 +279,9 @@ int zhpe_mmap_init(void){
     if (ret != 0)
         goto done;
 
+    local_fi_addr = calloc(1, sizeof(fi_addr_t));
     ret = av_init(__func__, __LINE__, local_fab_conn,
-                 10000, &local_fi_addr);
+                 10000, local_fi_addr);
     if (ret != 0) {
         print_func_err(__func__, __LINE__, "av_init", "local_fi_addr", ret);
         goto done;
@@ -329,7 +332,7 @@ void * zhpe_mmap_alloc(size_t mmap_len)
     local_fi_ep = local_fab_conn->ep;
 
     ret = ext_ops->mmap(NULL, length, PROT_READ | PROT_WRITE,
-                             MAP_SHARED, 0, local_fi_ep, local_fi_addr,
+                             MAP_SHARED, 0, local_fi_ep, * local_fi_addr,
                              remote_mr_key, FI_ZHPE_MMAP_CACHE_WB, &holder->mmap_desc);
     if (ret < 0) {
         print_func_err(__func__, __LINE__, "ext_mmap", FI_ZHPE_OPS_V1, ret);

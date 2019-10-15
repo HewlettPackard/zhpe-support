@@ -149,7 +149,6 @@ struct mdesc_holder {
     // also need to track mmap_desc
 };
 
-static struct fab_dom * fab_dom;
 static struct fab_conn * local_fab_conn;
 static struct fi_zhpe_ext_ops_v1 * ext_ops;
 static fi_addr_t local_fi_addr;
@@ -161,6 +160,19 @@ static size_t mdesc_cntr; // wait your turn
 struct args {
     const char *domain;
 };
+
+/* lock must be held to get here */
+static int holder_free( struct mdesc_holder * cur)
+{
+    int ret;
+    ret = ext_ops->munmap((struct fi_zhpe_mmap_desc *)(cur->mmap_desc));
+    if (ret < 0)
+        print_func_err(__func__, __LINE__, "holder_free", "munmap", ret);
+    cur->mmap_desc = NULL;
+    fab_mrmem_free(cur->mrmem);
+    free(cur);
+    return ret;
+}
 
 /* active addresses will never be reused so we don't need to check length. */
 static int find_and_remove_holder (void * addr)
@@ -180,6 +192,8 @@ static int find_and_remove_holder (void * addr)
 
     while (cur != NULL) {
         if (cur->mmap_desc->addr == addr) {
+            ret = 0;
+
             if (cur->prev != NULL)
                 cur->prev->next = cur->next;
 
@@ -188,8 +202,7 @@ static int find_and_remove_holder (void * addr)
 
             if (head_mdesc_holder == cur)
                 head_mdesc_holder = NULL;
-            ret = ext_ops->munmap((struct fi_zhpe_mmap_desc *)(cur->mmap_desc));
-            free(cur);
+            holder_free(cur);
             cur = NULL;
         } else {
             cur = cur->next;
@@ -205,7 +218,6 @@ static void mrmem_holder_teardown()
     size_t mynum;
     struct mdesc_holder *cur;
     struct mdesc_holder *holder;
-    int ret;
 
     if ( head_mdesc_holder == NULL )
        return;
@@ -218,11 +230,8 @@ static void mrmem_holder_teardown()
 
     while (cur != NULL) {
         holder = cur;
-        ret = ext_ops->munmap((struct fi_zhpe_mmap_desc *)(cur->mmap_desc));
-        if ( ret != 0 )
-            print_func_err(__func__, __LINE__, "mrmem_holder_teardown", FI_ZHPE_OPS_V1, ret);
         cur = holder->next;
-        free(holder);
+        holder_free(holder);
     }
 
     atm_inc(&mdesc_cntr);
@@ -230,8 +239,10 @@ static void mrmem_holder_teardown()
 
 void libzhpe_mmap_teardown(void)
 {
+    struct fab_dom * fab_dom = local_fab_conn->dom;
     mrmem_holder_teardown();
     fab_conn_free(local_fab_conn);
+    fab_dom_free(fab_dom);
 }
 
 int zhpe_mmap_init(void){
@@ -246,6 +257,7 @@ int zhpe_mmap_init(void){
     mdesc_nbr = 0;
     mdesc_cntr = 0;
 
+    struct fab_dom * fab_dom;
     fab_dom = calloc(1, sizeof(struct fab_dom));
     local_fab_conn = calloc(1, sizeof(struct fab_conn));
     head_mdesc_holder = NULL;

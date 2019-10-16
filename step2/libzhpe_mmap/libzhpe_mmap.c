@@ -154,6 +154,7 @@ static struct fi_zhpe_ext_ops_v1 * ext_ops;
 static fi_addr_t * local_fi_addr;
 
 static struct mdesc_holder * head_mdesc_holder;
+// john says use mutex
 static size_t mdesc_nbr;  // take a number
 static size_t mdesc_cntr; // wait your turn
 
@@ -185,6 +186,7 @@ static int find_and_remove_holder (void * addr)
     if ( head_mdesc_holder == NULL )
        return (ret);
 
+// john says use pthread mutex instead
     mynum = atm_inc(&mdesc_nbr);
 
     while (mynum < mdesc_cntr);
@@ -247,6 +249,7 @@ void libzhpe_mmap_teardown(void)
     fab_dom_free(fab_dom);
 }
 
+// john says don't make michael call init 
 int zhpe_mmap_init(void){
     int                 ret = 1;
 
@@ -268,6 +271,7 @@ int zhpe_mmap_init(void){
     zhpeq_util_init("zhpe_mmap", LOG_INFO, false);
 
     fab_dom_init(fab_dom);
+// john says pass just NULL for args.domain 
     ret = fab_dom_setup(NULL, NULL, true, "zhpe", args.domain,
                         FI_EP_RDM, fab_dom);
     if (ret != 0)
@@ -303,6 +307,7 @@ done:
 /* hand back address. When given the address later at free, unmap, etc. */
 void * zhpe_mmap_alloc(size_t mmap_len)
 {
+ // John says: check if initialized, if not, do initialization (with mutex).
     int ret = 1;
     struct fab_mrmem * mrmem;
     size_t length;
@@ -331,6 +336,10 @@ void * zhpe_mmap_alloc(size_t mmap_len)
 
     local_fi_ep = local_fab_conn->ep;
 
+ // John says: use mutex instead
+    mynum = atm_inc(&mdesc_nbr);
+    while (mynum < mdesc_cntr);
+
     ret = ext_ops->mmap(NULL, length, PROT_READ | PROT_WRITE,
                              MAP_SHARED, 0, local_fi_ep, * local_fi_addr,
                              remote_mr_key, FI_ZHPE_MMAP_CACHE_WB, &holder->mmap_desc);
@@ -339,9 +348,6 @@ void * zhpe_mmap_alloc(size_t mmap_len)
         goto done;
     }
 
-    mynum = atm_inc(&mdesc_nbr);
-
-    while (mynum < mdesc_cntr);
 
     if ( head_mdesc_holder == NULL ) {
         holder->next = NULL;

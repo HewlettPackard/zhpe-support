@@ -69,7 +69,6 @@ static int av_init(const char *callf, uint line, struct fab_conn *conn,
     struct av_init_retry_args retry_args;
     size_t addr_len = sizeof(ep_addr);
 
-    /* FIXME: Is there something wrong with this? */
     if (timeout == 0)
         retry_args.timeout_ns = 0;
     else if (timeout < 0)
@@ -102,39 +101,6 @@ static int av_init(const char *callf, uint line, struct fab_conn *conn,
     return ret;
 }
 
-
-#define fab_mrmem_alloc_aligned(...) \
-    _fab_mrmem_alloc_aligned(__func__, __LINE__, __VA_ARGS__)
-
-int _fab_mrmem_alloc_aligned(const char *callf, uint line,
-                     struct fab_conn *conn, struct fab_mrmem *mrmem,
-                     size_t len, uint64_t access, size_t alignment)
-{
-    int                 ret = 0;
-
-    ret = -posix_memalign(&mrmem->mem, alignment, len);
-    if (ret) {
-        mrmem->mem = NULL;
-        print_func_errn(callf, line, "posix_memalign",
-                        len, true, ret);
-        goto done;
-    }
-    memset(mrmem->mem, 0, len);
-    mrmem->len = len;
-
-    if (!access)
-        access = (FI_READ | FI_WRITE | FI_REMOTE_READ | FI_REMOTE_WRITE);
-    ret = fi_mr_reg(conn->dom->domain, mrmem->mem, len, access, 0, 0, 0,
-                    &mrmem->mr, NULL);
-    if (ret < 0) {
-        print_func_fi_err(callf, line, "fi_mr_reg", "", ret);
-        goto done;
-    }
-
- done:
-    return ret;
-}
-
 /*
   free needs to find mdesc to give to munmap
   Because libzhpe_mmap only exposes an alloc
@@ -142,31 +108,28 @@ int _fab_mrmem_alloc_aligned(const char *callf, uint line,
   Also, we're on a single node.
 */
 struct mdesc_holder {
-    struct  mdesc_holder * next;
-    struct  mdesc_holder * prev;
-    struct  fab_mrmem * mrmem;
-    struct  fi_zhpe_mmap_desc  * mmap_desc;
-    // also need to track mmap_desc
+    struct  mdesc_holder *next;
+    struct  mdesc_holder *prev;
+    struct  fab_mrmem *mrmem;
+    struct  fi_zhpe_mmap_desc *mmap_desc;
 };
 
-static struct fab_conn * local_fab_conn;
-static struct fi_zhpe_ext_ops_v1 * ext_ops;
-static fi_addr_t * local_fi_addr;
+struct z_mmap_metadata {
+    struct fab_conn *local_fab_conn;
+    struct fi_zhpe_ext_ops_v1 *ext_ops;
 
-static struct mdesc_holder * head_mdesc_holder;
-// john says use mutex
-static size_t mdesc_nbr;  // take a number
-static size_t mdesc_cntr; // wait your turn
-
-struct args {
-    const char *domain;
+    fi_addr_t my_local_fi_addr;
+    struct mdesc_holder *head_mdesc_holder;
 };
+
+static pthread_mutex_t zmm_mutex = PTHREAD_MUTEX_INITIALIZER;
+static struct z_mmap_metadata *zm_stuff;
 
 /* lock must be held to get here */
-static int holder_free( struct mdesc_holder * cur)
+static int holder_free( struct mdesc_holder *cur)
 {
     int ret;
-    ret = ext_ops->munmap((struct fi_zhpe_mmap_desc *)(cur->mmap_desc));
+    ret = zm_stuff->ext_ops->munmap((struct fi_zhpe_mmap_desc *)(cur->mmap_desc));
     if (ret < 0)
         print_func_err(__func__, __LINE__, "holder_free", "munmap", ret);
     cur->mmap_desc = NULL;
@@ -177,30 +140,26 @@ static int holder_free( struct mdesc_holder * cur)
 }
 
 /* active addresses will never be reused so we don't need to check length. */
-static int find_and_remove_holder (void * addr)
+static int find_and_remove_holder (void *addr)
 {
     int ret = -1;
-    size_t mynum;
     struct mdesc_holder *cur;
 
-    if ( head_mdesc_holder == NULL )
+    if (zm_stuff->head_mdesc_holder == NULL )
        return (ret);
 
-// john says use pthread mutex instead
-    mynum = atm_inc(&mdesc_nbr);
+    mutex_lock(&zmm_mutex);
 
-    while (mynum < mdesc_cntr);
-
-    cur = head_mdesc_holder;
+    cur = zm_stuff->head_mdesc_holder;
 
     while (cur != NULL) {
         if (cur->mmap_desc->addr == addr) {
             ret = 0;
 
             if ((cur->prev == NULL) && (cur->next == NULL))
-                head_mdesc_holder = NULL;
-            else if (head_mdesc_holder == cur) {
-                     head_mdesc_holder = cur->next;
+                zm_stuff->head_mdesc_holder = NULL;
+            else if (zm_stuff->head_mdesc_holder == cur) {
+                     zm_stuff->head_mdesc_holder = cur->next;
                      cur->next->prev = NULL;
                  } else {
                      cur->prev->next = cur->next;
@@ -213,79 +172,65 @@ static int find_and_remove_holder (void * addr)
         }
     }
 
-    atm_inc(&mdesc_cntr);
+    mutex_unlock(&zmm_mutex);
     return(ret);
 }
 
-static void mrmem_holder_teardown()
+/* lock must be held to get here */
+void libzhpe_mmap_teardown()
 {
-    size_t mynum;
     struct mdesc_holder *cur;
     struct mdesc_holder *holder;
 
-    if ( head_mdesc_holder == NULL )
-       return;
-
-    mynum = atm_inc(&mdesc_nbr);
-
-    while (mynum < mdesc_cntr);
-
-    cur = head_mdesc_holder;
-
+    cur = zm_stuff->head_mdesc_holder;
     while (cur != NULL) {
         holder = cur;
         cur = holder->next;
         holder_free(holder);
     }
 
-    atm_inc(&mdesc_cntr);
-}
-
-void libzhpe_mmap_teardown(void)
-{
-    struct fab_dom * fab_dom = local_fab_conn->dom;
-    mrmem_holder_teardown();
-    fab_conn_free(local_fab_conn);
+    struct fab_dom *fab_dom = zm_stuff->local_fab_conn->dom;
+    fab_conn_free(zm_stuff->local_fab_conn);
     fab_dom_free(fab_dom);
 }
 
-// john says don't make michael call init 
-int zhpe_mmap_init(void){
-    int                 ret = 1;
+struct args {
+    const char *domain;
+}; 
 
+/* lock must be held to get here */
+static int libzhpe_mmap_init(){
+    int ret = 1;
     struct args    args = { };
 
     ret = atexit(libzhpe_mmap_teardown);
     if (ret != 0)
         goto done;
 
-    mdesc_nbr = 0;
-    mdesc_cntr = 0;
+    zm_stuff = calloc(1, sizeof(struct z_mmap_metadata));
 
-    struct fab_dom * fab_dom;
-    fab_dom = calloc(1, sizeof(struct fab_dom));
-    local_fab_conn = calloc(1, sizeof(struct fab_conn));
-    head_mdesc_holder = NULL;
-    ext_ops = calloc(1, sizeof(struct fi_zhpe_ext_ops_v1));
+    struct fab_dom *fab_dom = calloc(1, sizeof(struct fab_dom));
+    zm_stuff->local_fab_conn = calloc(1, sizeof(struct fab_conn));
+    zm_stuff->head_mdesc_holder = NULL;
+    zm_stuff->ext_ops = calloc(1, sizeof(struct fi_zhpe_ext_ops_v1));
 
     zhpeq_util_init("zhpe_mmap", LOG_INFO, false);
 
     fab_dom_init(fab_dom);
-// john says pass just NULL for args.domain 
+
     ret = fab_dom_setup(NULL, NULL, true, "zhpe", args.domain,
                         FI_EP_RDM, fab_dom);
     if (ret != 0)
         goto done;
 
-    fab_conn_init(fab_dom, local_fab_conn);
+    fab_conn_init(fab_dom, zm_stuff->local_fab_conn);
 
-    ret = fab_ep_setup(local_fab_conn, NULL, 1, 1);
+    ret = fab_ep_setup(zm_stuff->local_fab_conn, NULL, 1, 1);
     if (ret != 0)
         goto done;
 
-    local_fi_addr = calloc(1, sizeof(fi_addr_t));
-    ret = av_init(__func__, __LINE__, local_fab_conn,
-                 10000, local_fi_addr);
+    ret = av_init(__func__, __LINE__, zm_stuff->local_fab_conn,
+                 10000, &zm_stuff->my_local_fi_addr);
     if (ret != 0) {
         print_func_err(__func__, __LINE__, "av_init", "local_fi_addr", ret);
         goto done;
@@ -293,30 +238,42 @@ int zhpe_mmap_init(void){
 
    /* Get ext ops and mmap remote region. */
     ret = fi_open_ops(&fab_dom->fabric->fid, FI_ZHPE_OPS_V1, 0,
-                      (void **)&ext_ops, NULL);
+                      (void **)&zm_stuff->ext_ops, NULL);
     if (ret < 0) {
         print_func_err(__func__, __LINE__, "fi_open_ops", FI_ZHPE_OPS_V1, ret);
         goto done;
     }
-
 
 done:
     return ret;
 }
 
 /* hand back address. When given the address later at free, unmap, etc. */
-void * zhpe_mmap_alloc(size_t mmap_len)
+void *zhpe_mmap_alloc(size_t mmap_len)
 {
- // John says: check if initialized, if not, do initialization (with mutex).
-    int ret = 1;
-    struct fab_mrmem * mrmem;
-    size_t length;
-    struct fid_ep     * local_fi_ep;
-    struct fi_zhpe_mmap_desc * mmap_desc;
-    struct mdesc_holder * holder;
-    size_t mynum;
+    int ret = -1;
 
-    length = page_up(mmap_len);
+    mutex_lock(&zmm_mutex);
+    if (zm_stuff == NULL) {
+        ret = libzhpe_mmap_init();
+        if (ret < 0) {
+            print_func_err(__func__, __LINE__, "zhpe_mmap_init", FI_ZHPE_OPS_V1, ret);
+            goto done;
+        }
+    }
+    mutex_unlock(&zmm_mutex);
+
+
+    struct fab_mrmem *mrmem;
+    size_t length;
+    struct fid_ep    *local_fi_ep;
+    struct fi_zhpe_mmap_desc *mmap_desc;
+    struct mdesc_holder *holder;
+
+    if (mmap_len == 0)
+        length = page_up(1);
+    else 
+        length = page_up(mmap_len);
     mrmem = calloc(1, sizeof(struct fab_mrmem));
     mmap_desc = calloc(1, sizeof(struct fi_zhpe_mmap_desc));
     holder = calloc(1, sizeof(struct mdesc_holder));
@@ -324,8 +281,9 @@ void * zhpe_mmap_alloc(size_t mmap_len)
     holder->mmap_desc = mmap_desc;
     holder->prev = NULL;
 
+    mutex_lock(&zmm_mutex);
     /* alloc mrmem -- do not alloc aligned */
-    ret = fab_mrmem_alloc(local_fab_conn, holder->mrmem, length, 0);
+    ret = fab_mrmem_alloc(zm_stuff->local_fab_conn, holder->mrmem, length, 0);
     if (ret != 0) {
         print_func_err(__func__, __LINE__, "fab_mrmem_alloc",
             FI_ZHPE_OPS_V1, ret);
@@ -334,46 +292,50 @@ void * zhpe_mmap_alloc(size_t mmap_len)
 
     uint64_t remote_mr_key = mrmem->mr->key;
 
-    local_fi_ep = local_fab_conn->ep;
+    local_fi_ep = zm_stuff->local_fab_conn->ep;
 
- // John says: use mutex instead
-    mynum = atm_inc(&mdesc_nbr);
-    while (mynum < mdesc_cntr);
-
-    ret = ext_ops->mmap(NULL, length, PROT_READ | PROT_WRITE,
-                             MAP_SHARED, 0, local_fi_ep, * local_fi_addr,
+    ret = zm_stuff->ext_ops->mmap(NULL, length, PROT_READ | PROT_WRITE,
+                             MAP_SHARED, 0, local_fi_ep, zm_stuff->my_local_fi_addr,
                              remote_mr_key, FI_ZHPE_MMAP_CACHE_WB, &holder->mmap_desc);
+    mutex_unlock(&zmm_mutex);
+
     if (ret < 0) {
         print_func_err(__func__, __LINE__, "ext_mmap", FI_ZHPE_OPS_V1, ret);
         goto done;
     }
 
-
-    if ( head_mdesc_holder == NULL ) {
+    mutex_lock(&zmm_mutex);
+    if ( zm_stuff->head_mdesc_holder == NULL ) {
         holder->next = NULL;
-        head_mdesc_holder = holder;
+        zm_stuff->head_mdesc_holder = holder;
     } else {
-        head_mdesc_holder->prev=holder;
-        holder->next = head_mdesc_holder;
-        head_mdesc_holder = holder;
+        zm_stuff->head_mdesc_holder->prev=holder;
+        holder->next = zm_stuff->head_mdesc_holder;
+        zm_stuff->head_mdesc_holder = holder;
     }
-
-    atm_inc(&mdesc_cntr);
+    mutex_unlock(&zmm_mutex);
 
   done:
-
     return holder->mmap_desc->addr;
 }
 
-/* ask John if we need to handle if someone tries to free the same thing twice? */
-int zhpe_mmap_free(void *buf)
+int zhpe_munmap_free(void *buf)
 {
     int ret = -1;
 
+    mutex_lock(&zmm_mutex);
+    if (zm_stuff == NULL) {
+        ret = libzhpe_mmap_init();
+        if (ret < 0) {
+            print_func_err(__func__, __LINE__, "zhpe_munmap_mmap_init", FI_ZHPE_OPS_V1, ret);
+            goto done;
+        }
+    }
+    mutex_unlock(&zmm_mutex);
 
     ret = find_and_remove_holder (buf);
     if (ret < 0) {
-        print_func_err(__func__, __LINE__, "zhpe_mmap_free", FI_ZHPE_OPS_V1, ret);
+        print_func_err(__func__, __LINE__, "find_and_remove_holder", FI_ZHPE_OPS_V1, ret);
         goto done;
     }
 

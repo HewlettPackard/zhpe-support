@@ -41,7 +41,6 @@
 #define _GNU_SOURCE
 
 #include <zhpe_mmap.h>
-#include <zhpeq_util_fab.h>
 
 static void usage(bool help) __attribute__ ((__noreturn__));
 
@@ -63,57 +62,34 @@ int testit(size_t length)
 {
     size_t    i;
     int       ret = -1;
-    void    * buf1;
-    void    * buf2;
+    void     *buf1;
     uint16_t *p;
-    size_t length2;
 
-    length2 = page_up(length/2);
 
-    buf1 = zhpe_mmap_alloc(length);
-
-    buf2 = zhpe_mmap_alloc(length2);
-
-    printf("Writing to first new buf:\n");
-    for (i = 0, p = (uint16_t *) buf1; i < length; i += sizeof (*p), p++)
-        *p = (i | 1);
-
-    printf("Writing to second new buf:\n");
-    for (i = 0, p = (uint16_t *) buf2; i < length2; i += sizeof (*p), p++)
-        *p = (i | 1);
-
-    printf("Checking contents of second buf:\n");
-    ret=0;
-    for (i = 0, p = buf2; i < length2;
-         i += sizeof(*p), p++) {
-        if (*p != (typeof(*p))(i | 1)) {
-            if (!ret)
-                print_err("first error: off 0x%08lx saw 0x%04x\n", i, *p);
-            ret++;
+    if (length > 0)
+    {
+        buf1 = zhpe_mmap_alloc(length);
+        printf("Writing to buf:\n");
+        for (i = 0, p = (uint16_t *) buf1; i < length; i += sizeof (*p), p++)
+            *p = (i | 1);
+    
+        printf("Checking contents of buf:\n");
+        ret=0;
+        for (i = 0, p = buf1; i < length;
+             i += sizeof(*p), p++) {
+            if (*p != (typeof(*p))(i | 1)) {
+                if (!ret)
+                    print_err("first error: off 0x%08lx saw 0x%04x\n", i, *p);
+                ret++;
+            }
         }
+        print_err("Saw %d errors out of %lu\n", ret,i);
     }
-    print_err("Saw %d errors out of %lu\n", ret,i);
-    ret = zhpe_mmap_free(buf2);
-    if (ret < 0) {
-        print_func_err(__func__, __LINE__, "zhpe_mmap_free", FI_ZHPE_OPS_V1, ret);
-    }
+    else buf1 = zhpe_mmap_alloc(1);
 
-    printf("Checking contents of first buf:\n");
-    ret=0;
-    for (i = 0, p = buf1; i < length;
-         i += sizeof(*p), p++) {
-        if (*p != (typeof(*p))(i | 1)) {
-            if (!ret)
-                print_err("first error: off 0x%08lx saw 0x%04x\n", i, *p);
-            ret++;
-        }
-    }
-    print_err("Saw %d errors out of %lu\n", ret,i);
-    ret = zhpe_mmap_free(buf1);
-    if (ret < 0) {
-        print_func_err(__func__, __LINE__, "zhpe_mmap_free", FI_ZHPE_OPS_V1, ret);
-    }
-
+    ret = zhpe_munmap_free(buf1);
+    if (ret < 0)
+        print_func_err(__func__, __LINE__, "zhpe_munmap_free", FI_ZHPE_OPS_V1, ret);
     return ret;
 }
 
@@ -121,30 +97,22 @@ int main(int argc, char **argv)
 {
     int             ret = 1;
     uint64_t        mmap_len;
-    size_t          length;
     int             iterations=4;
 
     if (argc < 2)
         usage(true);
 
-    ret = zhpe_mmap_init();
-    if (ret < 0) {
-        print_func_err(__func__, __LINE__, "zhpe_mmap_init", FI_ZHPE_OPS_V1, ret);
-        goto done;
-    }
-
     /* set length */
-    if (parse_kb_uint64_t(__func__, __LINE__, "mmap_len",
+    mmap_len=atoi(argv[1]);
+    if ((mmap_len >= 2) && (parse_kb_uint64_t(__func__, __LINE__, "mmap_len",
         argv[1], &mmap_len, 0,
         sizeof(uint16_t), SIZE_MAX,
-        PARSE_KB | PARSE_KIB))
+        PARSE_KB | PARSE_KIB)))
             usage(false);
-    length = page_up(mmap_len);
-
 
     for (int i=0; i< iterations; i++)
     {
-        ret = testit(length);
+        ret = testit(mmap_len);
         if (ret < 0) {
             printf("Iteration %d: failed\n",i);
             goto done;

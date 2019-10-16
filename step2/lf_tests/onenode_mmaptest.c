@@ -96,7 +96,6 @@ int testit(size_t length)
     ret = zhpe_mmap_free(buf2);
     if (ret < 0) {
         print_func_err(__func__, __LINE__, "zhpe_mmap_free", FI_ZHPE_OPS_V1, ret);
-        goto done;
     }
 
     printf("Checking contents of first buf:\n");
@@ -113,9 +112,8 @@ int testit(size_t length)
     ret = zhpe_mmap_free(buf1);
     if (ret < 0) {
         print_func_err(__func__, __LINE__, "zhpe_mmap_free", FI_ZHPE_OPS_V1, ret);
-        goto done;
     }
-done:
+
     return ret;
 }
 

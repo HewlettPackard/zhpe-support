@@ -149,7 +149,6 @@ static int find_and_remove_holder (void *addr)
        return (ret);
 
     mutex_lock(&zmm_mutex);
-
     cur = zm_stuff->head_mdesc_holder;
 
     while (cur != NULL) {
@@ -182,12 +181,14 @@ void libzhpe_mmap_teardown()
     struct mdesc_holder *cur;
     struct mdesc_holder *holder;
 
+    mutex_lock(&zmm_mutex);
     cur = zm_stuff->head_mdesc_holder;
     while (cur != NULL) {
         holder = cur;
         cur = holder->next;
         holder_free(holder);
     }
+    mutex_unlock(&zmm_mutex);
 
     struct fab_dom *fab_dom = zm_stuff->local_fab_conn->dom;
     fab_conn_free(zm_stuff->local_fab_conn);
@@ -258,7 +259,7 @@ void *zhpe_mmap_alloc(size_t mmap_len)
         ret = libzhpe_mmap_init();
         if (ret < 0) {
             print_func_err(__func__, __LINE__, "zhpe_mmap_init", FI_ZHPE_OPS_V1, ret);
-            goto done;
+            goto err;
         }
     }
     mutex_unlock(&zmm_mutex);
@@ -272,7 +273,7 @@ void *zhpe_mmap_alloc(size_t mmap_len)
 
     if (mmap_len == 0)
         length = page_up(1);
-    else 
+    else
         length = page_up(mmap_len);
     mrmem = calloc(1, sizeof(struct fab_mrmem));
     mmap_desc = calloc(1, sizeof(struct fi_zhpe_mmap_desc));
@@ -287,8 +288,9 @@ void *zhpe_mmap_alloc(size_t mmap_len)
     if (ret != 0) {
         print_func_err(__func__, __LINE__, "fab_mrmem_alloc",
             FI_ZHPE_OPS_V1, ret);
-        goto done;
+        goto err;
       }
+    mutex_unlock(&zmm_mutex);
 
     uint64_t remote_mr_key = mrmem->mr->key;
 
@@ -297,12 +299,11 @@ void *zhpe_mmap_alloc(size_t mmap_len)
     ret = zm_stuff->ext_ops->mmap(NULL, length, PROT_READ | PROT_WRITE,
                              MAP_SHARED, 0, local_fi_ep, zm_stuff->my_local_fi_addr,
                              remote_mr_key, FI_ZHPE_MMAP_CACHE_WB, &holder->mmap_desc);
-    mutex_unlock(&zmm_mutex);
-
     if (ret < 0) {
         print_func_err(__func__, __LINE__, "ext_mmap", FI_ZHPE_OPS_V1, ret);
-        goto done;
+        goto err;
     }
+
 
     mutex_lock(&zmm_mutex);
     if ( zm_stuff->head_mdesc_holder == NULL ) {
@@ -315,8 +316,11 @@ void *zhpe_mmap_alloc(size_t mmap_len)
     }
     mutex_unlock(&zmm_mutex);
 
-  done:
     return holder->mmap_desc->addr;
+
+  err:
+    mutex_unlock(&zmm_mutex);
+    return NULL;
 }
 
 int zhpe_munmap_free(void *buf)
@@ -328,7 +332,7 @@ int zhpe_munmap_free(void *buf)
         ret = libzhpe_mmap_init();
         if (ret < 0) {
             print_func_err(__func__, __LINE__, "zhpe_munmap_mmap_init", FI_ZHPE_OPS_V1, ret);
-            goto done;
+            goto err;
         }
     }
     mutex_unlock(&zmm_mutex);
@@ -336,9 +340,12 @@ int zhpe_munmap_free(void *buf)
     ret = find_and_remove_holder (buf);
     if (ret < 0) {
         print_func_err(__func__, __LINE__, "find_and_remove_holder", FI_ZHPE_OPS_V1, ret);
-        goto done;
+        goto err;
     }
 
-  done:
+    return ret;
+
+  err:
+    mutex_unlock(&zmm_mutex);
     return ret;
 }

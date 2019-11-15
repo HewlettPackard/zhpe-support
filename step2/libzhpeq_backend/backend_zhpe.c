@@ -55,6 +55,14 @@ static uint64_t         big_rsp_zaddr;
 #define BIG_ZMMU_RSP_FLAGS \
     (ZHPEQ_MR_GET_REMOTE | ZHPEQ_MR_PUT_REMOTE | ZHPE_MR_ZMMU_ONLY)
 
+enum zhpe_platform {
+    ZHPE_PLATFORM_CARBON,
+    ZHPE_PLATFORM_SLICE,
+    ZHPE_PLATFORM_ASIC,
+};
+
+static int              zhpe_platform;
+
 struct dev_uuid_tree_entry {
     uuid_t              uuid;
     int32_t             use_count;
@@ -93,13 +101,13 @@ static int __driver_cmd(union zhpe_op *op, size_t req_len, size_t rsp_len,
     op->hdr.index = 0;
 
     res = write(dev_fd, op, req_len);
-    ret = check_func_io(__func__, __LINE__, "write", DEV_NAME,
+    ret = check_func_io(__func__, __LINE__, "write", DEV_PATH,
                         req_len, res, 0);
     if (ret < 0)
         goto done;
 
     res = read(dev_fd, op, rsp_len);
-    ret = check_func_io(__func__, __LINE__, "read", DEV_NAME,
+    ret = check_func_io(__func__, __LINE__, "read", DEV_PATH,
                         rsp_len, res, 0);
     if (ret < 0)
         goto done;
@@ -145,11 +153,13 @@ static int zhpe_lib_init(struct zhpeq_attr *attr)
     union zhpe_op       op;
     union zhpe_req      *req = &op.req;
     union zhpe_rsp      *rsp = &op.rsp;
+    FILE                *file = NULL;
+    char                platform[10];
 
-    dev_fd = open(DEV_NAME, O_RDWR);
+    dev_fd = open(DEV_PATH, O_RDWR);
     if (dev_fd == -1) {
         ret = -errno;
-        print_func_err(__func__, __LINE__, "open", DEV_NAME, ret);
+        print_func_err(__func__, __LINE__, "open", DEV_PATH, ret);
         goto done;
     }
 
@@ -184,8 +194,31 @@ static int zhpe_lib_init(struct zhpeq_attr *attr)
     attr->backend = ZHPEQ_BACKEND_ZHPE;
     attr->z = shared_global->default_attr;
 
+    file = fopen(PLATFORM_PATH, "r");
+    if (!file) {
+        ret = -errno;
+        print_func_err(__func__, __LINE__, "fopen", PLATFORM_PATH, ret);
+        goto done;
+    }
+    if (!fgets(platform, sizeof(platform), file)) {
+        ret = -EIO;
+        print_func_err(__func__, __LINE__, "fgets", PLATFORM_PATH, ret);
+        goto done;
+    }
+    if (!strcmp(platform, "carbon\n"))
+        zhpe_platform = ZHPE_PLATFORM_CARBON;
+    else if (!strcmp(platform, "pfslice\n"))
+       zhpe_platform = ZHPE_PLATFORM_SLICE;
+    else if (!strcmp(platform, "wildcat\n"))
+        zhpe_platform = ZHPE_PLATFORM_ASIC;
+    else {
+        ret = -ENOSYS;
+        goto done;
+    }
     ret = 0;
  done:
+    if (file)
+        fclose(file);
 
     return ret;
 }
@@ -557,7 +590,7 @@ static int zhpe_mr_reg(struct zhpeq_dom *zdom,
         access = ZHPEQ_MR_PUT;
 
     desc->hdr.magic = ZHPE_MAGIC;
-    desc->hdr.version = ZHPEQ_MR_V1;
+    desc->hdr.version = ZHPEQ_MR_V1 | ZHPEQ_MR_VREG;
     desc->hdr.zdom = zdom;
     qkdata->z.vaddr = (uintptr_t)buf;
     qkdata->laddr = (uintptr_t)buf;
@@ -745,19 +778,25 @@ static int zhpe_zmmu_reg(struct zhpeq_key_data *qkdata)
     } else
         ret = do_rmr_import(node->uue->uuid, qkdata->rsp_zaddr, qkdata->z.len,
                             qkdata->z.access, &qkdata->z.zaddr, NULL);
-
  done:
+    if (ret >= 0)
+        desc->hdr.version |= ZHPEQ_MR_VREG;
+
     return ret;
 }
 
 static int zhpe_fam_qkdata(struct zhpeq_dom *zdom, int open_idx,
-                           struct zhpeq_key_data **qkdata_out)
+                           struct zhpeq_key_data **qkdata_out,
+                           size_t *n_qkdata_out)
 {
     int                 ret = -EINVAL;
     struct zdom_data    *bdom = zdom->backend_data;
     struct zhpeq_mr_desc_v1 *desc = NULL;
     struct zhpeq_key_data *qkdata;
     struct zdom_node    *node;
+    size_t              i;
+    uint64_t            start[2];
+    uint64_t            len[2];
 
     if (open_idx < 0 || open_idx >= bdom->node_idx)
         goto done;
@@ -765,28 +804,59 @@ static int zhpe_fam_qkdata(struct zhpeq_dom *zdom, int open_idx,
     if (!node->uue || !node->uue->fam)
         goto done;
 
-    ret = -ENOMEM;
-    desc = malloc(sizeof(*desc));
-    if (!desc)
+    switch (zhpe_platform) {
+
+    case ZHPE_PLATFORM_CARBON:
+        if (*n_qkdata_out < 1)
+            goto done;
+        *n_qkdata_out = 1;
+        start[0] = 0;
+        len[0] = 32 * GiB;
+        break;
+
+    case ZHPE_PLATFORM_SLICE:
+    case ZHPE_PLATFORM_ASIC:
+        if (*n_qkdata_out < 2)
+            goto done;
+        *n_qkdata_out = 2;
+        start[0] = 0;
+        len[0] = 127 * GiB + 16 * MiB;
+        start[1] = len[0];
+        len[1] = 128 * GiB - start[1];
+        break;
+
+    default:
         goto done;
-    qkdata = &desc->qkdata;
+    }
 
-    desc->hdr.magic = ZHPE_MAGIC;
-    desc->hdr.version = ZHPEQ_MR_V1 | ZHPEQ_MR_REMOTE;
-    desc->hdr.zdom = zdom;
-    desc->open_idx = open_idx;
-    qkdata->z.vaddr = 0;
-    qkdata->z.zaddr = 0;
-    qkdata->rsp_zaddr = 0;
-    /* FAM size in GiB in XID portion of sz_queue. */
-    qkdata->z.len = node->sz_queue & ZHPE_SA_XID_MASK;
-    qkdata->z.len *= (1ULL << 30);
-    qkdata->z.access = (ZHPEQ_MR_GET_REMOTE | ZHPEQ_MR_PUT_REMOTE |
-                        ZHPEQ_MR_KEY_ZERO_OFF | ZHPE_MR_INDIVIDUAL);
-    *qkdata_out = qkdata;
+    ret = -ENOMEM;
+    for (i = 0; i < *n_qkdata_out; i++) {
+        desc = malloc(sizeof(*desc));
+        if (!desc)
+            goto done;
+        qkdata = &desc->qkdata;
+
+        desc->hdr.magic = ZHPE_MAGIC;
+        desc->hdr.version = ZHPEQ_MR_V1REMOTE;
+        desc->hdr.zdom = zdom;
+        desc->open_idx = open_idx;
+        qkdata->z.vaddr = start[i];
+        qkdata->z.zaddr = 0;
+        qkdata->rsp_zaddr = start[i];
+        qkdata->z.len = len[i];
+        qkdata->z.access = (ZHPEQ_MR_GET_REMOTE | ZHPEQ_MR_PUT_REMOTE |
+                            ZHPEQ_MR_KEY_ZERO_OFF);
+        qkdata_out[i] = qkdata;
+    }
     ret = 0;
-
  done:
+    if (ret == -ENOMEM) {
+        for (i = 0; i < *n_qkdata_out; i++) {
+            desc = container_of(qkdata_out[i], struct zhpeq_mr_desc_v1, qkdata);
+            free(desc);
+        }
+    }
+
     return ret;
 }
 
@@ -963,7 +1033,7 @@ char *zhpe_qkdata_id_str(const struct zhpeq_key_data *qkdata)
     struct zdom_data    *bdom = desc->hdr.zdom->backend_data;
     char                uuid_str[37];
 
-    if (!(desc->hdr.version & ZHPEQ_MR_REMOTE))
+    if (!(desc->hdr.version & ZHPEQ_MR_VREMOTE))
         goto done;
 
     uuid_unparse_upper(bdom->nodes[desc->open_idx].uue->uuid, uuid_str);

@@ -1198,7 +1198,7 @@ static int lfab_mr_reg(struct zhpeq_dom *zdom,
 
     access |= ZHPE_MR_INDIVIDUAL;
     desc->hdr.magic = ZHPE_MAGIC;
-    desc->hdr.version = ZHPEQ_MR_V1;
+    desc->hdr.version = ZHPEQ_MR_V1 | ZHPEQ_MR_VREG;
     desc->hdr.zdom = zdom;
     qkdata->z.vaddr = (uintptr_t)buf;
     qkdata->z.len = len;
@@ -1268,9 +1268,11 @@ static int lfab_zmmu_reg(struct zhpeq_key_data *qkdata)
     bdom->rkey[old.index].av_idx = desc->open_idx;
     qkdata->z.zaddr = (((uint64_t)old.index << KEY_SHIFT) +
                        TO_ADDR(qkdata->z.vaddr));
-    ret = 0;
+    desc->hdr.version |= ZHPEQ_MR_VREG;
 
+    ret = 0;
  done:
+
     return ret;
 }
 

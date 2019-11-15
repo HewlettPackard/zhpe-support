@@ -211,7 +211,7 @@ int zhpeq_qkdata_import(struct zhpeq_dom *zdom, int open_idx,
                         struct zhpeq_key_data **qkdata_out);
 
 int zhpeq_fam_qkdata(struct zhpeq_dom *zdom, int open_idx,
-                     struct zhpeq_key_data **qkdata_out);
+                     struct zhpeq_key_data **qkdata_out, size_t *n_qkdata);
 
 int zhpeq_zmmu_reg(struct zhpeq_key_data *qkdata);
 

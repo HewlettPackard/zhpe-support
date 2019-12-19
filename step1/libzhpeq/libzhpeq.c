@@ -736,13 +736,13 @@ int zhpeq_qkdata_free(struct zhpeq_key_data *qkdata)
         goto done;
     ret = -EINVAL;
     if (desc->hdr.magic != ZHPE_MAGIC ||
-        (desc->hdr.version & ~ZHPEQ_MR_REMOTE) != ZHPEQ_MR_V1)
+        (desc->hdr.version & ZHPEQ_MR_VMASK) != ZHPEQ_MR_V1)
         goto done;
 #if QKDATA_DUMP
     zhpeq_print_qkdata(__func__, __LINE__, qkdata);
 #endif
-    if (desc->qkdata.z.zaddr) {
-        if (desc->hdr.version & ZHPEQ_MR_REMOTE) {
+    if (desc->hdr.version & ZHPEQ_MR_VREG) {
+        if (desc->hdr.version & ZHPEQ_MR_VREMOTE) {
             zhpe_stats_start(zhpe_stats_subid(ZHPQ, 50));
             ret = b_ops->zmmu_free(qkdata);
             zhpe_stats_stop(zhpe_stats_subid(ZHPQ, 50));
@@ -768,7 +768,7 @@ int zhpeq_zmmu_reg(struct zhpeq_key_data *qkdata)
         container_of(qkdata, struct zhpeq_mr_desc_v1, qkdata);
 
     if (!qkdata || desc->hdr.magic != ZHPE_MAGIC ||
-        desc->hdr.version != (ZHPEQ_MR_V1 | ZHPEQ_MR_REMOTE))
+        desc->hdr.version != ZHPEQ_MR_V1REMOTE)
         goto done;
 
 #if QKDATA_DUMP
@@ -783,30 +783,35 @@ int zhpeq_zmmu_reg(struct zhpeq_key_data *qkdata)
 }
 
 int zhpeq_fam_qkdata(struct zhpeq_dom *zdom, int open_idx,
-                     struct zhpeq_key_data **qkdata_out)
+                     struct zhpeq_key_data **qkdata_out, size_t *n_qkdata_out)
 {
     int                 ret = -EINVAL;
 
     zhpe_stats_start(zhpe_stats_subid(ZHPQ, 20));
 
-    if (!qkdata_out)
+    if (!qkdata_out || !n_qkdata_out || !*n_qkdata_out)
         goto done;
-    *qkdata_out = NULL;
     if (!zdom)
         goto done;
 
     if (b_ops->fam_qkdata)
-        ret = b_ops->fam_qkdata(zdom, open_idx, qkdata_out);
+        ret = b_ops->fam_qkdata(zdom, open_idx, qkdata_out, n_qkdata_out);
     else
         ret = -ENOSYS;
 
 #if QKDATA_DUMP
-    if (ret >= 0)
-        zhpeq_print_qkdata(__func__, __LINE__, *qkdata_out);
+    if (ret >= 0) {
+        size_t          i;
+
+        for (i = 0; i < *n_qkdata_out; i++)
+            zhpeq_print_qkdata(__func__, __LINE__, qkdata_out[i]);
+    }
 #endif
 
  done:
     zhpe_stats_stop(zhpe_stats_subid(ZHPQ, 20));
+    if (ret < 0 && n_qkdata_out)
+        *n_qkdata_out = 0;
 
     return ret;
 }
@@ -822,7 +827,8 @@ int zhpeq_qkdata_export(const struct zhpeq_key_data *qkdata,
 
     if (!qkdata || !blob || !blob_len ||
         *blob_len < sizeof(struct key_data_packed) ||
-        desc->hdr.magic != ZHPE_MAGIC || desc->hdr.version != ZHPEQ_MR_V1)
+        desc->hdr.magic != ZHPE_MAGIC ||
+        desc->hdr.version != (ZHPEQ_MR_V1 | ZHPEQ_MR_VREG))
         goto done;
 
 #if QKDATA_DUMP
@@ -860,7 +866,7 @@ int zhpeq_qkdata_import(struct zhpeq_dom *zdom, int open_idx,
     qkdata = &desc->qkdata;
 
     desc->hdr.magic = ZHPE_MAGIC;
-    desc->hdr.version = ZHPEQ_MR_V1 | ZHPEQ_MR_REMOTE;
+    desc->hdr.version = ZHPEQ_MR_V1REMOTE;
     desc->hdr.zdom = zdom;
     desc->open_idx = open_idx;
     unpack_kdata(pdata, qkdata);
@@ -885,7 +891,7 @@ int zhpeq_mmap(const struct zhpeq_key_data *qkdata,
         *zmdesc = NULL;
     if (!qkdata || !zmdesc || (cache_mode & ~ZHPEQ_MR_REQ_CPU_CACHE) ||
         desc->hdr.magic != ZHPE_MAGIC ||
-        desc->hdr.version != (ZHPEQ_MR_V1 | ZHPEQ_MR_REMOTE) ||
+        (desc->hdr.version & ~ZHPEQ_MR_VREG) != ZHPEQ_MR_V1REMOTE ||
         !length || page_off(offset) ||
         page_off(qkdata->z.vaddr) || page_off(qkdata->z.len) ||
         offset + length > desc->qkdata.z.len || (prot & PROT_EXEC) ||

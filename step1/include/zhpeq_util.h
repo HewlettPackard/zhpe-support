@@ -1124,6 +1124,11 @@ struct zhpeu_thr_wait {
 #define US_PER_SEC      (1000000UL)
 #define NS_PER_SEC      (1000000000UL)
 
+#define KiB             ((size_t)1024)
+#define MiB             (KiB * KiB)
+#define GiB             (KiB * MiB)
+#define TiB             (KiB * GiB)
+
 enum {
     ZHPEU_THR_WAIT_IDLE,
     ZHPEU_THR_WAIT_SLEEP,

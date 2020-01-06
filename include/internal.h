@@ -98,7 +98,8 @@ struct backend_ops {
 
 extern uuid_t           zhpeq_uuid;
 
-void zhpeq_register_backend(enum zhpe_backend backend, struct backend_ops *ops);
+void zhpeq_register_backend(enum zhpeq_backend backend,
+                            struct backend_ops *ops);
 void zhpeq_backend_libfabric_init(int fd);
 void zhpeq_backend_zhpe_init(int fd);
 
@@ -146,7 +147,7 @@ struct zhpeq {
 
 static inline uint8_t cq_valid(uint32_t idx, uint32_t qmask)
 {
-    return ((idx & (qmask + 1)) ? 0 : ZHPE_HW_CQ_VALID);
+    return ((idx & (qmask + 1)) ? 0 : ZHPE_CMP_ENT_VALID_MASK);
 }
 
 static inline uint64_t ioread64(const volatile void *addr)

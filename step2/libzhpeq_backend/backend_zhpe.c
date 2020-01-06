@@ -168,6 +168,14 @@ static int zhpe_lib_init(struct zhpeq_attr *attr)
     if (ret < 0)
         goto done;
 
+    attr->backend = ZHPEQ_BACKEND_ZHPE;
+    attr->z = rsp->init.attr;
+
+    if (!expected_saw("rsp->init.magic", ZHPE_MAGIC, rsp->init.magic)) {
+        ret = -EINVAL;
+        goto done;
+    }
+
     shared_global = do_mmap(NULL, rsp->init.global_shared_size, PROT_READ,
                             MAP_SHARED, dev_fd, rsp->init.global_shared_offset,
                             &ret);
@@ -178,21 +186,8 @@ static int zhpe_lib_init(struct zhpeq_attr *attr)
                            &ret);
     if (!shared_local)
         goto done;
-    ret = -EINVAL;
-    if (!expected_saw("global_magic", ZHPE_MAGIC, shared_global->magic))
-        goto done;
-    if (!expected_saw("global_version", ZHPE_GLOBAL_SHARED_VERSION,
-                      shared_global->version))
-        goto done;
-    if (!expected_saw("local_magic", ZHPE_MAGIC, shared_local->magic))
-        goto done;
-    if (!expected_saw("local_version", ZHPE_LOCAL_SHARED_VERSION,
-                      shared_local->version))
-        goto done;
-    memcpy(zhpeq_uuid, rsp->init.uuid, sizeof(zhpeq_uuid));
 
-    attr->backend = ZHPEQ_BACKEND_ZHPE;
-    attr->z = shared_global->default_attr;
+    memcpy(zhpeq_uuid, rsp->init.uuid, sizeof(zhpeq_uuid));
 
     file = fopen(PLATFORM_PATH, "r");
     if (!file) {
@@ -1073,5 +1068,5 @@ void zhpeq_backend_zhpe_init(int fd)
     if (fd == -1)
         return;
 
-    zhpeq_register_backend(ZHPE_BACKEND_ZHPE, &ops);
+    zhpeq_register_backend(ZHPEQ_BACKEND_ZHPE, &ops);
 }

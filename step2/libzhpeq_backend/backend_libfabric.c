@@ -95,7 +95,7 @@ enum engine_state {
 
 /* A results structure with space for atomics operands. */
 union results {
-    char                data[ZHPE_IMM_MAX];
+    char                data[ZHPE_MAX_IMM];
     uint32_t            operands32[2];
     uint64_t            operands64[2];
 };
@@ -743,8 +743,8 @@ static inline void cq_write(void *vcontext, int status)
     conn->tx_completed++;
 
     cqe->entry.index = context->cmp_index;
-    cqe->entry.status = (status < 0 ? ZHPEQ_CQ_STATUS_FABRIC_UNRECOVERABLE :
-                         ZHPEQ_CQ_STATUS_SUCCESS);
+    cqe->entry.status = (status < 0 ? ZHPE_HW_CQ_STATUS_GENZ_RETRIES_EXCEEDED :
+                         ZHPE_HW_CQ_STATUS_SUCCESS);
     if (context->result_len) {
         memcpy(cqe->entry.result.data, context->result->data,
                context->result_len);
@@ -1053,7 +1053,7 @@ static void *lfab_eng_thread(void *veng)
 
 static int lfab_lib_init(struct zhpeq_attr *attr)
 {
-    attr->backend = ZHPE_BACKEND_LIBFABRIC;
+    attr->backend = ZHPEQ_BACKEND_LIBFABRIC;
     attr->z.max_tx_queues = (1U << 10);
     attr->z.max_rx_queues = (1U << 10);
     attr->z.max_tx_qlen   = (1U << 16) - 1;
@@ -1375,5 +1375,5 @@ void zhpeq_backend_libfabric_init(int fd)
     if (fd != -1 || !backend_prov)
         return;
 
-    zhpeq_register_backend(ZHPE_BACKEND_LIBFABRIC, &ops);
+    zhpeq_register_backend(ZHPEQ_BACKEND_LIBFABRIC, &ops);
 }

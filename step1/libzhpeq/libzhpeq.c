@@ -68,7 +68,7 @@ static void __attribute__((constructor)) lib_init(void)
     }
 }
 
-void zhpeq_register_backend(enum zhpe_backend backend, struct backend_ops *ops)
+void zhpeq_register_backend(enum zhpeq_backend backend, struct backend_ops *ops)
 {
     /* For the moment, the zhpe backend will only register if the zhpe device
      * can be opened and the libfabric backend will only register if the zhpe
@@ -965,7 +965,7 @@ ssize_t zhpeq_cq_read(struct zhpeq *zq, struct zhpeq_cq_entry *entries,
 
     for (i = 0, old = atm_load_rlx(&zq->head_tail.head) ; i < n_entries ;) {
         cqe = zq->cq + (old & qmask);
-        if ((atm_load_rlx((uint8_t *)cqe) & ZHPE_HW_CQ_VALID) !=
+        if ((atm_load_rlx((uint8_t *)cqe) & ZHPE_CMP_ENT_VALID_MASK) !=
              cq_valid(old, qmask)) {
             if (i > 0 || !b_ops->cq_poll || polled) {
                 if (i == 0)

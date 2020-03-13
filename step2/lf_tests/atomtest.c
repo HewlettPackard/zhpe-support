@@ -1,4 +1,4 @@
-/* Copyright (C) 2019 Hewlett Packard Enterprise Development LP.
+/* Copyright (C) 2019-2020 Hewlett Packard Enterprise Development LP.
  * All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -59,6 +59,8 @@ struct cli_wire_msg {
 struct mem_wire_msg {
     uint64_t            remote_key;
     uint64_t            remote_addr;
+    uint64_t            bad_key;
+    uint64_t            bad_addr;
 };
 
 struct svr_op_wire_msg {
@@ -97,13 +99,13 @@ struct stuff {
     const struct args   *args;
     struct fab_dom      *fab_dom;
     struct fab_conn     fab_conn;
+    struct fab_mrmem    bad_mrmem;
     fi_addr_t           dest_av;
     union ucontext      *ctx;
     union ucontext      *ctx_free;
     size_t              ctx_avail;
     size_t              ctx_cur;
-    uint64_t            remote_key;
-    uint64_t            remote_addr;
+    struct mem_wire_msg rem;
     size_t              threadidx;
     pthread_t           thread;
     int                 sock_fd;
@@ -186,8 +188,8 @@ static struct context *ctx_next(struct stuff *conn)
         goto done;
     conn->ctx_free = uctx->next;
     conn->ctx_cur--;
- done:
 
+ done:
     return ret;
 }
 
@@ -201,6 +203,7 @@ static void stuff_free(struct stuff *stuff)
     if (!stuff)
         return;
 
+    fab_mrmem_free(&stuff->bad_mrmem);
     fab_conn_free(&stuff->fab_conn);
     fab_dom_free(stuff->fab_dom);
 
@@ -231,6 +234,11 @@ static int do_mem_setup(struct stuff *conn)
         ret = fab_mrmem_alloc(fab_conn, &fab_conn->mrmem, req, 0);
         if (ret < 0)
             goto done;
+        ret = fab_mrmem_alloc(fab_conn, &conn->bad_mrmem, req, FI_READ);
+        if (ret < 0)
+            goto done;
+        memset(fab_conn->mrmem.mem, 0, req);
+        memset(conn->bad_mrmem.mem, 0, req);
     }
     req = sizeof(*conn->ctx) * conn->ctx_avail;
     ret = -posix_memalign((void **)&conn->ctx, page_size, req);
@@ -251,22 +259,26 @@ static int do_mem_xchg(struct stuff *conn)
 {
     int                 ret;
     struct fab_conn     *fab_conn = &conn->fab_conn;
-    struct mem_wire_msg mem_msg;
 
     if (conn->server) {
-        mem_msg.remote_key = htobe64(fi_mr_key(fab_conn->mrmem.mr));
-        mem_msg.remote_addr = htobe64((uintptr_t)fab_conn->mrmem.mem);
+        conn->rem.remote_key = htobe64(fi_mr_key(fab_conn->mrmem.mr));
+        conn->rem.remote_addr = htobe64((uintptr_t)fab_conn->mrmem.mem);
+        conn->rem.bad_key = htobe64(fi_mr_key(conn->bad_mrmem.mr));
+        conn->rem.bad_addr = htobe64((uintptr_t)conn->bad_mrmem.mem);
 
-        ret = sock_send_blob(conn->sock_fd, &mem_msg, sizeof(mem_msg));
+        ret = sock_send_blob(conn->sock_fd, &conn->rem, sizeof(conn->rem));
         if (ret < 0)
             goto done;
     } else {
-        ret = sock_recv_fixed_blob(conn->sock_fd, &mem_msg, sizeof(mem_msg));
+        ret = sock_recv_fixed_blob(conn->sock_fd, &conn->rem,
+                                   sizeof(conn->rem));
         if (ret < 0)
             goto done;
 
-        conn->remote_key = be64toh(mem_msg.remote_key);
-        conn->remote_addr = be64toh(mem_msg.remote_addr);
+        conn->rem.remote_key = be64toh(conn->rem.remote_key);
+        conn->rem.remote_addr = be64toh(conn->rem.remote_addr);
+        conn->rem.bad_key = be64toh(conn->rem.bad_key);
+        conn->rem.bad_addr = be64toh(conn->rem.bad_addr);
     }
 
  done:
@@ -303,6 +315,7 @@ static ssize_t do_progress(struct stuff *conn)
     rc = fab_completions(fab_conn->rx_cq, 0, cq_update, conn);
     ret = update_error(ret, rc);
     ret = update_error(ret, conn->status);
+    conn->status = 0;
 
     return ret;
 }
@@ -419,14 +432,64 @@ static int cli_atomic(struct stuff *conn,
 
     ret = fi_compare_atomic(fab_conn->ep, &ctx->operand, 1, NULL,
                             &ctx->compare, NULL, original, NULL, conn->dest_av,
-                            conn->remote_addr + off, conn->remote_key,
+                            conn->rem.remote_addr + off, conn->rem.remote_key,
                             type, op, ctx);
     if (ret >= 0)
         conn->ops_done++;
     else if (ctx)
         ctx_free(conn, ctx);
- done:
 
+ done:
+    return ret;
+}
+
+static int cli_bad_test(struct stuff *conn, const char *lbl, enum fi_op op)
+{
+    int                 ret = 0;
+    struct fab_conn     *fab_conn = &conn->fab_conn;
+    uint64_t            result;
+    struct context      *ctx;
+
+    /*
+     * The API requires us to guarantee the compare and operand are
+     * stable for the duration of the call and that they be pointers to the
+     * proper types.
+     */
+    ctx = ctx_next(conn);
+    if (!ctx) {
+        ret = -FI_EAGAIN;
+        goto done;
+    }
+    ctx->operand.u64 = 1;
+    ret = fi_fetch_atomic(fab_conn->ep, &ctx->operand, 1, NULL,
+                          &result, NULL, conn->dest_av,
+                          conn->rem.bad_addr, conn->rem.bad_key,
+                          FI_UINT64, op, ctx);
+    if (ret) {
+        ctx_free(conn, ctx);
+        if (ret > 0) {
+            print_err("%s,%u:%s fi_fetch_atomic() returned %d > 0\n",
+                      __func__, __LINE__, lbl, ret);
+            ret = -22;
+        } else
+            print_func_err(__func__, __LINE__, "fi_fetch_atomic", lbl, ret);
+        goto done;
+    }
+
+    ret = do_wait_all(conn);
+    if (ret == -EINVAL) {
+        print_info("%s,%u:%s saw expected error -EINVAL\n",
+                   __func__, __LINE__, lbl);
+        ret = 0;
+    } else {
+        print_err("%s,%u:%s saw unexpected return %d\n",
+                  __func__, __LINE__, lbl, ret);
+        if (ret >= 0)
+            ret = -22;
+        goto done;
+    }
+
+ done:
     return ret;
 }
 
@@ -452,8 +515,8 @@ static int cli_atomic_original(struct stuff *conn,
         goto done;
 
     ret = zhpeu_fab_atomic_load(type, &orig, original);
- done:
 
+ done:
     return ret;
 }
 
@@ -531,8 +594,8 @@ static int do_server_sum(struct stuff *conn)
         goto done;
     }
     ret = do_wait_all(conn);
- done:
 
+ done:
     return ret;
 }
 
@@ -648,7 +711,6 @@ static int cli_atomic_size_test1(struct stuff *conn, enum fi_op op,
     ret = 0;
 
  done:
-
     return ret;
 }
 
@@ -698,7 +760,6 @@ static int cli_atomic_size_test(struct stuff *conn, enum fi_op op,
     }
 
  done:
-
     return ret;
 }
 
@@ -782,8 +843,8 @@ static int cli_atomic_size_tests(struct stuff *conn)
         ret = -FI_EINVAL;
         goto done;
     }
- done:
 
+ done:
     return ret;
 }
 
@@ -803,6 +864,12 @@ static int do_client_sum(struct stuff *conn)
     if (ret < 0)
         goto done;
     if (conn->threadidx == 0) {
+        ret = cli_bad_test(conn, "HW", FI_SUM);
+        if (ret < 0)
+            goto done;
+        ret = cli_bad_test(conn, "SW", FI_BOR);
+        if (ret < 0)
+            goto done;
         ret = cli_atomic_size_tests(conn);
         if (ret < 0)
             goto done;
@@ -830,8 +897,8 @@ static int do_client_sum(struct stuff *conn)
         op_cnt++;
     }
     ret = update_error(ret, do_wait_all(conn));
- done:
 
+ done:
     return ret;
 }
 
@@ -954,8 +1021,8 @@ static int do_client_sum_check(struct stuff *conn[], const struct args *args)
         goto done;
     print_info("okay\n");
     ret = 0;
- done:
 
+ done:
     return ret;
 }
 
@@ -1085,8 +1152,8 @@ static void *do_client_thread(void *vconn)
         mutex_lock(&cli_mutex);
         while (!cli_conn0)
             cond_wait(&cli_cond, &cli_mutex);
-        conn->remote_addr = cli_conn0->remote_addr;
-        conn->remote_key = cli_conn0->remote_key;
+        conn->rem.remote_addr = cli_conn0->rem.remote_addr;
+        conn->rem.remote_key = cli_conn0->rem.remote_key;
         conn->dest_av = cli_conn0->dest_av;
         mutex_unlock(&cli_mutex);
     }
@@ -1208,8 +1275,8 @@ static int do_client(const struct args *args)
     for (i = 0; i < args->threads; i++)
         stuff_free(conn[i]);
     ret = 0;
- done:
 
+ done:
     return ret;
 }
 
@@ -1305,7 +1372,7 @@ int main(int argc, char **argv)
         usage(false);
 
     ret = 0;
- done:
 
+ done:
     return ret;
 }

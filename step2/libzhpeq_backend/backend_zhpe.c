@@ -912,6 +912,7 @@ static int zhpe_mmap(const struct zhpeq_key_data *qkdata_orig,
     if (!desc)
         goto done;
     *desc  = *desc_orig;
+    desc->hdr.version &= ~ZHPEQ_MR_VREG;
     qkdata = &desc->qkdata;
     zmdesc->qkdata = qkdata;
     qkdata->z.vaddr += offset;
@@ -925,6 +926,7 @@ static int zhpe_mmap(const struct zhpeq_key_data *qkdata_orig,
         qkdata->z.zaddr = 0;
         goto done;
     }
+    desc->hdr.version |= ZHPEQ_MR_VREG;
 
     zmdesc->addr = do_mmap(addr, length, prot, flags, dev_fd, pgoff, &ret);
     if (ret < 0)

@@ -68,7 +68,6 @@ struct stuff {
     const struct args   *args;
     struct fab_dom      fab_dom;
     struct fab_conn     fab_conn;
-    bool                allocated;
 };
 
 static void stuff_free(struct stuff *stuff)
@@ -78,9 +77,6 @@ static void stuff_free(struct stuff *stuff)
 
     fab_conn_free(&stuff->fab_conn);
     fab_dom_free(&stuff->fab_dom);
-
-    if (stuff->allocated)
-        free(stuff);
 }
 
 static ssize_t do_progress(struct fid_cq *cq, size_t *cmp)
@@ -277,6 +273,7 @@ static int do_fam(const struct args *args)
         print_info("read  %0.3f MB/s\n",
                    ((double)args->len / cycles_to_usec(rd_cyc, 1)));
     }
+
  done:
     if (fam_sa) {
         for (i = 0; i < args->n_url; i++)
@@ -400,6 +397,7 @@ int main(int argc, char **argv)
         goto done;
 
     ret = 0;
+
  done:
     free(args.url);
 

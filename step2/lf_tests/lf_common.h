@@ -34,43 +34,60 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef _ZHPE_STATS_TYPES_H_
-#define _ZHPE_STATS_TYPES_H_
+#ifndef _LF_COMMON_H_
+#define _LF_COMMON_H_
 
-#include <stdbool.h>
-#include <stdint.h>
-
-#include <zhpe_externc.h>
+#include <zhpeq_util_fab.h>
 
 _EXTERN_C_BEG
 
-struct zhpe_stats_ops {
-    void                (*open)(uint16_t uid);
-    void                (*close)(void);
-    void                (*enable)(void);
-    void                (*disable)(void);
-    struct zhpe_stats   *(*stop_counters)(void);
-    void                (*stop_all)(struct zhpe_stats *stats);
-    void                (*pause_all)(struct zhpe_stats *stats);
-    void                (*restart_all)(void);
-    void                (*start)(struct zhpe_stats *stats, uint32_t subid);
-    void                (*stop)(struct zhpe_stats *stats, uint32_t subid);
-    void                (*pause)(struct zhpe_stats * stats, uint32_t subid);
-    void                (*finalize)(void);
-    void                (*key_destructor)(void *vstats);
-    void                (*stamp)(struct zhpe_stats *stats, uint32_t subid,
-                                 uint32_t items, uint64_t *data);
+struct lf_params {
+    const char          *service;
+    const char          *node;
+    const char          *provider;
+    const char          *domain;
+    uint64_t            tx_avail;
+    uint64_t            rx_avail;
+    uint64_t            memsize;
+    int                 sock_fd;
+    uint8_t             ep_type;
+    bool                free_str;
 };
 
-enum {
-    ZHPE_STATS_SUBID_SEND = 10,
-    ZHPE_STATS_SUBID_RECV = 20,
-    ZHPE_STATS_SUBID_RMA  = 30,
-    ZHPE_STATS_SUBID_ATM  = 35,
-    ZHPE_STATS_SUBID_ZHPQ = 40,
-    ZHPE_STATS_SUBID_MPI  = 50,
+union lf_context {
+    struct fi_context2  ctx2;
+    union ucontext      *next;
 };
+
+struct lf_conn {
+    struct fab_conn     *fab_conn;
+    fi_addr_t           remote_fi_addr;
+    uint64_t            remote_addr;
+    uint64_t            remote_key;
+    uint64_t            remote_size;
+    size_t              tx_avail;
+    size_t              rx_avail;
+    union lf_context    *ctx;
+    union lf_context    *ctx_free;
+    size_t              ctx_size;
+    size_t              ctx_avail;
+    size_t              ctx_cur;
+    int                 sock_fd;
+};
+
+void lf_ctx_free(struct lf_conn *lf_conn, void *vctx);
+union lf_context *lf_ctx_next(struct lf_conn *lf_conn);
+bool lf_ctx_all_done(struct lf_conn *conn);
+int lf_progress(struct lf_conn *lf_conn);
+int lf_wait_all(struct lf_conn *lf_conn);
+void lf_conn_free(struct lf_conn *lf_conn);
+void lf_params_free(struct lf_params *param);
+int lf_server_recv_params(int sock_fd, struct lf_params *param);
+int lf_client_send_params(int sock_fd, struct lf_params *param);
+int lf_conn_alloc(const struct lf_params *param, struct lf_conn **lf_conn_out);
+int lf_server_ep_setup(struct lf_conn *lf_conn);
+int lf_client_ep_setup(struct lf_conn *lf_conn);
 
 _EXTERN_C_END
 
-#endif /* _ZHPE_STATS_TYPES_H_ */
+#endif /* _LF_COMMON_H_ */

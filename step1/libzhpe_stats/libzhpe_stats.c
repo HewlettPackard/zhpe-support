@@ -854,7 +854,7 @@ bool zhpe_stats_init(const char *stats_dir, const char *stats_unique)
     if (sim_api_is_sim())
         zhpe_stats_ops = &stats_ops_sim;
 #endif
-#ifdef LIKWID_PERFMON
+#ifdef LIKWID_PERFMONb
     if (zhpe_stats_ops == &zhpe_stats_nops) {
         zhpe_stats_ops = &stats_ops_likwid;
         LIKWID_MARKER_INIT;
@@ -988,8 +988,8 @@ void zhpe_stats_init(const char *stats_dir, const char *stats_unique)
 {
     if (!stats_dir && !stats_unique)
         return;
-    print_err("%s,%u:libzhpe_stats built without stats support\n",
-              __func__, __LINE__);
+    zhpeu_print_err("%s,%u:libzhpe_stats built without stats support\n",
+                    __func__, __LINE__);
 }
 
 void zhpe_stats_test(uint16_t uid)

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2019 Hewlett Packard Enterprise Development LP.
+ * Copyright (C) 2017-2020 Hewlett Packard Enterprise Development LP.
  * All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -34,9 +34,11 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <internal.h>
+#include <zhpeq.h>
 
 #include <limits.h>
+
+static struct zhpeq_attr zhpeq_attr;
 
 static char buf[4];
 
@@ -69,12 +71,11 @@ static void usage(bool help)
 int main(int argc, char **argv)
 {
     int                 ret = 1;
-    struct zhpeq_dom    *zdom = NULL;
+    struct zhpeq_dom    *zqdom = NULL;
     int                 rc;
     uint32_t            match;
     uint                i;
     uint                j;
-    struct zhpeq_attr   attr;
     bool                zhpe;
 
     zhpeq_util_init(argv[0], LOG_DEBUG, false);
@@ -82,26 +83,21 @@ int main(int argc, char **argv)
     if (argc != 1)
         usage(false);
 
-    rc = zhpeq_init(ZHPEQ_API_VERSION);
+    rc = zhpeq_init(ZHPEQ_API_VERSION, &zhpeq_attr);
     if (rc < 0) {
         print_func_err(__func__, __LINE__, "zhpeq_init", "", rc);
         goto done;
     }
 
-    rc = zhpeq_query_attr(&attr);
-    if (rc < 0) {
-        print_func_err(__func__, __LINE__, "zhpeq_query_attr", "", rc);
-        goto done;
-    }
-    zhpe = (attr.backend == ZHPEQ_BACKEND_ZHPE);
+    zhpe = zhpeq_is_asic();
 
-    rc = zhpeq_domain_alloc(&zdom);
+    rc = zhpeq_domain_alloc(&zqdom);
     if (rc < 0) {
         print_func_err(__func__, __LINE__, "zhpeq_domain_alloc", "", rc);
         goto done;
     }
     for (i = 0; tests[i].buf; i++) {
-        rc = zhpeq_mr_reg(zdom, tests[i].buf, tests[i].len,
+        rc = zhpeq_mr_reg(zqdom, tests[i].buf, tests[i].len,
                           tests[i].qaccess, &tests[i].qk);
         if (rc < 0) {
             print_func_err(__func__, __LINE__, "zhpeq_mr_reg", "", rc);
@@ -128,7 +124,7 @@ int main(int argc, char **argv)
     ret = 0;
 
  done:
-    zhpeq_domain_free(zdom);
+    zhpeq_domain_free(zqdom);
 
     printf("%s:done, ret = %d\n", appname, ret);
 

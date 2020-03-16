@@ -80,7 +80,6 @@ struct stuff {
     uint64_t            tot;
     uint64_t            remote_key;
     uint64_t            remote_addr;
-    bool                allocated;
 };
 
 static void stuff_free(struct stuff *stuff)
@@ -95,9 +94,6 @@ static void stuff_free(struct stuff *stuff)
     free(stuff->ctx);
 
     FD_CLOSE(stuff->sock_fd);
-
-    if (stuff->allocated)
-        free(stuff);
 }
 
 static int do_mem_setup(struct stuff *conn)
@@ -197,8 +193,8 @@ static int do_server_burst(struct stuff *conn)
     }
 
     fab_print_info(fab_conn);
- done:
 
+ done:
     return ret;
 }
 
@@ -468,7 +464,7 @@ static int do_server(const struct args *args)
         ret = do_server_one(args, conn_fd);
     }
 
-done:
+ done:
     if (listener_fd != -1)
         close(listener_fd);
     if (resp)
@@ -676,7 +672,7 @@ int main(int argc, char **argv)
         usage(false);
 
     ret = 0;
- done:
 
+ done:
     return ret;
 }

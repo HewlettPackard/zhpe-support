@@ -92,7 +92,6 @@ struct stuff {
     uint64_t            remote_key;
     struct fi_zhpe_ext_ops_v1 *ext_ops;
     struct fi_zhpe_mmap_desc *mdesc;
-    bool                allocated;
 };
 
 static pthread_mutex_t  thread_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -134,9 +133,6 @@ static void stuff_free(struct stuff *stuff)
     fab_dom_free(&stuff->fab_dom);
 
     FD_CLOSE(stuff->sock_fd);
-
-    if (stuff->allocated)
-        free(stuff);
 }
 
 static int do_mem_setup(struct stuff *conn)
@@ -538,7 +534,7 @@ static int do_server(const struct args *args)
         ret = do_server_one(args, conn_fd);
     }
 
-done:
+ done:
     if (listener_fd != -1)
         close(listener_fd);
     if (resp)
@@ -745,7 +741,7 @@ int main(int argc, char **argv)
         usage(false);
 
     ret = 0;
- done:
 
+ done:
     return ret;
 }

@@ -53,6 +53,8 @@
 static int              timeout = TIMEOUT;
 
 struct cli_wire_msg {
+    uint64_t            mr_mode;
+    uint32_t            progress_mode;
     bool                once_mode;
 };
 
@@ -73,6 +75,8 @@ struct args {
     const char          *service;
     uint64_t            threads;
     uint64_t            ops;
+    uint64_t            mr_mode;
+    enum fi_progress    progress_mode;
     bool                once_mode;
     bool                seconds_mode;
 };
@@ -86,14 +90,18 @@ union atomic_value {
 
 struct context {
     struct fi_context2  ctx;
-    union atomic_value operand;
-    union atomic_value compare;
+    union atomic_value operand0;
+    union atomic_value operand1;
 };
 
 union ucontext {
     struct context      ctx;
     union ucontext      *next;
 };
+
+static void free_dummy(void *ptr)
+{
+}
 
 struct stuff {
     const struct args   *args;
@@ -114,7 +122,11 @@ struct stuff {
     uint64_t            ops_done;
     uint64_t            expected_cli;
     uint64_t            expected_hw;
-    bool                allocated;
+    /*
+     * Obfuscation: gcc 9.2 is overly aggressive in detecting frees of
+     * non-heap memory. I don't know how to tell it to stop.
+     */
+    void                (*free_me)(void *ptr);
     bool                server;
 };
 
@@ -122,17 +134,17 @@ struct atomic_op {
     enum fi_op          op;
     enum fi_datatype    type;
     uint64_t            off;
-    uint64_t            compare;
-    uint64_t            operand;
+    uint64_t            operand0;
+    uint64_t            operand1;
 };
 
 /* Assuming little endian for now. */
 
 static struct atomic_op cli_sum_ops[] = {
-    { FI_SUM, FI_UINT64, 0x00, 0, 1 },
-    { FI_SUM, FI_UINT32, 0x08, 0, 1 },
-    { FI_SUM, FI_UINT64, 0x10, 0, 0x100000000UL },
-    { FI_SUM, FI_UINT32, 0x18, 0, 1 },
+    { FI_SUM, FI_UINT64, 0x00, 1, 0 },
+    { FI_SUM, FI_UINT32, 0x08, 1, 0 },
+    { FI_SUM, FI_UINT64, 0x10, 0x100000000UL, 0 },
+    { FI_SUM, FI_UINT32, 0x18, 1, 0 },
     { FI_ATOMIC_OP_LAST },
 };
 
@@ -141,10 +153,10 @@ static struct atomic_op cli_sum_ops[] = {
 uint64_t                cli_sum_ops_size = CLI_SUM_OPS_SIZE;
 
 static struct atomic_op svr_sum_ops[] = {
-    { FI_SUM, FI_UINT64, 0x00, 0, 1 },
-    { FI_SUM, FI_UINT32, 0x08, 0, 1 },
-    { FI_SUM, FI_UINT32, 0x10, 0, 1 },
-    { FI_SUM, FI_UINT64, 0x18, 0, 0x100000000UL },
+    { FI_SUM, FI_UINT64, 0x00, 1, 0 },
+    { FI_SUM, FI_UINT32, 0x08, 1, 0 },
+    { FI_SUM, FI_UINT32, 0x10, 1, 0 },
+    { FI_SUM, FI_UINT64, 0x18, 0x100000000UL, 0 },
     { FI_ATOMIC_OP_LAST },
 };
 
@@ -211,8 +223,7 @@ static void stuff_free(struct stuff *stuff)
 
     FD_CLOSE(stuff->sock_fd);
 
-    if (stuff->allocated)
-        free(stuff);
+    stuff->free_me(stuff);
 }
 
 static int do_mem_setup(struct stuff *conn)
@@ -258,13 +269,19 @@ static int do_mem_setup(struct stuff *conn)
 static int do_mem_xchg(struct stuff *conn)
 {
     int                 ret;
+    const struct args   *args = conn->args;
     struct fab_conn     *fab_conn = &conn->fab_conn;
 
     if (conn->server) {
         conn->rem.remote_key = htobe64(fi_mr_key(fab_conn->mrmem.mr));
-        conn->rem.remote_addr = htobe64((uintptr_t)fab_conn->mrmem.mem);
         conn->rem.bad_key = htobe64(fi_mr_key(conn->bad_mrmem.mr));
-        conn->rem.bad_addr = htobe64((uintptr_t)conn->bad_mrmem.mem);
+        if (args->mr_mode & FI_MR_VIRT_ADDR) {
+            conn->rem.remote_addr = htobe64((uintptr_t)fab_conn->mrmem.mem);
+            conn->rem.bad_addr = htobe64((uintptr_t)conn->bad_mrmem.mem);
+        } else {
+            conn->rem.remote_addr = be64toh(0);
+            conn->rem.bad_addr = be64toh(0);
+        }
 
         ret = sock_send_blob(conn->sock_fd, &conn->rem, sizeof(conn->rem));
         if (ret < 0)
@@ -386,7 +403,7 @@ static const char *op_str(enum fi_op op)
 
 static int cli_atomic(struct stuff *conn,
                       enum fi_op op, enum fi_datatype type, uint64_t off,
-                      uint64_t operand, uint64_t compare, void *original)
+                      uint64_t operand0, uint64_t operand1, void *original)
 {
     int                 ret = -FI_EAGAIN;
     struct fab_conn     *fab_conn = &conn->fab_conn;
@@ -397,7 +414,7 @@ static int cli_atomic(struct stuff *conn,
         goto done;
 
     /*
-     * The API requires us to guarantee the compare and operand are
+     * The API requires us to guarantee that both operands are
      * stable for the duration of the call and that they be pointers to the
      * proper types.
      */
@@ -405,23 +422,23 @@ static int cli_atomic(struct stuff *conn,
     switch (type) {
 
     case FI_UINT8:
-        ctx->operand.u8 = operand;
-        ctx->compare.u8 = compare;
+        ctx->operand0.u8 = operand0;
+        ctx->operand1.u8 = operand1;
         break;
 
     case FI_UINT16:
-        ctx->operand.u16 = operand;
-        ctx->compare.u16 = compare;
+        ctx->operand0.u16 = operand0;
+        ctx->operand1.u16 = operand1;
         break;
 
     case FI_UINT32:
-        ctx->operand.u32 = operand;
-        ctx->compare.u32 = compare;
+        ctx->operand0.u32 = operand0;
+        ctx->operand1.u32 = operand1;
         break;
 
     case FI_UINT64:
-        ctx->operand.u64 = operand;
-        ctx->compare.u64 = compare;
+        ctx->operand0.u64 = operand0;
+        ctx->operand1.u64 = operand1;
         break;
 
     default:
@@ -430,14 +447,26 @@ static int cli_atomic(struct stuff *conn,
         goto done;
     }
 
-    ret = fi_compare_atomic(fab_conn->ep, &ctx->operand, 1, NULL,
-                            &ctx->compare, NULL, original, NULL, conn->dest_av,
-                            conn->rem.remote_addr + off, conn->rem.remote_key,
-                            type, op, ctx);
-    if (ret >= 0)
+    if (op >= FI_CSWAP)
+        ret = fi_compare_atomic(fab_conn->ep, &ctx->operand1, 1, NULL,
+                                &ctx->operand0, NULL, original, NULL,
+                                conn->dest_av, conn->rem.remote_addr + off,
+                                conn->rem.remote_key, type, op, ctx);
+    else if (original)
+        ret = fi_fetch_atomic(fab_conn->ep, &ctx->operand0, 1, NULL,
+                              original, NULL, conn->dest_av,
+                              conn->rem.remote_addr + off, conn->rem.remote_key,
+                              type, op, ctx);
+    else
+        ret = fi_atomic(fab_conn->ep, &ctx->operand0, 1, NULL, conn->dest_av,
+                        conn->rem.remote_addr + off, conn->rem.remote_key,
+                        type, op, ctx);
+    if (ret < 0) {
+        print_func_errn(__func__, __LINE__, "fi_xxx_atomic", op, false, ret);
+        if (ctx)
+            ctx_free(conn, ctx);
+    } else
         conn->ops_done++;
-    else if (ctx)
-        ctx_free(conn, ctx);
 
  done:
     return ret;
@@ -460,8 +489,8 @@ static int cli_bad_test(struct stuff *conn, const char *lbl, enum fi_op op)
         ret = -FI_EAGAIN;
         goto done;
     }
-    ctx->operand.u64 = 1;
-    ret = fi_fetch_atomic(fab_conn->ep, &ctx->operand, 1, NULL,
+    ctx->operand0.u64 = 1;
+    ret = fi_fetch_atomic(fab_conn->ep, &ctx->operand0, 1, NULL,
                           &result, NULL, conn->dest_av,
                           conn->rem.bad_addr, conn->rem.bad_key,
                           FI_UINT64, op, ctx);
@@ -495,19 +524,19 @@ static int cli_bad_test(struct stuff *conn, const char *lbl, enum fi_op op)
 
 static int cli_atomic_op(struct stuff *conn, struct atomic_op *op)
 {
-    return cli_atomic(conn, op->op, op->type, op->off, op->operand,
-                      op->compare, NULL);
+    return cli_atomic(conn, op->op, op->type, op->off, op->operand0,
+                      op->operand1, NULL);
 }
 
 static int cli_atomic_original(struct stuff *conn,
                                enum fi_op op, enum fi_datatype type,
-                               uint64_t off, uint64_t operand, uint64_t compare,
-                               uint64_t *original)
+                               uint64_t off, uint64_t operand0,
+                               uint64_t operand1, uint64_t *original)
 {
     int                 ret;
     union atomic_value  orig;
 
-    ret = cli_atomic(conn, op, type, off, operand, compare, &orig);
+    ret = cli_atomic(conn, op, type, off, operand0, operand1, &orig);
     if (ret < 0)
         goto done;
     ret = do_wait_all(conn);
@@ -523,11 +552,11 @@ static int cli_atomic_original(struct stuff *conn,
 /* NOTE: The result handling is different for the local case. */
 static void lcl_atomic(struct stuff *conn,
                        enum fi_op op, enum fi_datatype type, void *dst,
-                       uint64_t operand, uint64_t compare, uint64_t *original)
+                       uint64_t operand0, uint64_t operand1, uint64_t *original)
 {
     int                 rc MAYBE_UNUSED;
 
-    rc = zhpeu_fab_atomic_op(type, op, operand, compare, dst, original);
+    rc = zhpeu_fab_atomic_op(type, op, operand0, operand1, dst, original);
     assert(!rc);
 }
 
@@ -536,7 +565,7 @@ static void lcl_atomic_op(struct stuff *conn, struct atomic_op *op)
     struct fab_conn     *fab_conn = &conn->fab_conn;
     void                *dst = ((char *)fab_conn->mrmem.mem + op->off);
 
-    return lcl_atomic(conn, op->op, op->type, dst, op->operand, op->compare,
+    return lcl_atomic(conn, op->op, op->type, dst, op->operand0, op->operand1,
                       NULL);
 }
 
@@ -606,7 +635,7 @@ struct atomic_sz {
 };
 
 static int cli_atomic_size_test1(struct stuff *conn, enum fi_op op,
-                                 uint64_t operand, uint64_t compare,
+                                 uint64_t operand0, uint64_t operand1,
                                  uint64_t start, uint64_t *end,
                                  struct atomic_sz *sz)
 {
@@ -622,42 +651,36 @@ static int cli_atomic_size_test1(struct stuff *conn, enum fi_op op,
     switch (op) {
 
     case FI_ATOMIC_READ:
-    case FI_ATOMIC_WRITE:
         /* Nothing to do. */
-        assert(operand == 0);
-        assert(compare == 0);
+        assert(operand0 == 0);
+        assert(operand1 == 0);
+        break;
+
+    case FI_ATOMIC_WRITE:
+        assert(operand1 == 0);
         break;
 
     case FI_BAND:
     case FI_BOR:
-        /* Nothing to do. */
-        assert(operand != 0);
-        assert(compare == 0);
+        assert(operand1 == 0);
         break;
 
     case FI_BXOR:
-        assert(operand != 0);
-        assert(compare == 0);
+        assert(operand1 == 0);
         /* Zero out previous bits in operand. */
-        operand &= ~sz->prev_mask;
+        operand0 &= ~sz->prev_mask;
         break;
 
     case FI_CSWAP:
-        /*
-         * Compare actually needs to be start and we want to make sure any
-         * unused bits are wrong.
-         */
-        assert(operand != 0);
-        assert(compare == 0);
-        compare = (start ^ ~sz->type_mask) | (start & sz->type_mask);
+        /* Account for previous op in compare. */
+        operand0 = (operand0 & ~sz->prev_mask) | (start & sz->prev_mask);
+        /* But make sure unused bits for the current size are wrong. */
+        operand0 ^= ~sz->type_mask;
         break;
 
     case FI_MSWAP:
-        /* Nothing to do. */
-        assert(operand != 0);
-        assert(compare != 0);
-        /* Make sure unused bits of compare will be wrong. */
-        compare = (compare ^ ~sz->type_mask) | (compare & sz->type_mask);
+        /* Make sure any unused bits for the current size are wrong. */
+        operand0 = (start ^ ~sz->type_mask) | (operand0 & sz->type_mask);
         break;
 
     default:
@@ -665,10 +688,10 @@ static int cli_atomic_size_test1(struct stuff *conn, enum fi_op op,
         goto done;
     }
 
-    /* Mask the compare, so that the upper bytes will be invalid. */
     lcl_result = start;
-    lcl_atomic(conn, op, sz->type, &lcl_result, operand, compare, &lcl_fetched);
-    ret = cli_atomic_original(conn, op, sz->type, SW_OFF, operand, compare,
+    lcl_atomic(conn, op, sz->type, &lcl_result, operand0, operand1,
+               &lcl_fetched);
+    ret = cli_atomic_original(conn, op, sz->type, SW_OFF, operand0, operand1,
                               &rem_fetched);
     if (ret < 0)
         goto done;
@@ -715,7 +738,7 @@ static int cli_atomic_size_test1(struct stuff *conn, enum fi_op op,
 }
 
 static int cli_atomic_size_test(struct stuff *conn, enum fi_op op,
-                                uint64_t operand, uint64_t compare,
+                                uint64_t operand0, uint64_t operand1,
                                 uint64_t start, uint64_t end)
 {
     int                 ret;
@@ -741,7 +764,7 @@ static int cli_atomic_size_test(struct stuff *conn, enum fi_op op,
 
     for (i = 0; i < ARRAY_SIZE(sz); i++) {
         val64 = end;
-        ret = cli_atomic_size_test1(conn, op, operand, compare, start, &val64,
+        ret = cli_atomic_size_test1(conn, op, operand0, operand1, start, &val64,
                                     &sz[i]);
         if (ret < 0)
             goto done;
@@ -749,7 +772,7 @@ static int cli_atomic_size_test(struct stuff *conn, enum fi_op op,
     }
 
     ret = cli_atomic_original(conn, FI_ATOMIC_READ, FI_UINT64, SW_OFF,
-                            0, 0, &val64);
+                              0, 0, &val64);
     if (ret < 0)
         goto done;
     if (end != val64) {
@@ -792,25 +815,25 @@ static int cli_atomic_size_tests(struct stuff *conn)
                                0x8844221000442210UL, 0x2DE187B5A5E187B5UL);
     if (ret < 0)
         goto done;
-    /* MSWAP: 6 cli_op, 4 hw_op */
-    expected_ops(conn, 6, 4);
+    /* MSWAP: 6 cli_op, 2 hw_op */
+    expected_ops(conn, 6, 2);
     ret = cli_atomic_size_test(conn, FI_MSWAP,
-                               0xFEDCBA9876543210UL, 0xFFFFFFFFFFFFFFFFUL,
+                               0xFFFFFFFFFFFFFFFFUL, 0xFEDCBA9876543210UL,
                                0x2DE187B5A5E187B5UL, 0xFEDCBA9876543210UL);
     if (ret < 0)
         goto done;
     /* MSWAP: 6 cli_op, 2 hw_op */
     expected_ops(conn, 6, 2);
     ret = cli_atomic_size_test(conn, FI_MSWAP,
-                               0xFFFFFFFFFFFFFFFFUL, 0x0123456789ABCDEFUL,
+                               0x0123456789ABCDEFUL, 0xFFFFFFFFFFFFFFFFUL,
                                0xFEDCBA9876543210UL, 0xFFFFFFFFFFFFFFFFUL);
     if (ret < 0)
         goto done;
     /* CSWAP: 6 cli_op, 4 hw_op */
     expected_ops(conn, 6, 4);
     ret = cli_atomic_size_test(conn, FI_CSWAP,
-                               0xFEDCBA9876543210UL, 0x0000000000000000,
-                               0xFFFFFFFFFFFFFFFFUL, 0xFEDCBA9876543210);
+                               0xFFFFFFFFFFFFFFFFUL, 0xFEDCBA9876543210UL,
+                               0xFFFFFFFFFFFFFFFFUL, 0xFEDCBA9876543210UL);
     if (ret < 0)
         goto done;
     /* ATOMIC_READ: 6 cli_op, 4 hw_op */
@@ -823,8 +846,8 @@ static int cli_atomic_size_tests(struct stuff *conn)
     /* ATOMIC_WRITE: 6 cli_op, 4 hw_op */
     expected_ops(conn, 6, 4);
     ret = cli_atomic_size_test(conn, FI_ATOMIC_WRITE,
-                               0x0000000000000000UL, 0x0000000000000000UL,
-                               0xFEDCBA9876543210UL, 0x0000000000000000UL);
+                               0x0000000000000001UL, 0x0000000000000000UL,
+                               0xFEDCBA9876543210UL, 0x0000000000000001UL);
     if (ret < 0)
         goto done;
     /* Check op counts. */
@@ -959,14 +982,14 @@ static int do_client_sum_check(struct stuff *conn[], const struct args *args)
             goto done;
         }
         counters.hw_atomics -= conn[i]->expected_hw;
-        if (!expected_saw("hw_ops %", 0,
+        if (!expected_saw("hw_ops %", (uint64_t)0,
                           counters.hw_atomics % CLI_SUM_OPS_SIZE)) {
             ret = -FI_EINVAL;
             goto done;
         }
         counters.hw_atomics /= CLI_SUM_OPS_SIZE;
         conn[i]->ops_done -= conn[i]->expected_cli;
-        if (!expected_saw("cli_ops %", 0,
+        if (!expected_saw("cli_ops %", (uint64_t)0,
                           conn[i]->ops_done % CLI_SUM_OPS_SIZE)) {
             ret = -FI_EINVAL;
             goto done;
@@ -1013,7 +1036,7 @@ static int do_client_sum_check(struct stuff *conn[], const struct args *args)
         goto done;
     if (!expected_saw("res[0]", svr_msg.ops + cli_ops, results[0]))
         goto done;
-    if (!expected_saw("res[1]", (uint32_t)(svr_msg.ops + cli_ops), results[1]))
+    if (!expected_saw("res[1]", shift32(svr_msg.ops + cli_ops, 0), results[1]))
         goto done;
     if (!expected_saw("res[2]", shift32(svr_msg.ops, cli_ops), results[2]))
         goto done;
@@ -1038,6 +1061,7 @@ static int do_server_one(const struct args *oargs, int conn_fd)
         .dest_av        = FI_ADDR_UNSPEC,
         .server         = true,
         .fab_dom        = &fab_dom_lcl,
+        .free_me        = free_dummy,
     };
     struct stuff        *conn = &conn_lcl;
     struct fab_dom      *fab_dom = conn->fab_dom;
@@ -1052,9 +1076,12 @@ static int do_server_one(const struct args *oargs, int conn_fd)
     if (ret < 0)
         goto done;
 
+    args->mr_mode = be64toh(cli_msg.mr_mode);
+    args->progress_mode = ntohl(cli_msg.progress_mode);
     args->once_mode = !!cli_msg.once_mode;
 
-    ret = fab_dom_setup(NULL, NULL, true, PROVIDER, NULL, EP_TYPE, fab_dom);
+    ret = fab_dom_setupx(NULL, NULL, true, PROVIDER, NULL, EP_TYPE,
+                         args->mr_mode, args->progress_mode, fab_dom);
     if (ret < 0)
         goto done;
     ret = fab_ep_setup(fab_conn, NULL, 0, 0);
@@ -1164,11 +1191,14 @@ static void *do_client_thread(void *vconn)
             goto done;
         conn->sock_fd = ret;
 
+        cli_msg.mr_mode = htobe64(args->mr_mode);
+        cli_msg.progress_mode = htonl(args->progress_mode);
         cli_msg.once_mode = args->once_mode;
         ret = sock_send_blob(conn->sock_fd, &cli_msg, sizeof(cli_msg));
         if (ret < 0)
             goto done;
-        ret = fab_dom_setup(NULL, NULL, true, PROVIDER, NULL, EP_TYPE, fab_dom);
+        ret = fab_dom_setupx(NULL, NULL, true, PROVIDER, NULL, EP_TYPE,
+                             args->mr_mode, args->progress_mode, fab_dom);
         if (ret < 0)
             goto done;
     }
@@ -1236,7 +1266,7 @@ static int do_client(const struct args *args)
         conn[i]->sock_fd = -1;
         conn[i]->dest_av = FI_ADDR_UNSPEC;
         conn[i]->threadidx = i;
-        conn[i]->allocated = true;
+        conn[i]->free_me = free;
         conn[i]->fab_dom = &cli_fab_dom0;
         if (i == 0)
             fab_dom_init(&cli_fab_dom0);
@@ -1292,9 +1322,11 @@ static void usage(bool help)
         "Lower case is base 10; upper case is base 2.\n"
         "Server requires just port; client requires all 5 arguments.\n"
         "Client only options:\n"
+        " -m : manual progress\n"
         " -o : run once and then server will exit\n"
         " -s : interpet <ops> as seconds\n"
-        " -t : number of client threads\n",
+        " -t <threads> : number of client threads\n"
+        " -z : zero-based keys\n",
         appname);
 
     if (help) {
@@ -1309,6 +1341,8 @@ int main(int argc, char **argv)
 {
     int                 ret = 1;
     struct args         args = {
+        .mr_mode        = (FI_MR_ALLOCATED | FI_MR_PROV_KEY | FI_MR_VIRT_ADDR),
+        .progress_mode  = FI_PROGRESS_AUTO,
     };
     bool                client_opt = false;
     int                 opt;
@@ -1318,7 +1352,7 @@ int main(int argc, char **argv)
     if (argc == 1)
         usage(true);
 
-    while ((opt = getopt(argc, argv, "sot:")) != -1) {
+    while ((opt = getopt(argc, argv, "msot:z")) != -1) {
 
         /* All opts are client only, now. */
         client_opt = true;
@@ -1329,6 +1363,12 @@ int main(int argc, char **argv)
             if (args.once_mode)
                 usage(false);
             args.once_mode = true;
+            break;
+
+        case 'm':
+            if (args.progress_mode != FI_PROGRESS_AUTO)
+                usage(false);
+            args.progress_mode = FI_PROGRESS_MANUAL;
             break;
 
         case 's':
@@ -1343,6 +1383,15 @@ int main(int argc, char **argv)
             if (parse_kb_uint64_t(__func__, __LINE__, "threads",
                                   optarg, &args.threads, 0, 1,
                                   SIZE_MAX, PARSE_KB | PARSE_KIB) < 0)
+                usage(false);
+            break;
+
+        case 'z':
+            if (!(args.mr_mode & FI_MR_VIRT_ADDR))
+                usage(false);
+            args.mr_mode &= ~FI_MR_VIRT_ADDR;
+            break;
+
         default:
             usage(false);
 

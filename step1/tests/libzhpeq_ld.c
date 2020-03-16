@@ -37,13 +37,15 @@
 #include <zhpeq.h>
 #include <zhpeq_util.h>
 
+static struct zhpeq_attr zhpeq_attr;
+
 int main(int argc, char **argv)
 {
     int                 rc;
 
     zhpeq_util_init(argv[0], LOG_INFO, false);
 
-    rc = zhpeq_init(ZHPEQ_API_VERSION);
+    rc = zhpeq_init(ZHPEQ_API_VERSION, &zhpeq_attr);
     if (rc < 0)
         print_func_err(__func__, __LINE__, "zhpeq_init", "", rc);
 

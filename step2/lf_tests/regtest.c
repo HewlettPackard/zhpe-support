@@ -132,6 +132,7 @@ static int do_reg(const struct args *args)
         }
         zhpe_stats_disable();
     }
+
  done:
     if (buf)
         munmap(buf, buf_size);
@@ -189,8 +190,8 @@ int main(int argc, char **argv)
         goto done;
 
     ret = 0;
- done:
 
+ done:
     zhpe_stats_stop_all();
     zhpe_stats_close();
     zhpe_stats_finalize();

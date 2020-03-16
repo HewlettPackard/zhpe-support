@@ -59,8 +59,7 @@ static int av_init_retry(void *vargs)
     return 0;
 }
 
-static int av_init(const char *callf, uint line, struct fab_conn *conn,
-                 int timeout, fi_addr_t *fi_addr)
+static int av_init(struct fab_conn *conn, int timeout, fi_addr_t *fi_addr)
 {
     int                 ret;
     bool                fi_addr_valid = false;
@@ -82,20 +81,19 @@ static int av_init(const char *callf, uint line, struct fab_conn *conn,
 
     if (ret < 0)
         goto done;
-    ret = _fab_av_insert(callf, line, conn->dom, &ep_addr, fi_addr);
+    ret = _fab_av_insert(conn->dom, &ep_addr, fi_addr);
     if (ret < 0)
         goto done;
     fi_addr_valid = true;
-    ret = _fab_av_wait_send(callf, line, conn, *fi_addr, retry, &retry_args);
+    ret = _fab_av_wait_send(conn, *fi_addr, retry, &retry_args);
     if (ret < 0)
         goto done;
-    ret = _fab_av_wait_recv(callf, line, conn, *fi_addr, retry, &retry_args);
+    ret = _fab_av_wait_recv(conn, *fi_addr, retry, &retry_args);
 
  done:
     if (ret < 0) {
         if (fi_addr_valid)
-            _fab_av_remove(callf, line, conn->dom, *fi_addr);
-        print_func_err(callf, line, "_fab_av_init", "", ret);
+            _fab_av_remove(conn->dom, *fi_addr);
     }
 
     return ret;
@@ -197,7 +195,7 @@ void libzhpe_mmap_teardown()
 
 struct args {
     const char *domain;
-}; 
+};
 
 /* lock must be held to get here */
 static int libzhpe_mmap_init(){
@@ -230,8 +228,7 @@ static int libzhpe_mmap_init(){
     if (ret != 0)
         goto done;
 
-    ret = av_init(__func__, __LINE__, zm_stuff->local_fab_conn,
-                 10000, &zm_stuff->my_local_fi_addr);
+    ret = av_init(zm_stuff->local_fab_conn, 10000, &zm_stuff->my_local_fi_addr);
     if (ret != 0) {
         print_func_err(__func__, __LINE__, "av_init", "local_fi_addr", ret);
         goto done;

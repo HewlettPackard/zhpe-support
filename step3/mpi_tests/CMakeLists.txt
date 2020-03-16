@@ -7,6 +7,8 @@ include_directories(AFTER ${MPI_C_INCLUDE_PATH})
 set(THREADS_PREFER_PTHREAD_FLAG TRUE)
 find_package(Threads REQUIRED)
 
+add_compile_options(-D_ZHPEQ_TEST_COMPAT_)
+
 add_library(zhpeq_lf SHARED zhpeq_lf.c)
 target_link_libraries(zhpeq_lf PUBLIC zhpeq_util fabric)
 

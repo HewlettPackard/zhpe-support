@@ -14,7 +14,6 @@ $APPNAME -z [-o <opts>] [-d|l|s <path>] <insdir>
 Do CMake configuration.
 <insdir>    : installation directory
  -d <path>  : driver source directory
- -l <path>  : path to likwid install 
  -o <opts>  : add C compiler options (defines or optimization)
  -s <path>  : path to simulator headers 
  -z         : enable zhpe_stats (-l and -z probably not compatible)
@@ -25,7 +24,6 @@ EOF
 COPT=""
 DRVR=../zhpe-driver
 LIBF=""
-LIKW=""
 SIMH=""
 VERBOSE=""
 ZSTA=""
@@ -37,9 +35,6 @@ while getopts 'd:f:l:o:s:z' OPT; do
 	;;
     f)
 	LIBF="$OPTARG"
-	;;
-    l)
-	LIKW="$OPTARG"
 	;;
     o)
 	COPT="$OPTARG"
@@ -62,7 +57,7 @@ shift $((( OPTIND - 1 )))
 DRVR=$(cd $DRVR ; pwd)
 
 if ! echo $COPT | grep -qe "[[:space:]]*-O"; then
-    COPT+=" -O2"
+    COPT+=" -O3"
 fi
 
 INSD=$1
@@ -87,7 +82,6 @@ fi
 	cmake \
 	     -D COPT="$COPT" \
 	     -D INSD="$INSD" \
-	     -D LIKW="$LIKW" \
 	     -D SIMH="$SIMH" \
 	     -D ZSTA="$ZSTA" \
 	     ../../$D
@@ -100,7 +94,6 @@ fi
 	cmake \
 	     -D COPT="$COPT" \
 	     -D INSD="$INSD" \
-	     -D LIKW="$LIKW" \
 	     -D SIMH="$SIMH" \
 	     -D ZSTA="$ZSTA" \
 	     ../../$D
@@ -117,7 +110,6 @@ cd $APPDIR/$B/step3
 	cmake \
 	     -D COPT="$COPT" \
 	     -D INSD="$INSD" \
-	     -D LIKW="$LIKW" \
 	     -D SIMH="$SIMH" \
 	     -D ZSTA="$ZSTA" \
 	     ../../$D

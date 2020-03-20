@@ -992,7 +992,7 @@ void zhpeu_install_gcid_in_uuid(uuid_t uuid, uint32_t gcid)
 {
     uuid[0] = gcid >> 20;
     uuid[1] = gcid >> 12;
-    uuid[2] = gcid >> 8;
+    uuid[2] = gcid >> 4;
     uuid[3] &= 0xF;
     uuid[3] |= gcid << 4;
 }

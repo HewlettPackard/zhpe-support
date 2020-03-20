@@ -27,6 +27,9 @@ target_link_libraries(libzhpeq_regtime PUBLIC zhpeq zhpeq_util)
 add_executable(libzhpeq_util_log libzhpeq_util_log.c)
 target_link_libraries(libzhpeq_util_log PUBLIC zhpeq_util)
 
+add_executable(libzhpeq_zaddr libzhpeq_zaddr.c)
+target_link_libraries(libzhpeq_zaddr PUBLIC zhpeq zhpeq_util)
+
 add_executable(xingpong xingpong.c)
 target_link_libraries(xingpong PUBLIC zhpeq zhpeq_util)
 
@@ -35,6 +38,7 @@ install(
   edgetest
   enqapong
   libzhpeq_ld
+  libzhpeq_zaddr
   libzhpeq_mr
   libzhpeq_pcitime
   libzhpeq_qalloc

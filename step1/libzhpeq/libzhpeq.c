@@ -38,7 +38,9 @@
 #include <internal.h>
 
 #include <cpuid.h>
+#include <ctype.h>
 #include <dlfcn.h>
+#include <jansson.h>
 #include <limits.h>
 
 #define LIBNAME         "libzhpeq"
@@ -55,7 +57,8 @@ static_assert(__x86_64__, "x86-64");
 /* Set to 1 to dump qkdata when registered/exported/imported/freed. */
 #define QKDATA_DUMP     (0)
 
-static pthread_mutex_t  init_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t  init_mutex  = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t  zaddr_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static struct zhpeq_attr b_attr;
 
@@ -1308,115 +1311,123 @@ void zhpeq_print_tq_info(struct zhpeq_tq *ztq)
     zhpe_print_tq_info(tqi);
 }
 
-#if 0
+static json_t *json = NULL;
 
-int zhpeq_getzaddr(const char *host, const char *service,
-                   struct sockaddr_zhpe *sz)
+static uint str_to_uint(const char *str, ulong mask, int *ret)
 {
-	int			ret = -FI_EINVAL;
-	FILE			*gcid_file = NULL;
-	const char		*gcid_fname;
-	uint			gcid;
-        ulong                   ctxid;
-	char			*name;
-	int			n;
-        char                    *e;
-	char			line[FI_NAME_MAX * 2];
+    uint		num;
+    char                *e;
 
-        if (!host || !zaddr)
-            goto done;
+    *ret = -EINVAL;
+    errno = 0;
+    num = (uint)strtoul(str, &e, 0);
+    if (errno != 0) {
+        *ret = -errno;
+        goto done;
+    }
+    if (*e != '\0')
+        goto done;
+    if (num & ~mask)
+        goto done;
 
-        ctxid = ZHPE_SZQ_INVAL;
-        if (service) {
-            errno = 0;
-            ctxid = strtoul(service, &e, 0);
-            if (errno != 0) {
-                ret = -errno;
-                goto done;
-            }
-            if (*e != '\0')
-                goto done;
-            if (ctxid & ~(ulong)ZHPE_CTXID_MASK)
-                goto done;
-        }
-        zaddr->sz_family = AF_ZHPE;
-        uuid_clear(zaddr->sz_uuid);
-        zaddr->zq_queue = ctxid;
-        if (isdigit(host[0])) {
-            errno = 0;
-            gcid = strtoul(gcid, &e, 0);
-            if (errno != 0) {
-                ret = -errno;
-                goto done;
-            }
-            if (*e != '\0')
-                goto done;
-            if (gcid & ~(ulong)ZHPE_GCID_MASK)
-                goto done;
-            zhpeu_install_gcid_in_uuid(zaddr->sz_uuid, gcid);
-            ret = 0;
-            goto done;
-        }
+    *ret = 0;
 
-	gcid_fname = getenv(ZHPEQ_HOSTS_GCID_ENV);
-	if (!gcid_fname)
-		gcid_fname = ZHPEQ_HOSTS_GCID_FILE;
-	gcid_file = fopen(gcid_file, "r");
-	if (!gcid_file) {
-		ret = -errno;
-		ZHPE_LOG_ERROR("Error %d opening %s:%s\n",
-			       ret, gcid_fname, strerror(-ret));
-		goto done;
-	}
-        ret = -FI_ENOENT;
-	for (;;) {
-		if (!fgets(line, sizeof(line), gcid_file)) {
-			if (ferror(gcid_file)) {
-				ret = -errno;
-				ZHPE_LOG_ERROR("Error %d reading %s:%s\n",
-					       ret, gcid_fname, strerror(-ret));
-				break;
-			}
-			if (feof(gcid_file))
-				break;
-			continue;
-		}
-		n = sscanf(line, "%ms %x\n", &name, &gcid);
-		if (n == 2) {
-			if (!strcasecmp(host, name)) {
-				free(name);
-				if (gcid & ~GCID_MASK) {
-					ret = -FI_EINVAL;
-                                        goto done;
-                                }
-                                zhpeu_install_gcid_in_uuid(zaddr->sz_uuid,
-                                                           gcid);
-                                ret = gcid;
-				break;
-			}
-		}
-		if (n >= 1) {
-			free(name);
-			n = 0;
-		}
-	}
-
- done:
-	if (gcid_file)
-		fclose(gcid_file);
-
-	return ret;
+done:
+    return num;
 }
 
-#else
-
 int zhpeq_get_zaddr(const char *node, const char *service,
-                   struct sockaddr_zhpe *sz)
+                    struct sockaddr_zhpe *sz)
 {
-    if (!node || !service || !sz)
-        return -EINVAL;
+    int			ret = -EINVAL;
+    const char		*gcid_fname;
+    uint		gcid;
+    ulong               ctxid;
+    const char		*name, *gcid_str, *slash;
+    char                *node_cp = NULL;
+    uint                index = 0;
+    json_t              *nodes, *kind, *comp, *gcids, *gcid_json;
+    json_error_t        err;
 
-    return -ENOSYS;
+    if (!node || !sz)
+        goto done;
+
+    ctxid = ZHPE_SZQ_INVAL;
+    if (service) {
+        ctxid = str_to_uint(service, ZHPE_CTXID_MASK, &ret);
+        if (ret < 0)
+            goto done;
+    }
+    sz->sz_family = AF_ZHPE;
+    uuid_clear(sz->sz_uuid);
+    sz->sz_queue = ctxid;
+    if (isdigit(node[0])) {
+        gcid = str_to_uint(node, ZHPE_GCID_MASK, &ret);
+        if (ret < 0)
+            goto done;
+        zhpeu_install_gcid_in_uuid(sz->sz_uuid, gcid);
+        goto done;
+    }
+
+    mutex_lock(&zaddr_mutex);
+    if (json == NULL) {
+        gcid_fname = getenv(ZHPEQ_HOSTS_ENV);
+        if (!gcid_fname)
+	    gcid_fname = ZHPEQ_HOSTS_FILE;
+        json = json_load_file(gcid_fname, 0, &err);
+	if (!json) {
+            mutex_unlock(&zaddr_mutex);
+	    ret = -EINVAL;
+	    goto done;
+	}
+    }
+    mutex_unlock(&zaddr_mutex);
+    nodes = json_object_get(json, "Nodes");
+    if (!nodes) {
+        ret = -EINVAL;
+        goto done;
+    }
+
+    slash = strchr(node, '/');
+    if (slash) {  /* node string contains a GCID index */
+        /* make writable copy of node string */
+        node_cp = strdup(node);
+        if (!node_cp) {
+            ret = -ENOMEM;
+            goto done;
+        }
+        *(node_cp + (slash - node)) = '\0';
+        index = str_to_uint(slash + 1, -1ul, &ret);
+        if (ret < 0)
+            goto done;
+        node = node_cp;
+    }
+
+    ret = -ENOENT;
+    json_object_foreach(nodes, name, kind) {
+        comp = json_object_get(kind, node);
+        if (json_is_array(comp) && json_array_size(comp) == 5) {
+            // Revisit: should we care about the Enabled state?
+            gcids = json_array_get(comp, 4);
+            if (json_is_array(gcids) && index < json_array_size(gcids)) {
+                gcid_json = json_array_get(gcids, index);
+                if (json_is_string(gcid_json)) {
+                    gcid_str = json_string_value(gcid_json);
+                    gcid = str_to_uint(gcid_str, ZHPE_GCID_MASK, &ret);
+                    if (ret < 0)
+                        goto done;
+                    zhpeu_install_gcid_in_uuid(sz->sz_uuid, gcid);
+                    ret = gcid;
+                }
+            }
+            break;
+        }
+    }
+
+done:
+    if (node_cp)
+        free(node_cp);
+    return ret;
 }
 
 int zhpeq_get_src_zaddr(struct sockaddr_zhpe *sz, uint32_t queue,
@@ -1435,8 +1446,6 @@ int zhpeq_get_src_zaddr(struct sockaddr_zhpe *sz, uint32_t queue,
 
     return 0;
 }
-
-#endif
 
 void zhpeq_print_qkdata(const char *func, uint line,
                         const struct zhpeq_key_data *qkdata)

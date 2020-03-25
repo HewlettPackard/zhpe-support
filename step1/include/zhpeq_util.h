@@ -525,6 +525,11 @@ static inline uint64_t usec_to_cycles(uint64_t usec)
     return (usec * zhpeu_init_time->freq / USEC_PER_SEC);
 }
 
+static inline uint64_t nsec_to_cycles(uint64_t nsec)
+{
+    return (nsec * zhpeu_init_time->freq / NSEC_PER_SEC);
+}
+
 /* On any hardware we care about, rdtsc will work for timing. */
 
 #ifdef __x86_64__

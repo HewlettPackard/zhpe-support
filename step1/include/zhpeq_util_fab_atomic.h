@@ -39,148 +39,302 @@
 
 _EXTERN_C_BEG
 
-#define ZHPEU_FAB_ATOMIC_OP_SIZE(_size, _op, _operand0, _operand1,      \
-                                 _dst, _original, _status)              \
-do {                                                                    \
-    uint ## _size ## _t *__dst = (_dst);                                \
-    uint ## _size ## _t __operand0 = (_operand0);                       \
-    uint ## _size ## _t __operand1 = (_operand1);                       \
-    uint ## _size ## _t __old;                                          \
-    uint ## _size ## _t __new;                                          \
-                                                                        \
-    (_status) = 0;                                                      \
-                                                                        \
-    switch(_op) {                                                       \
-                                                                        \
-    case FI_ATOMIC_READ:                                                \
-        (_original) = atm_load_rlx(__dst);                              \
-        break;                                                          \
-                                                                        \
-    case FI_ATOMIC_WRITE:                                               \
-        (_original) = atm_xchg(__dst, __operand0);                      \
-        break;                                                          \
-                                                                        \
-    case FI_BAND:                                                       \
-        (_original) = atm_and(__dst, __operand0);                       \
-        break;                                                          \
-                                                                        \
-    case FI_BOR:                                                        \
-        (_original) = atm_or(__dst, __operand0);                        \
-        break;                                                          \
-                                                                        \
-    case FI_BXOR:                                                       \
-        (_original) = atm_xor(__dst, __operand0);                       \
-        break;                                                          \
-                                                                        \
-    case FI_CSWAP:                                                      \
-        atm_cmpxchg(__dst, &__operand0, __operand1);                    \
-        (_original) = __operand0;                                       \
-        break;                                                          \
-                                                                        \
-    case FI_SUM:                                                        \
-        (_original) = atm_add(__dst, __operand0);                       \
-        break;                                                          \
-                                                                        \
-    case FI_MSWAP:                                                      \
-        __old = atm_load_rlx(__dst);                                    \
-        for (;;) {                                                      \
-            __new = (__operand1 & __operand0) | (__old & ~__operand0);  \
-            if (atm_cmpxchg(__dst, &__old, __new))                      \
-                break;                                                  \
-        }                                                               \
-        (_original) = __old;                                            \
-        break;                                                          \
-                                                                        \
-    default:                                                            \
-        (_original) = 0;                                                \
-        (_status) = -FI_EINVAL;                                         \
-        break;                                                          \
-    }                                                                   \
-} while(0)
+/*
+ * For one operand ops, operand1 is ignored.
+ *
+ * For two operand ops, operand0 and operand1 usage conforms
+ * to the way the zhpe bridge works.
+ *
+ * FI_CSWAP: 0 is old; 1 is new.
+ * FI_MSWAP: 0 is mask; 1 is new.
+ */
 
-#define ZHPEU_FAB_ATOMIC_LOAD_SIZE(_size, _src, _value)                 \
-do {                                                                    \
-    const uint ## _size ## _t   *__src = (_src);                        \
-                                                                        \
-    (_value) = atm_load_rlx(__src);                                     \
-} while(0)
-
-#define ZHPEU_FAB_ATOMIC_STORE_SIZE(_size, _dst, _value)                \
-do {                                                                    \
-    uint ## _size ## _t *__dst = (_dst);                                \
-    uint ## _size ## _t __value = (_value);                             \
-                                                                        \
-    atm_store_rlx(__dst, __value);                                      \
-} while(0)
-
-#define ZHPEU_FAB_ATOMIC_COPY_SIZE(_size, _src, _dst)                   \
-do {                                                                    \
-    const uint ## _size ## _t   *__src = (_src);                        \
-    uint ## _size ## _t *__dst = (_dst);                                \
-    uint ## _size ## _t __value;                                        \
-                                                                        \
-    __value = atm_load_rlx(__src);                                      \
-    atm_store_rlx(__dst, __value);                                      \
-} while(0)
-
-static inline int
-zhpeu_fab_atomic_op(enum fi_datatype type, enum fi_op op, uint64_t operand,
-                    uint64_t compare, void *dst, uint64_t *original)
+static inline int zhpeu_fab_atomic_op_u8(enum fi_op op,
+                                         uint8_t operand0, uint8_t operand1,
+                                         uint8_t *dst, uint64_t *original)
 {
     int                 ret = 0;
-    uint64_t            orig;
+    uint8_t             old;
+    uint8_t             new;
 
-    switch (type) {
+    switch (op) {
 
-    case FI_UINT8:
-        ZHPEU_FAB_ATOMIC_OP_SIZE(8,  op, operand, compare, dst, orig, ret);
+    case FI_ATOMIC_READ:
+        *original = atm_load_rlx(dst);
         break;
 
-    case FI_UINT16:
-        ZHPEU_FAB_ATOMIC_OP_SIZE(16, op, operand, compare, dst, orig, ret);
+    case FI_ATOMIC_WRITE:
+        *original = atm_xchg(dst, operand0);
         break;
 
-    case FI_UINT32:
-        ZHPEU_FAB_ATOMIC_OP_SIZE(32, op, operand, compare, dst, orig, ret);
+    case FI_BAND:
+        *original = atm_and(dst, operand0);
         break;
 
-    case FI_UINT64:
-        ZHPEU_FAB_ATOMIC_OP_SIZE(64, op, operand, compare, dst, orig, ret);
+    case FI_BOR:
+        *original = atm_or(dst, operand0);
+        break;
+
+    case FI_BXOR:
+        *original = atm_xor(dst, operand0);
+        break;
+
+    case FI_CSWAP:
+        atm_cmpxchg(dst, &operand0, operand1);
+        *original = operand0;
+        break;
+
+    case FI_SUM:
+        *original = atm_add(dst, operand0);
+        break;
+
+    case FI_MSWAP:
+        old = atm_load_rlx(dst);
+        for (;;) {
+            new = (operand1 & operand0) | (old & ~operand0);
+            if (atm_cmpxchg(dst, &old, new))
+                break;
+        }
+        *original = old;
         break;
 
     default:
-        orig = 0;
+        *original = 0;
         ret = -FI_EINVAL;
         break;
     }
 
-    if (original)
-        *original = orig;
+    return ret;
+}
+
+static inline int zhpeu_fab_atomic_op_u16(enum fi_op op,
+                                          uint16_t operand0, uint16_t operand1,
+                                          uint16_t *dst, uint64_t *original)
+{
+    int                 ret = 0;
+    uint16_t            old;
+    uint16_t            new;
+
+    switch (op) {
+
+    case FI_ATOMIC_READ:
+        *original = atm_load_rlx(dst);
+        break;
+
+    case FI_ATOMIC_WRITE:
+        *original = atm_xchg(dst, operand0);
+        break;
+
+    case FI_BAND:
+        *original = atm_and(dst, operand0);
+        break;
+
+    case FI_BOR:
+        *original = atm_or(dst, operand0);
+        break;
+
+    case FI_BXOR:
+        *original = atm_xor(dst, operand0);
+        break;
+
+    case FI_CSWAP:
+        atm_cmpxchg(dst, &operand0, operand1);
+        *original = operand0;
+        break;
+
+    case FI_SUM:
+        *original = atm_add(dst, operand0);
+        break;
+
+    case FI_MSWAP:
+        old = atm_load_rlx(dst);
+        for (;;) {
+            new = (operand1 & operand0) | (old & ~operand0);
+            if (atm_cmpxchg(dst, &old, new))
+                break;
+        }
+        *original = old;
+        break;
+
+    default:
+        *original = 0;
+        ret = -FI_EINVAL;
+        break;
+    }
+
+    return ret;
+}
+
+static inline int zhpeu_fab_atomic_op_u32(enum fi_op op,
+                                          uint32_t operand0, uint32_t operand1,
+                                          uint32_t *dst, uint64_t *original)
+{
+    int                 ret = 0;
+    uint32_t            old;
+    uint32_t            new;
+
+    switch (op) {
+
+    case FI_ATOMIC_READ:
+        *original = atm_load_rlx(dst);
+        break;
+
+    case FI_ATOMIC_WRITE:
+        *original = atm_xchg(dst, operand0);
+        break;
+
+    case FI_BAND:
+        *original = atm_and(dst, operand0);
+        break;
+
+    case FI_BOR:
+        *original = atm_or(dst, operand0);
+        break;
+
+    case FI_BXOR:
+        *original = atm_xor(dst, operand0);
+        break;
+
+    case FI_CSWAP:
+        atm_cmpxchg(dst, &operand0, operand1);
+        *original = operand0;
+        break;
+
+    case FI_SUM:
+        *original = atm_add(dst, operand0);
+        break;
+
+    case FI_MSWAP:
+        old = atm_load_rlx(dst);
+        for (;;) {
+            new = (operand1 & operand0) | (old & ~operand0);
+            if (atm_cmpxchg(dst, &old, new))
+                break;
+        }
+        *original = old;
+        break;
+
+    default:
+        *original = 0;
+        ret = -FI_EINVAL;
+        break;
+    }
+
+    return ret;
+}
+
+static inline int zhpeu_fab_atomic_op_u64(enum fi_op op,
+                                          uint64_t operand0, uint64_t operand1,
+                                          uint64_t *dst, uint64_t *original)
+{
+    int                 ret = 0;
+    uint64_t            old;
+    uint64_t            new;
+
+    switch (op) {
+
+    case FI_ATOMIC_READ:
+        *original = atm_load_rlx(dst);
+        break;
+
+    case FI_ATOMIC_WRITE:
+        *original = atm_xchg(dst, operand0);
+        break;
+
+    case FI_BAND:
+        *original = atm_and(dst, operand0);
+        break;
+
+    case FI_BOR:
+        *original = atm_or(dst, operand0);
+        break;
+
+    case FI_BXOR:
+        *original = atm_xor(dst, operand0);
+        break;
+
+    case FI_CSWAP:
+        atm_cmpxchg(dst, &operand0, operand1);
+        *original = operand0;
+        break;
+
+    case FI_SUM:
+        *original = atm_add(dst, operand0);
+        break;
+
+    case FI_MSWAP:
+        old = atm_load_rlx(dst);
+        for (;;) {
+            new = (operand1 & operand0) | (old & ~operand0);
+            if (atm_cmpxchg(dst, &old, new))
+                break;
+        }
+        *original = old;
+        break;
+
+    default:
+        *original = 0;
+        ret = -FI_EINVAL;
+        break;
+    }
+
+    return ret;
+}
+
+static inline int zhpeu_fab_atomic_op(enum fi_datatype type, enum fi_op op,
+                                      uint64_t operand0, uint64_t operand1,
+                                      void *dst, uint64_t *original)
+{
+    int                 ret;
+
+    switch (type) {
+
+    case FI_UINT8:
+        ret = zhpeu_fab_atomic_op_u8(op, operand0, operand1, dst, original);
+        break;
+
+    case FI_UINT16:
+        ret = zhpeu_fab_atomic_op_u16(op, operand0, operand1, dst, original);
+        break;
+
+    case FI_UINT32:
+        ret = zhpeu_fab_atomic_op_u32(op, operand0, operand1, dst, original);
+        break;
+
+    case FI_UINT64:
+        ret = zhpeu_fab_atomic_op_u64(op, operand0, operand1, dst, original);
+        break;
+
+    default:
+        *original = 0;
+        ret = -FI_EINVAL;
+        break;
+    }
 
     return ret;
 }
 
 static inline int zhpeu_fab_atomic_load(enum fi_datatype type,
-                                        const void *dst, uint64_t *value)
+                                        const void *src, uint64_t *value)
 {
-    int                 ret = 0;
+    int                 ret;
 
     switch (type) {
 
     case FI_UINT8:
-        ZHPEU_FAB_ATOMIC_LOAD_SIZE(8,  dst, *value);
+        *value = atm_load_rlx((const uint8_t *)src);
         break;
 
     case FI_UINT16:
-        ZHPEU_FAB_ATOMIC_LOAD_SIZE(16, dst, *value);
+        *value = atm_load_rlx((const uint16_t *)src);
         break;
 
     case FI_UINT32:
-        ZHPEU_FAB_ATOMIC_LOAD_SIZE(32, dst, *value);
+        *value = atm_load_rlx((const uint32_t *)src);
         break;
 
     case FI_UINT64:
-        ZHPEU_FAB_ATOMIC_LOAD_SIZE(64, dst, *value);
+        *value = atm_load_rlx((const uint64_t *)src);
         break;
 
     default:
@@ -199,19 +353,19 @@ static inline int zhpeu_fab_atomic_store(enum fi_datatype type,
     switch (type) {
 
     case FI_UINT8:
-        ZHPEU_FAB_ATOMIC_STORE_SIZE(8,  dst, value);
+        atm_store_rlx((uint8_t *)dst, (uint8_t)value);
         break;
 
     case FI_UINT16:
-        ZHPEU_FAB_ATOMIC_STORE_SIZE(16, dst, value);
+        atm_store_rlx((uint16_t *)dst, (uint16_t)value);
         break;
 
     case FI_UINT32:
-        ZHPEU_FAB_ATOMIC_STORE_SIZE(32, dst, value);
+        atm_store_rlx((uint32_t *)dst, (uint32_t)value);
         break;
 
     case FI_UINT64:
-        ZHPEU_FAB_ATOMIC_STORE_SIZE(64, dst, value);
+        atm_store_rlx((uint64_t *)dst, (uint64_t)value);
         break;
 
     default:
@@ -226,23 +380,28 @@ static inline int zhpeu_fab_atomic_copy(enum fi_datatype type,
                                         const void *src, void *dst)
 {
     int                 ret = 0;
+    uint64_t            value;
 
     switch (type) {
 
     case FI_UINT8:
-        ZHPEU_FAB_ATOMIC_COPY_SIZE(8,  src, dst);
+        value = atm_load_rlx((const uint8_t *)src);
+        atm_store_rlx((uint8_t *)dst, (uint8_t)value);
         break;
 
     case FI_UINT16:
-        ZHPEU_FAB_ATOMIC_COPY_SIZE(16, src, dst);
+        value = atm_load_rlx((const uint16_t *)src);
+        atm_store_rlx((uint16_t *)dst, (uint16_t)value);
         break;
 
     case FI_UINT32:
-        ZHPEU_FAB_ATOMIC_COPY_SIZE(32, src, dst);
+        value = atm_load_rlx((const uint32_t *)src);
+        atm_store_rlx((uint32_t *)dst, (uint32_t)value);
         break;
 
     case FI_UINT64:
-        ZHPEU_FAB_ATOMIC_COPY_SIZE(64, src, dst);
+        value = atm_load_rlx((const uint64_t *)src);
+        atm_store_rlx((uint64_t *)dst, (uint64_t)value);
         break;
 
     default:

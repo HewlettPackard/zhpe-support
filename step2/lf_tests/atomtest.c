@@ -564,9 +564,10 @@ static void lcl_atomic_op(struct stuff *conn, struct atomic_op *op)
 {
     struct fab_conn     *fab_conn = &conn->fab_conn;
     void                *dst = ((char *)fab_conn->mrmem.mem + op->off);
+    uint64_t            dontcare;
 
     return lcl_atomic(conn, op->op, op->type, dst, op->operand0, op->operand1,
-                      NULL);
+                      &dontcare);
 }
 
 static int do_server_sum(struct stuff *conn)
@@ -645,6 +646,13 @@ static int cli_atomic_size_test1(struct stuff *conn, enum fi_op op,
     uint64_t            rem_fetched;
 
     /*
+     * Something to breakpoint on: moved this up here because
+     * compiler/debugger are putting the function breakpoint in the wrong
+     * place.
+     */
+    lcl_result = start;
+
+    /*
      * Adjust the operand to preserve previous types' ops.
      * Adjust compare to deal with previous ops.
      */
@@ -688,7 +696,6 @@ static int cli_atomic_size_test1(struct stuff *conn, enum fi_op op,
         goto done;
     }
 
-    lcl_result = start;
     lcl_atomic(conn, op, sz->type, &lcl_result, operand0, operand1,
                &lcl_fetched);
     ret = cli_atomic_original(conn, op, sz->type, SW_OFF, operand0, operand1,
@@ -822,8 +829,8 @@ static int cli_atomic_size_tests(struct stuff *conn)
                                0x2DE187B5A5E187B5UL, 0xFEDCBA9876543210UL);
     if (ret < 0)
         goto done;
-    /* MSWAP: 6 cli_op, 2 hw_op */
-    expected_ops(conn, 6, 2);
+    /* MSWAP: 6 cli_op, 4 hw_op */
+    expected_ops(conn, 6, 4);
     ret = cli_atomic_size_test(conn, FI_MSWAP,
                                0x0123456789ABCDEFUL, 0xFFFFFFFFFFFFFFFFUL,
                                0xFEDCBA9876543210UL, 0xFFFFFFFFFFFFFFFFUL);
@@ -846,8 +853,8 @@ static int cli_atomic_size_tests(struct stuff *conn)
     /* ATOMIC_WRITE: 6 cli_op, 4 hw_op */
     expected_ops(conn, 6, 4);
     ret = cli_atomic_size_test(conn, FI_ATOMIC_WRITE,
-                               0x0000000000000001UL, 0x0000000000000000UL,
-                               0xFEDCBA9876543210UL, 0x0000000000000001UL);
+                               0x0000000100010101UL, 0x0000000000000000UL,
+                               0xFEDCBA9876543210UL, 0x0000000100010101UL);
     if (ret < 0)
         goto done;
     /* Check op counts. */

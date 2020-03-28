@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2018 Hewlett Packard Enterprise Development LP.
+ * Copyright (C) 2017-2020 Hewlett Packard Enterprise Development LP.
  * All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -156,6 +156,11 @@ struct fab_conn *_fab_conn_alloc(struct fab_dom *dom,
 
 int fab_dom_free(struct fab_dom *dom);
 int fab_conn_free(struct fab_conn *conn);
+
+int fab_dom_setupx(const char *service, const char *node, bool passive,
+                   const char *provider, const char *domain,
+                   enum fi_ep_type ep_type, uint64_t mr_mode,
+                   enum fi_progress progress, struct fab_dom *dom);
 
 int _fab_dom_setup(const char *callf, uint line,
                    const char *service, const char *node, bool passive,

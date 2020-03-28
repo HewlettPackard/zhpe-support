@@ -245,10 +245,10 @@ int zhpeq_geti(struct zhpeq *zq, uint32_t qindex, bool fence,
 int zhpeq_nop(struct zhpeq *zq, uint32_t qindex, bool fence,
               void *context);
 
-int zhpeq_atomic(struct zhpeq *zq, uint32_t qindex, bool fence, bool retval,
-                 enum zhpeq_atomic_size datasize, enum zhpeq_atomic_op op,
-                 uint64_t remote_addr, const uint64_t *operands,
-                 void *context);
+void zhpeq_atomic(struct zhpeq *zq, uint32_t qindex, uint16_t op_flags,
+                  enum zhpeq_atomic_size datasize, enum zhpeq_atomic_op op,
+                  uint64_t remote_addr, const uint64_t *operands,
+                  void *context);
 
 void zhpeq_print_info(struct zhpeq *zq);
 

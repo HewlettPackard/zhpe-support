@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2019 Hewlett Packard Enterprise Development LP.
+ * Copyright (C) 2017-2020 Hewlett Packard Enterprise Development LP.
  * All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -277,42 +277,42 @@ static int finfo_getinfo(const char *callf, uint line, struct fab_info *finfo)
     return ret;
 }
 
-int _fab_dom_setup(const char *callf, uint line,
-                   const char *service, const char *node, bool passive,
+int fab_dom_setupx(const char *service, const char *node, bool passive,
                    const char *provider, const char *domain,
-                   enum fi_ep_type ep_type, struct fab_dom *dom)
+                   enum fi_ep_type ep_type, uint64_t mr_mode,
+                   enum fi_progress progress, struct fab_dom *dom)
 {
     int                 ret;
     struct fi_av_attr   av_attr = { .type = FI_AV_TABLE };
 
-    ret = finfo_init(callf, line, service, node, passive,
+    ret = finfo_init(__func__, __LINE__, service, node, passive,
                      provider, domain, ep_type, NULL, &dom->finfo);
     if (ret < 0)
         goto done;
 
-    dom->finfo.hints->caps = (FI_RMA | FI_READ | FI_WRITE |
+    dom->finfo.hints->caps = (FI_MSG | FI_TAGGED | FI_RMA | FI_ATOMIC |
+                              FI_READ | FI_WRITE |
                               FI_REMOTE_READ | FI_REMOTE_WRITE);
-    dom->finfo.hints->mode = (FI_LOCAL_MR | FI_RX_CQ_DATA |
-                              FI_CONTEXT | FI_CONTEXT2);
-    /* dom->finfo->hints->domain_attr->data_progress = FI_PROGRESS_MANUAL; */
-    dom->finfo.hints->domain_attr->mr_mode = FI_MR_BASIC;
+    dom->finfo.hints->mode = (FI_LOCAL_MR | FI_CONTEXT | FI_CONTEXT2);
     dom->finfo.hints->addr_format = FI_SOCKADDR;
+    dom->finfo.hints->domain_attr->mr_mode = mr_mode;
+    dom->finfo.hints->domain_attr->data_progress = progress;
 
-    ret = finfo_getinfo(callf, line, &dom->finfo);
+    ret = finfo_getinfo(__func__, __LINE__, &dom->finfo);
     if (ret < 0)
         goto done;
 
     ret = fi_fabric(dom->finfo.info->fabric_attr, &dom->fabric, NULL);
     if (ret < 0) {
         dom->fabric = NULL;
-	print_func_fi_err(callf, line, "fi_fabric", "", ret);
+	print_func_err(__func__, __LINE__, "fi_fabric", "", ret);
 	goto done;
     }
     dom->finfo.info->fabric_attr->fabric = dom->fabric;
     ret = fi_domain(dom->fabric, dom->finfo.info, &dom->domain, NULL);
     if (ret < 0) {
         dom->domain = NULL;
-	print_func_fi_err(callf, line, "fi_domain", "", ret);
+	print_func_err(__func__, __LINE__, "fi_domain", "", ret);
 	goto done;
     }
     dom->finfo.info->domain_attr->domain = dom->domain;
@@ -320,7 +320,7 @@ int _fab_dom_setup(const char *callf, uint line,
         ret = fi_av_open(dom->domain, &av_attr, &dom->av, NULL);
         if (ret < 0) {
             dom->av = NULL;
-            print_func_fi_err(callf, line, "fi_av_open", "", ret);
+            print_func_err(__func__, __LINE__, "fi_av_open", "", ret);
             goto done;
         }
     }
@@ -328,6 +328,23 @@ int _fab_dom_setup(const char *callf, uint line,
  done:
     return ret;
 }
+
+
+int _fab_dom_setup(const char *callf, uint line,
+                   const char *service, const char *node, bool passive,
+                   const char *provider, const char *domain,
+                   enum fi_ep_type ep_type, struct fab_dom *dom)
+{
+    int                 ret;
+
+    ret = fab_dom_setupx(service, node, passive, provider, domain,
+                         ep_type, FI_MR_BASIC, FI_PROGRESS_AUTO, dom);
+    if (ret < 0)
+            print_func_err(__func__, __LINE__, __func__, "", ret);
+
+    return ret;
+}
+
 int _fab_dom_getinfo(const char *callf, uint line,
                      const char *service, const char *node, bool passive,
                      struct fab_dom *dom, struct fab_info *finfo)

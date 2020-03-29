@@ -337,7 +337,7 @@ static int zhpe_tq_alloc_post(struct zhpeq_tqi *tqi)
 static int zhpe_domain_insert_addr(struct zhpeq_domi *domi, void *sa,
                                    void **addr_cookie)
 {
-    int                 ret;
+    int                 ret = 0;
     struct sockaddr_zhpe *sz = sa;
     struct dev_uuid_tree_entry *uue = NULL;
     union zhpe_op       op;

@@ -317,7 +317,7 @@ static inline int zhpeu_fab_atomic_op(enum fi_datatype type, enum fi_op op,
 static inline int zhpeu_fab_atomic_load(enum fi_datatype type,
                                         const void *src, uint64_t *value)
 {
-    int                 ret;
+    int                 ret = 0;
 
     switch (type) {
 

@@ -822,8 +822,8 @@ static int cli_atomic_size_tests(struct stuff *conn)
                                0x8844221000442210UL, 0x2DE187B5A5E187B5UL);
     if (ret < 0)
         goto done;
-    /* MSWAP: 6 cli_op, 2 hw_op */
-    expected_ops(conn, 6, 2);
+    /* MSWAP: 6 cli_op, 4 hw_op */
+    expected_ops(conn, 6, 4);
     ret = cli_atomic_size_test(conn, FI_MSWAP,
                                0xFFFFFFFFFFFFFFFFUL, 0xFEDCBA9876543210UL,
                                0x2DE187B5A5E187B5UL, 0xFEDCBA9876543210UL);

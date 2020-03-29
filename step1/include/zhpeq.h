@@ -182,6 +182,7 @@ struct zhpeq_tq {
     uint32_t            wq_tail;
     uint32_t            wq_tail_commit;
     uint32_t            cq_head;
+    uint32_t            cmd_queued;
 };
 
 #define ZHPEQ_TQ_RESERVATION_MASK ((1U << ZHPEQ_INSERT_SHIFT) - 1)

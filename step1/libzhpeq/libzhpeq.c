@@ -88,6 +88,7 @@ static void cmd_insert64(struct zhpeq_tq *ztq, uint16_t reservation16)
     for (i = 1; i < ARRAY_SIZE(dst->bytes8); i++)
         iowrite64(src->bytes8[i], &dst->bytes8[i]);
     iowrite64(src->bytes8[0], &dst->bytes8[0]);
+    ztq->cmd_queued++;
 }
 
 static void mem_insert64(struct zhpeq_tq *ztq, uint16_t reservation16)
@@ -117,6 +118,7 @@ static void cmd_insert128(struct zhpeq_tq *ztq, uint16_t reservation16)
         "vmovdqa   %%xmm0,   (%[d])\n"
         : "=m" (*dst): [s] "r" (src), [d] "r" (dst)
         : "%xmm0", "%xmm1", "%xmm2", "%xmm3");
+    ztq->cmd_queued++;
 }
 
 static void cmd_insert256(struct zhpeq_tq *ztq, uint16_t reservation16)
@@ -132,6 +134,7 @@ static void cmd_insert256(struct zhpeq_tq *ztq, uint16_t reservation16)
         "vmovdqa   %%ymm1, 32(%[d])\n"
         "vmovdqa   %%ymm0,   (%[d])\n"
         : "=m" (*dst) : [s] "r" (src), [d] "r" (dst) : "%ymm0", "%ymm1");
+    ztq->cmd_queued++;
 }
 
 static void mem_insert256(struct zhpeq_tq *ztq, uint16_t reservation16)

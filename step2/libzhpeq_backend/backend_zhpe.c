@@ -1288,9 +1288,9 @@ static int zhpe_mmap_commit(struct zhpeq_mmap_desc *zmdesc,
 }
 
 static int zhpe_qkdata_export(const struct zhpeq_key_data *qkdata,
-                              struct key_data_packed *blob)
+                              struct key_data_packed *blob, uint32_t qaccmask)
 {
-    pack_kdata(qkdata, blob, qkdata->z.zaddr);
+    pack_kdata(qkdata, blob, qkdata->z.zaddr, qaccmask);
 
     return 0;
 }

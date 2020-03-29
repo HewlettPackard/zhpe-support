@@ -181,14 +181,14 @@ struct key_data_packed {
 
 static inline void pack_kdata(const struct zhpeq_key_data *qkdata,
                               struct key_data_packed *pdata,
-                              uint64_t zaddr)
+                              uint64_t zaddr, uint32_t qaccmask)
 {
     const struct zhpe_key_data *kdata = &qkdata->z;
 
     pdata->vaddr = be64toh(kdata->vaddr);
     pdata->zaddr = be64toh(zaddr);
     pdata->len = be64toh(kdata->len);
-    pdata->access = kdata->access;
+    pdata->access = kdata->access & qaccmask;
 }
 
 static inline void unpack_kdata(const struct key_data_packed *pdata,

@@ -596,7 +596,7 @@ int zhpeq_mr_reg(struct zhpeq_dom *zqdom, const void *buf, size_t len,
 
 int zhpeq_qkdata_free(struct zhpeq_key_data *qkdata);
 
-int zhpeq_qkdata_export(const struct zhpeq_key_data *qkdata,
+int zhpeq_qkdata_export(const struct zhpeq_key_data *qkdata, uint32_t qaccmask,
                         void *blob, size_t *blob_len);
 
 int zhpeq_qkdata_import(struct zhpeq_dom *zqdom, void *addr_cookie,

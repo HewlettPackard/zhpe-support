@@ -181,7 +181,8 @@ static int do_mem_xchg(struct stuff *conn)
     size_t              blob_len;
 
     blob_len = sizeof(blob);
-    ret = zhpeq_qkdata_export(conn->lcl_kdata, blob, &blob_len);
+    ret = zhpeq_qkdata_export(conn->lcl_kdata, conn->lcl_kdata->z.access,
+                              blob, &blob_len);
     if (ret < 0) {
         print_func_err(__func__, __LINE__, "zhpeq_zmmu_export", "", ret);
         goto done;

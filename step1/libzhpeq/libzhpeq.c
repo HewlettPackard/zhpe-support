@@ -1153,7 +1153,7 @@ int zhpeq_fam_qkdata(struct zhpeq_dom *zqdom, void *addr_cookie,
     return ret;
 }
 
-int zhpeq_qkdata_export(const struct zhpeq_key_data *qkdata,
+int zhpeq_qkdata_export(const struct zhpeq_key_data *qkdata, uint32_t qaccmask,
                         void *blob, size_t *blob_len)
 {
     zhpe_stats_start(zhpe_stats_subid(ZHPQ, 30));
@@ -1172,7 +1172,7 @@ int zhpeq_qkdata_export(const struct zhpeq_key_data *qkdata,
     zhpeq_print_qkdata(__func__, __LINE__, qkdata);
 #endif
     *blob_len = sizeof(struct key_data_packed);
-    ret = zhpe_qkdata_export(qkdata, blob);
+    ret = zhpe_qkdata_export(qkdata, blob, qaccmask);
 
  done:
     zhpe_stats_stop(zhpe_stats_subid(ZHPQ, 30));

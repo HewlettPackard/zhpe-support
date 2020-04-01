@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019 Hewlett Packard Enterprise Development LP.
+ * Copyright (C) 2019-2020 Hewlett Packard Enterprise Development LP.
  * All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -42,6 +42,8 @@
 
 #include <zhpe_mmap.h>
 
+const char *appname;
+
 static void usage(bool help) __attribute__ ((__noreturn__));
 
 static void usage(bool help)
@@ -65,14 +67,13 @@ int testit(size_t length)
     void     *buf1;
     uint16_t *p;
 
-
     if (length > 0)
     {
         buf1 = zhpe_mmap_alloc(length);
         printf("Writing to buf:\n");
         for (i = 0, p = (uint16_t *) buf1; i < length; i += sizeof (*p), p++)
             *p = (i | 1);
-    
+
         printf("Checking contents of buf:\n");
         ret=0;
         for (i = 0, p = buf1; i < length;
@@ -98,6 +99,8 @@ int main(int argc, char **argv)
     int             ret = 1;
     uint64_t        mmap_len;
     int             iterations=4;
+
+    appname = basename(argv[0]);
 
     if (argc < 2)
         usage(true);

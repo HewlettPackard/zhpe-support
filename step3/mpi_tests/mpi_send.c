@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2018 Hewlett Packard Enterprise Development LP.
+ * Copyright (C) 2017-2020 Hewlett Packard Enterprise Development LP.
  * All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -51,14 +51,17 @@ int main(int argc, char **argv)
     int                 n_rank;
 
     /* We're going to assume MPI isn't tweaking the arguments. */
-    if (argc != 3 && argc != 5) {
-        fprintf(stderr, "Usage:%s <loops> <size> [stats_dir <unique>]\n",
+    if (argc != 3 && argc != 4) {
+        /* We need to call MPI_Init because done calls MPI_Finalize */
+        MPI_Init(&argc, &argv);
+        fprintf(stderr, "Usage:%s <loops> <size> [<unique>]\n",
                 argv[0]);
+        fprintf(stderr, "(Note: if using <unique> must have ZHPE_STATS_DIR set\n");
         goto done;
     }
 
-    if (argc == 5) {
-        zhpe_stats_init(argv[3], argv[4]);
+    if (argc == 4) {
+        zhpe_stats_init(argv[3]);
         zhpe_stats_test(0);
         zhpe_stats_open(1);
         zhpe_stats_enable();

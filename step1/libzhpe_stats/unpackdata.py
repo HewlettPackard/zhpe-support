@@ -6,50 +6,40 @@ import sys
 from ctypes import *
 import statistics
 
-class ProcCtlCacheData(Structure):
-    _pack_ = 1
-    _fields_ = [('ctlval', c_uint16),
-                ('ctlversion', c_uint16),
-                ('execInstTotal', c_uint64),
-                ('cpl0ExecInstTotal', c_uint64),
-                ('cpl1ExecInstTotal', c_uint64),
-                ('cpl2ExecInstTotal', c_uint64),
-                ('cpl3ExecInstTotal', c_uint64),
-    		('cacheval', c_uint16),
-                ('cacheversion', c_uint16),
-                ('coherencyCastoutDataL1', c_uint64),
-                ('coherencyCastoutInstL1', c_uint64),
-                ('capacityCastoutDataL1', c_uint64),
-                ('capacityCastoutInstL1', c_uint64),
-                ('lineMissDataL1', c_uint64),
-                ('lineHitDataL1', c_uint64),
-                ('lineMissInstL1', c_uint64),
-                ('lineHitInstL1', c_uint64),
-                ('uncachedReadInstL1', c_uint64),
-                ('uncachedReadDataL1', c_uint64),
-                ('uncachedWriteDataL1', c_uint64),
-                ('lineCastoutDirtyDataL1', c_uint64),
-                ('coherencyCastoutDataL2', c_uint64),
-                ('capacityCastoutDataL2', c_uint64),
-                ('lineMissDataL2', c_uint64),
-                ('lineHitDataL2', c_uint64),
-                ('lineCastoutDirtyDataL2', c_uint64),
-                ('lineMissWriteThroughL2', c_uint64),
-                ('zhpeStatsStarts', c_uint32),
-                ('zhpeStatsPauses', c_uint32),
-                ('zhpeSubId', c_uint32),
-                ('zhpeNesting', c_uint32)]
+class Metadata(Structure):
+    _fields_ = [('profileid', c_uint32),
+                ('perf_typeid', c_uint32),
+                ('config_count', c_int),
+                ('config_list', c_uint64 * 6),
+               ]
 
-def printProcCtlCacheDataHeader():
-    print('execInstTotal,cpl0ExecInstTotal,cpl1ExecInstTotal,cpl2ExecInstTotal,cpl3ExecInstTotal,coherencyCastoutDataL1,coherencyCastoutInstL1,capacityCastoutDataL1,capacityCastoutInstL1,lineMissDataL1,lineHitDataL1,lineMissInstL1,lineHitInstL1,uncachedReadInstL1,uncachedReadDataL1,uncachedWriteDataL1,lineCastoutDirtyDataL1,coherencyCastoutDataL2,capacityCastoutDataL2,lineMissDataL2,lineHitDataL2,lineCastoutDirtyDataL2,lineMissWriteThroughL2,zhpeStatsStarts,zhpeStatsPauses,zhpeSubId,zhpeNesting')
+class Record(Structure):
+    _fields_ = [
+                ('opflag', c_uint32),
+                ('subid',  c_uint32),
+                ('val0',   c_uint64),
+                ('val1',   c_uint64),
+                ('val2',   c_uint64),
+                ('val3',   c_uint64),
+                ('val4',   c_uint64),
+                ('val5',   c_uint64),
+                ('val6',   c_uint64),
+             ]
 
-def prettyPrintProcCtlCacheData(aProcCtlCacheData, anIdx):
-    print('execInstTotal:{}, cpl0ExecInstTotal:{},  cpl1ExecInstTotal:{},  cpl2ExecInstTotal:{},  cpl3ExecInstTotal:{}, coherencyCastoutDataL1:{},coherencyCastoutInstL1:{},capacityCastoutDataL1:{},capacityCastoutInstL1:{},lineMissDataL1:{},lineHitDataL1:{},lineMissInstL1:{},lineHitInstL1:{},uncachedReadInstL1:{},uncachedReadDataL1:{},uncachedWriteDataL1:{},lineCastoutDirtyDataL1:{},coherencyCastoutDataL2:{},capacityCastoutDataL2:{},lineMissDataL2:{},lineHitDataL2:{},lineCastoutDirtyDataL2:{},lineMissWriteThroughL2:{},zhpeStatsStarts:{},zhpeStatsPauses:{},zhpeSubId:{},zhpeNesting:{}'.format(aProcCtlCacheData.execInstTotal,aProcCtlCacheData.cpl0ExecInstTotal, aProcCtlCacheData.cpl1ExecInstTotal, aProcCtlCacheData.cpl2ExecInstTotal, aProcCtlCacheData.cpl3ExecInstTotal,aProcCtlCacheData.coherencyCastoutDataL1,aProcCtlCacheData.coherencyCastoutInstL1,aProcCtlCacheData.capacityCastoutDataL1,aProcCtlCacheData.capacityCastoutInstL1,aProcCtlCacheData.lineMissDataL1,aProcCtlCacheData.lineHitDataL1,aProcCtlCacheData.lineMissInstL1,aProcCtlCacheData.lineHitInstL1,aProcCtlCacheData.uncachedReadInstL1,aProcCtlCacheData.uncachedReadDataL1,aProcCtlCacheData.uncachedWriteDataL1,aProcCtlCacheData.lineCastoutDirtyDataL1,aProcCtlCacheData.coherencyCastoutDataL2,aProcCtlCacheData.capacityCastoutDataL2,aProcCtlCacheData.lineMissDataL2,aProcCtlCacheData.lineHitDataL2,aProcCtlCacheData.lineCastoutDirtyDataL2,aProcCtlCacheData.lineMissWriteThroughL2,aProcCtlCacheData.zhpeStatsStarts,aProcCtlCacheData.zhpeStatsPauses,aProcCtlCacheData.zhpeSubId,aProcCtlCacheData.zhpeNesting))
+def printMetadata(m):
+    print('profileid: {} , perf_typeid: {} , val0:rdtscp '.format(m.profileid,m.perf_typeid), end='')
+    for i in range(m.config_count):
+        print(',val{}_config:{} '.format(i+1,hex(m.config_list[i])), end='')
+    print('')
 
+def printRecordHeader():
+    print('opflag,subid,val0,val1,val2,val3,val4,val5,val6,nested_measure_cnt,nested_stamp_cnt,nest_lvl')
 
-def printProcCtlCacheData(aProcCtlCacheData, anIdx):
-    print('{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}'.format(aProcCtlCacheData.execInstTotal,aProcCtlCacheData.cpl0ExecInstTotal, aProcCtlCacheData.cpl1ExecInstTotal, aProcCtlCacheData.cpl2ExecInstTotal, aProcCtlCacheData.cpl3ExecInstTotal,aProcCtlCacheData.coherencyCastoutDataL1,aProcCtlCacheData.coherencyCastoutInstL1,aProcCtlCacheData.capacityCastoutDataL1,aProcCtlCacheData.capacityCastoutInstL1,aProcCtlCacheData.lineMissDataL1,aProcCtlCacheData.lineHitDataL1,aProcCtlCacheData.lineMissInstL1,aProcCtlCacheData.lineHitInstL1,aProcCtlCacheData.uncachedReadInstL1,aProcCtlCacheData.uncachedReadDataL1,aProcCtlCacheData.uncachedWriteDataL1,aProcCtlCacheData.lineCastoutDirtyDataL1,aProcCtlCacheData.coherencyCastoutDataL2,aProcCtlCacheData.capacityCastoutDataL2,aProcCtlCacheData.lineMissDataL2,aProcCtlCacheData.lineHitDataL2,aProcCtlCacheData.lineCastoutDirtyDataL2,aProcCtlCacheData.lineMissWriteThroughL2,aProcCtlCacheData.zhpeStatsStarts,aProcCtlCacheData.zhpeStatsPauses,aProcCtlCacheData.zhpeSubId,aProcCtlCacheData.zhpeNesting))
+def prettyPrintRecord(aRecord):
+    print('opflag:{}, subid:{}, val0:{}, val1:{},  val2:{}, val3:{}, val4:{}, val5:{}, val6:{}'.format(aRecord.opflag,aRecord.subid,aRecord.val1,aRecord.val2,aRecord.val3,aRecord.val4,aRecord.val5,aRecord.val6))
 
+def printRecord(aRecord):
+    print('{},{},{},{},{},{},{},{},{}'.format(aRecord.opflag,aRecord.subid,aRecord.val0,aRecord.val1,aRecord.val2,aRecord.val3,aRecord.val4,aRecord.val5,aRecord.val6))
 
 def printStatsForArray(aName, anArray):
     idx=0
@@ -82,27 +72,36 @@ def unpackfile(afilename):
         total_array=[]
         cpl0_array=[]
         cpl3_array=[]
-        printProcCtlCacheDataHeader()
-        x = ProcCtlCacheData()
+        x = Record()
+        m = Metadata()
+        file.readinto(m)
+        printMetadata(m)
+        printRecordHeader()
         while file.readinto(x):
-            all_totals_array.append(x.execInstTotal)
-            all_cpl0_array.append(x.cpl0ExecInstTotal)
-            all_cpl3_array.append(x.cpl3ExecInstTotal)
-            total_array.append(x.execInstTotal)
-            cpl0_array.append(x.cpl0ExecInstTotal)
-            cpl3_array.append(x.cpl3ExecInstTotal)
-            printProcCtlCacheData(x,my_idx)        
+            val0_array.append(x.val0)
+            val1_array.append(x.val1)
+            val2_array.append(x.val2)
+            val3_array.append(x.val3)
+            val4_array.append(x.val4)
+            val5_array.append(x.val5)
+            val6_array.append(x.val6)
+            printRecord(x)
             my_idx= my_idx + 1
-            if (x.execInstTotal != x.cpl0ExecInstTotal + x.cpl3ExecInstTotal):
-                print('Warning: {}: {} + {} != {}'.format(afilename,x.cpl0ExecInstTotal, x.cpl3ExecInstTotal,x.cpl3ExecInstTotal))
- #    printStatsForArray(afilename + " cpl0ExecInstTotal", cpl0_array)
-  #   printStatsForArray(afilename + " cpl3ExecInstTotal", cpl3_array)
-   #  printStatsForArray(afilename + " execInstTotal", total_array)
-          
+
+#     printStatsForArray(afilename + " val1", val1_array)
+#     printStatsForArray(afilename + " val2", val2_array)
+#     printStatsForArray(afilename + " val3", val3_array)
+#     printStatsForArray(afilename + " val4", val4_array)
+#     printStatsForArray(afilename + " val5", val5_array)
+
 # main
-all_totals_array=[]
-all_cpl0_array=[]
-all_cpl3_array=[]
+val0_array=[]
+val1_array=[]
+val2_array=[]
+val3_array=[]
+val4_array=[]
+val5_array=[]
+val6_array=[]
 
 filename = sys.argv[-1]
 

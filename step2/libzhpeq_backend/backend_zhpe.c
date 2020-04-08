@@ -1034,10 +1034,9 @@ char *zhpe_qkdata_id_str(const struct zhpeq_key_data *qkdata)
         goto done;
 
     uuid_unparse_upper(bdom->nodes[desc->open_idx].uue->uuid, uuid_str);
-    if (zhpeu_asprintf(&ret, "%d %s", desc->open_idx, uuid_str) == -1)
-        ret = NULL;
- done:
+    ret = zhpeu_asprintf("%d %s", desc->open_idx, uuid_str);
 
+ done:
     return ret;
 }
 

@@ -1329,7 +1329,7 @@ static char *zhpe_qkdata_id_str(const struct zhpeq_mr_desc_v1 *desc)
         goto done;
 
     uuid_unparse_upper(uue->uuid, uuid_str);
-    ret = zhpeu_asprintf(ret, "0x%p %s", desc->addr_cookie, uuid_str);
+    ret = zhpeu_asprintf("0x%p %s", desc->addr_cookie, uuid_str);
 
  done:
     return ret;

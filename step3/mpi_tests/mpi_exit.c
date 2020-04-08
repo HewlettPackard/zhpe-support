@@ -52,9 +52,10 @@ do {                                                            \
     }                                                           \
 } while (0)
 
+static char             buf[4096];
+
 int main(int argc, char **argv)
 {
-    int                 buf = 0;
     MPI_Request         *requests = NULL;
     MPI_Status          *statuses = NULL;
     int                 req = 0;
@@ -73,11 +74,11 @@ int main(int argc, char **argv)
     }
 
     for (i = 0; i < n_ranks; i++) {
-        MPI_CALL(MPI_Irecv, &buf, 1, MPI_INT, i, 0, MPI_COMM_WORLD,
+        MPI_CALL(MPI_Irecv, buf, sizeof(buf), MPI_CHAR, i, 0, MPI_COMM_WORLD,
                  &requests[req++]);
     }
     for (i = 0; i < n_ranks; i++) {
-        MPI_CALL(MPI_Isend, &buf, 1, MPI_INT, i, 0, MPI_COMM_WORLD,
+        MPI_CALL(MPI_Isend, buf, sizeof(buf), MPI_CHAR, i, 0, MPI_COMM_WORLD,
                  &requests[req++]);
     }
     MPI_CALL(MPI_Waitall, req, requests, statuses);

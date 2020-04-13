@@ -1287,7 +1287,7 @@ char *zhpeu_sockaddr_str(const void *addr)
         abort();
     }
 
-    ret = zhpeu_asprintf("%s:%s:%d", family, ntop, port);
+    xasprintf(&ret, "%s:%s:%d", family, ntop, port);
 
 done:
     return ret;
@@ -1481,18 +1481,17 @@ void zhpeu_dbg(const char *callf, uint line, const char *errf, int err)
 
 /* Keep _GNU_SOURCE out of the headers. */
 
-char *zhpeu_asprintf(const char *fmt, ...)
+int zhpeu_asprintf(char **strp, const char *fmt, ...)
 {
-    char                *ret;
-    int                 rc;
+    int                 ret;
     va_list             ap;
 
     va_start(ap, fmt);
-    rc = vasprintf(&ret, fmt, ap);
+    ret = vasprintf(strp, fmt, ap);
     va_end(ap);
-    if (rc == -1) {
+    if (ret == -1) {
         errno = ENOMEM;
-        ret = NULL;
+        *strp = NULL;
     }
 
     return ret;

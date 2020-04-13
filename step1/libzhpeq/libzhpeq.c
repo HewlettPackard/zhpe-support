@@ -1036,6 +1036,7 @@ bool zhpeq_rx_oos_spill(struct zhpeq_rx_seq *zseq, uint32_t msgs,
                          (uintptr_t)rx_oos->next, 0);
         zseq->rx_oos_list = rx_oos->next;
         zseq->free(zseq, rx_oos);
+        rx_oos = zseq->rx_oos_list;
     }
 
     return (msgs != msgs_orig);

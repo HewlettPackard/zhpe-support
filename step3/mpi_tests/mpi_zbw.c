@@ -36,7 +36,10 @@
 
 #include <mpi.h>
 
+#undef _ZHPEQ_TEST_COMPAT_
+
 #include <zhpeq_util.h>
+#include <zhpe_stats.h>
 
 /* If the number of samples per sec exceeds this, I'm happy! */
 #define SAMPLES_PER_SEC (1000000UL)
@@ -70,6 +73,8 @@ struct stuff {
     uint64_t            rx_queued;
     uint64_t            rx_done;
     uint64_t            rx_end_cnt;
+    uint64_t            rx_end_tot;
+    int                 rx_end_rcv;
     uint64_t            rx_end_buf;
     struct io_rec       *rx_rec;
     uint64_t            rx_rec_idx;
@@ -85,14 +90,14 @@ struct stuff {
 static int n_ranks = -1;
 static int my_rank = -1;
 
-
 #define MPI_CALL(_func, ...)                                    \
 do {                                                            \
     int                 __rc = _func(__VA_ARGS__);              \
                                                                 \
     if (unlikely(__rc != MPI_SUCCESS)) {                        \
-        print_err("%s,%u:%d:%s() returned %d\n",                \
-                  __func__, __LINE__, my_rank, #_func, __rc);   \
+        zhpeu_print_err("%s,%u:%d:%s() returned %d\n",          \
+                        __func__, __LINE__, my_rank, #_func,    \
+                        __rc);                                  \
         MPI_Abort(MPI_COMM_WORLD, 1);                           \
     }                                                           \
 } while (0)
@@ -121,8 +126,15 @@ static bool do_recv_loop(struct stuff *stuff)
                      MPI_ANY_SOURCE, TAG_DATA, MPI_COMM_WORLD,
                      &stuff->rx_req[stuff->indicies[i]]);
             stuff->rx_queued++;
-        } else
-            stuff->rx_end_cnt = stuff->rx_end_buf;
+        } else {
+            stuff->rx_end_tot += stuff->rx_end_buf;
+            if (stuff->nto1_opt && ++stuff->rx_end_rcv < n_ranks - 1)
+                MPI_CALL(MPI_Irecv, &stuff->rx_end_buf, 1, MPI_UINT64_T,
+                         MPI_ANY_SOURCE, TAG_DONE, MPI_COMM_WORLD,
+                         &stuff->rx_req[0]);
+            else
+                stuff->rx_end_cnt = stuff->rx_end_tot;
+        }
     }
     rec->cnt = stuff->rx_done;
 
@@ -132,6 +144,7 @@ static bool do_recv_loop(struct stuff *stuff)
 
 static void do_recv_start(struct stuff *stuff)
 {
+    assert(stuff->rx_req_cnt == 0);
     stuff->rx_end_cnt = UINT64_MAX;
     MPI_CALL(MPI_Irecv, &stuff->rx_end_buf, 1, MPI_UINT64_T, MPI_ANY_SOURCE,
              TAG_DONE, MPI_COMM_WORLD, &stuff->rx_req[stuff->rx_req_cnt++]);
@@ -208,6 +221,7 @@ static void dump_rec(struct stuff *stuff, bool send)
     int                 rc;
     uint64_t            i;
 
+    zhpe_stats_disable();
     if (send) {
         rec = stuff->tx_rec;
         rec_idx = stuff->tx_rec_idx;
@@ -218,12 +232,12 @@ static void dump_rec(struct stuff *stuff, bool send)
         label = "recv";
     }
 
-    fname = zhpeu_asprintf("%s/%s.%d", stuff->results_dir, label, my_rank);
+    xasprintf(&fname, "%s/%s.%d", stuff->results_dir, label, my_rank);
     results_file = fopen(fname, "w");
     free(fname);
     if (!results_file) {
         rc = -errno;
-        print_func_err(__func__, __LINE__, "fopen", fname, rc);
+        zhpeu_print_func_err(__func__, __LINE__, "fopen", fname, rc);
         MPI_Abort(MPI_COMM_WORLD, 1);
     }
     fprintf(results_file, "%lu %lu %lu %s\n",
@@ -257,7 +271,7 @@ static void do_send_recv(struct stuff *stuff)
     do_recv_start(stuff);
     do_send_start(stuff);
 
-    while (unlikely(recv_done && send_done)) {
+    while (unlikely(!recv_done && !send_done)) {
         recv_done = do_recv_loop(stuff);
         send_done = do_send_loop(stuff);
     }
@@ -269,7 +283,7 @@ static void usage(bool help) __attribute__ ((__noreturn__));
 
 static void usage(bool help)
 {
-    print_usage(
+    zhpeu_print_usage(
         help,
         "Usage:%s [-bn] <size> <ops-outstanding> <seconds> <results_dir>]\n"
         "<size> and <ops>  may be postfixed with [kmgtKMGT] to specify the"
@@ -277,7 +291,7 @@ static void usage(bool help)
         "Lower case is base 10; upper case is base 2.\n"
         " -b : bi-directional traffic (exclusive with -n)\n"
         " -n : n-to-1 traffic (exclusive with -b)\n",
-        appname);
+        zhpeu_appname);
 
     MPI_CALL(MPI_Finalize);
     _exit(help ? 0 : 255);
@@ -289,7 +303,12 @@ int main(int argc, char **argv)
     struct stuff        stuff  = { 0 };
     int                 opt;
 
-    zhpeq_util_init(argv[0], LOG_INFO, false);
+    zhpeu_util_init(argv[0], LOG_INFO, false);
+
+    zhpe_stats_init(zhpeu_appname);
+    zhpe_stats_test(0);
+    zhpe_stats_open(1);
+    zhpe_stats_disable();
 
     MPI_CALL(MPI_Init, &argc, &argv);
     MPI_CALL(MPI_Comm_size, MPI_COMM_WORLD, &n_ranks);
@@ -325,20 +344,18 @@ int main(int argc, char **argv)
     if (opt != 4)
         usage(false);
 
-    if (parse_kb_uint64_t(__func__, __LINE__, "size",
-                          argv[optind++], &stuff.size, 0, 65,
-                          SIZE_MAX, PARSE_KB | PARSE_KIB) < 0 ||
-        parse_kb_uint64_t(__func__, __LINE__, "ops",
-                          argv[optind++], &stuff.ops, 0, 1,
-                          SIZE_MAX, PARSE_KB | PARSE_KIB) < 0 ||
-        parse_kb_uint64_t(__func__, __LINE__, "seconds",
-                          argv[optind++], &stuff.seconds, 0, 1,
-                          SIZE_MAX, PARSE_KB | PARSE_KIB) < 0)
-            usage(false);
+    if (_zhpeu_parse_kb_uint64_t("size", argv[optind++], &stuff.size,
+                                 0, 1, SIZE_MAX, PARSE_KB | PARSE_KIB) < 0 ||
+        _zhpeu_parse_kb_uint64_t("ops", argv[optind++], &stuff.ops,
+                                 0, 1, SIZE_MAX, PARSE_KB | PARSE_KIB) < 0 ||
+        _zhpeu_parse_kb_uint64_t("seconds", argv[optind++], &stuff.seconds,
+                                 0, 1, SIZE_MAX, PARSE_KB | PARSE_KIB) < 0)
+        usage(false);
+
     stuff.results_dir = argv[optind++];
 
     if (!stuff.nto1_opt && (n_ranks & 1)) {
-        print_err("An even number of ranks is required for !nto1\n");
+        zhpeu_print_err("An even number of ranks is required for !nto1\n");
         goto done;
     }
 
@@ -348,19 +365,15 @@ int main(int argc, char **argv)
         goto done;
 
     stuff.rec_cnt = stuff.seconds * SAMPLES_PER_SEC;
-    stuff.rx_req = calloc(stuff.ops * 2 + 1, sizeof(*stuff.rx_req));
-    stuff.rx_rec = calloc(stuff.rec_cnt, sizeof(*stuff.rx_rec));
-    stuff.indicies = calloc(stuff.ops * 2 + 1, sizeof(*stuff.indicies));
-    stuff.tx_req = calloc(stuff.ops + 1, sizeof(*stuff.tx_req));
-    stuff.tx_rec = calloc(stuff.rec_cnt, sizeof(*stuff.tx_rec));
-    if (!stuff.rx_req || !stuff.rx_rec || !stuff.indicies || !stuff.tx_req ||
-        !stuff.tx_rec) {
-        fprintf(stderr, "Out of memory\n");
-        goto done;
-    }
+    stuff.rx_req = xcalloc(stuff.ops * 2 + 1, sizeof(*stuff.rx_req));
+    stuff.rx_rec = xcalloc(stuff.rec_cnt, sizeof(*stuff.rx_rec));
+    stuff.indicies = xcalloc(stuff.ops * 2 + 1, sizeof(*stuff.indicies));
+    stuff.tx_req = xcalloc(stuff.ops + 1, sizeof(*stuff.tx_req));
+    stuff.tx_rec = xcalloc(stuff.rec_cnt, sizeof(*stuff.tx_rec));
 
     stuff.end = stuff.seconds * zhpeu_init_time->freq;
     MPI_CALL(MPI_Barrier, MPI_COMM_WORLD);
+    zhpe_stats_enable();
     stuff.start = get_cycles(NULL);
     stuff.end += stuff.start;
     if (stuff.nto1_opt) {
@@ -395,6 +408,8 @@ int main(int argc, char **argv)
     free(stuff.tx_req);
     free(stuff.tx_rec);
     MPI_CALL(MPI_Finalize);
+    zhpe_stats_close();
+    zhpe_stats_finalize();
 
     return ret;
 }

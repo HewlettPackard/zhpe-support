@@ -26,11 +26,10 @@ target_link_libraries(
 
 add_executable(mpi_send mpi_send.c)
 set_target_properties(mpi_send PROPERTIES LINK_FLAGS ${MPI_C_LINK_FLAGS})
-target_link_libraries(
-  mpi_send PUBLIC fabric zhpe_stats zhpeq_util ${MPI_C_LIBRARIES})
+target_link_libraries(mpi_send PUBLIC zhpe_stats zhpeq_util ${MPI_C_LIBRARIES})
 
 add_executable(mpi_zbw mpi_zbw.c)
 set_target_properties(mpi_zbw PROPERTIES LINK_FLAGS ${MPI_C_LINK_FLAGS})
-target_link_libraries(mpi_zbw PUBLIC fabric zhpeq_util ${MPI_C_LIBRARIES})
+target_link_libraries(mpi_zbw PUBLIC zhpe_stats zhpeq_util ${MPI_C_LIBRARIES})
 
 install(TARGETS mpi_exit mpi_lf_threads mpi_send mpi_zbw DESTINATION libexec)

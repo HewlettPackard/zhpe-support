@@ -134,14 +134,15 @@ enum {
 enum {
     ZHPE_STATS_PROFILE_CACHE        = 100,
     ZHPE_STATS_PROFILE_CACHE2       = 101,
-    ZHPE_STATS_PROFILE_CARBON       = 200,
-    ZHPE_STATS_PROFILE_CPU          = 300,
-    ZHPE_STATS_PROFILE_DISABLED     = 400,
-    ZHPE_STATS_PROFILE_RDTSCP       = 500,
-    ZHPE_STATS_PROFILE_HW           = 600,
-    ZHPE_STATS_PROFILE_HW_JUST1     = 700,
-    ZHPE_STATS_PROFILE_CPU_JUST1    = 800,
-    ZHPE_STATS_PROFILE_CPU2         = 900,
+    ZHPE_STATS_PROFILE_CARBON       = 102,
+    ZHPE_STATS_PROFILE_CPU          = 103,
+    ZHPE_STATS_PROFILE_CPU2         = 104,
+    ZHPE_STATS_PROFILE_CPU_JUST1    = 105,
+    ZHPE_STATS_PROFILE_DISABLED     = 106,
+    ZHPE_STATS_PROFILE_HW           = 107,
+    ZHPE_STATS_PROFILE_HW_JUST1     = 108,
+    ZHPE_STATS_PROFILE_RDTSCP       = 109,
+    ZHPE_STATS_PROFILE_STAMPS       = 110,
 };
 
 /* for looking up hpe_sim offsets */
@@ -181,14 +182,8 @@ enum {
     ZHPE_STATS_SUBID_RMA         = 30,
     ZHPE_STATS_SUBID_ZHPQ        = 40,
     ZHPE_STATS_SUBID_MPI         = 50,
-};
-
-enum {
-    SEND        = 10,
-    RECV        = 20,
-    RMA         = 30,
-    ZHPQ        = 40,
-    MPI         = 50,
+    ZHPE_STATS_SUBID_ATM         = 60,
+    ZHPE_STATS_SUBID_DBG         = 1000,
 };
 
 _EXTERN_C_END

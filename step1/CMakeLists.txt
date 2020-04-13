@@ -9,6 +9,8 @@ include("../simh.cmake")
 
 include_directories(BEFORE ../include asic/include)
 
+add_compile_options(-D_ZHPEQ_TEST_COMPAT_)
+
 add_subdirectory(libzhpe_stats)
 add_subdirectory(libzhpeq)
 add_subdirectory(libzhpeq_util)

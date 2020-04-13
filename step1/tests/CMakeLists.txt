@@ -6,6 +6,9 @@ target_link_libraries(edgetest PUBLIC zhpeq zhpeq_util)
 add_executable(enqapong enqapong.c)
 target_link_libraries(enqapong PUBLIC zhpeq zhpeq_util)
 
+add_executable(enqatest enqatest.c)
+target_link_libraries(enqatest PUBLIC zhpeq zhpeq_util)
+
 add_executable(libzhpeq_ld libzhpeq_ld.c)
 target_link_libraries(libzhpeq_ld PUBLIC zhpeq zhpeq_util)
 
@@ -37,6 +40,7 @@ install(
   TARGETS
   edgetest
   enqapong
+  enqatest
   libzhpeq_ld
   libzhpeq_mr
   libzhpeq_pcitime

@@ -463,7 +463,7 @@ char *zhpeu_sockaddr_str(const void *addr);
  */
 
 #define atm_load(_p)                                            \
- atomic_load_explicit(_p, memory_order_acquire)
+    atomic_load_explicit(_p, memory_order_acquire)
 #define atm_load_rlx(_p)                                        \
     atomic_load_explicit(_p, memory_order_relaxed)
 
@@ -676,12 +676,12 @@ char *zhpeu_get_cpuinfo_val(FILE *fp, char *buf, size_t buf_size,
 #define xcalloc(...)                                            \
     zhpeu_call_null(zhpeu_fatal, calloc, void *, __VA_ARGS__)
 #define xasprintf(...)                                          \
-    zhpeu_syscall(zhpeu_fatal, asprintf, __VA_ARGS__)
+    zhpeu_syscall(zhpeu_fatal, zhpeu_asprintf, __VA_ARGS__)
 
 /* Keep _GNU_SOURCE out of the headers. */
-char *zhpeu_asprintf(const char *fmt, ...) PRINTF_ARGS(1, 2);
+int zhpeu_asprintf(char **ret, const char *fmt, ...) PRINTF_ARGS(2, 3);
 #define _zhpeu_asprintf(...)                                    \
-    zhpeu_call_null(zhpeu_err, zhpeu_asprintf, char *,  __VA_ARGS__)
+    zhpeu_syscall(zhpeu_err, zhpeu_asprintf,  __VA_ARGS__)
 
 void zhpeu_yield(void);
 #define yield()         zhpeu_yield()
@@ -798,7 +798,7 @@ static inline void *calloc_cachealigned(size_t nmemb, size_t size)
 #define _calloc(...)                                            \
     zhpeu_call_null(zhpeu_err, calloc, void *, __VA_ARGS__)
 #define _asprintf(...)                                          \
-    zhpeu_syscall(zhpeu_err, asprintf, __VA_ARGS__)
+    zhpeu_syscall(zhpeu_err, zhpeu_asprintf, __VA_ARGS__)
 #define _malloc_aligned(...)                                    \
     zhpeu_call_null(zhpeu_err, malloc_aligned, void *, __VA_ARGS__)
 #define _malloc_cachealigned(...)                               \
@@ -1095,6 +1095,8 @@ do {                                                            \
 #ifdef _ZHPEQ_TEST_COMPAT_
 
 #define appname                 zhpeu_appname
+#define check_func_io           zhpeu_check_func_io
+#define check_func_ion          zhpeu_check_func_ion
 #define connect_sock            _zhpeu_sock_connect
 #define do_getaddrinfo          zhpeu_sock_getaddrinfo
 #define expected_saw            zhpeu_expected_saw

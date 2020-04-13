@@ -141,12 +141,11 @@ static int __driver_cmd(union zhpe_op *op, size_t req_len, size_t rsp_len,
         goto done;
     ret = op->hdr.status;
     if (ret < 0) {
-        if (ret != error_ok) {
+        if (ret != error_ok)
             zhpeu_print_err("%s,%u:zhpe command 0x%02x returned error %d:%s\n",
                             __func__, __LINE__, op->hdr.opcode, -ret,
                             strerror(-ret));
-            goto done;
-        }
+        goto done;
     }
     ret = 0;
 
@@ -155,7 +154,7 @@ static int __driver_cmd(union zhpe_op *op, size_t req_len, size_t rsp_len,
 }
 
 static int driver_cmd(union zhpe_op *op, size_t req_len, size_t rsp_len,
-                      bool error_ok)
+                      int error_ok)
 {
     int                 ret;
 
@@ -177,7 +176,8 @@ static int zhpe_lib_init(struct zhpeq_attr *attr)
 
     if ((dev_fd = open(DEV_PATH, O_RDWR)) == -1) {
         ret = -errno;
-        zhpeu_print_func_err(__func__, __LINE__, "open", DEV_PATH, ret);
+        if (ret != -ENOENT)
+            zhpeu_print_func_err(__func__, __LINE__, "open", DEV_PATH, ret);
         goto done;
     }
 
@@ -309,6 +309,7 @@ static int zhpe_tq_alloc(struct zhpeq_tqi *tqi, int wqlen, int cqlen,
                          int traffic_class, int priority, int slice_mask)
 {
     int                 ret;
+    int                 error_ok = 0;
     union zhpe_op       op;
     union zhpe_req      *req = &op.req;
     union zhpe_rsp      *rsp = &op.rsp;
@@ -319,7 +320,10 @@ static int zhpe_tq_alloc(struct zhpeq_tqi *tqi, int wqlen, int cqlen,
     req->xqalloc.traffic_class = traffic_class;
     req->xqalloc.priority = priority;
     req->xqalloc.slice_mask = slice_mask;
-    ret = driver_cmd(&op, sizeof(req->xqalloc), sizeof(rsp->xqalloc), 0);
+    /* If SLICE_DEMAND is set in the mask, assume caller will handle ENOENT. */
+    if (slice_mask & SLICE_DEMAND)
+        error_ok = -ENOENT;
+    ret = driver_cmd(&op, sizeof(req->xqalloc), sizeof(rsp->xqalloc), error_ok);
     if (ret < 0)
         goto done;
     tqi->dev_fd = dev_fd;
@@ -682,7 +686,7 @@ static int zhpe_rq_epoll_add(struct zhpeq_rq_epolli *epolli,
     bepoll->irq[irq].qnum = qnum & ~(rqi->zrq.rqinfo.clump - 1);
     bepoll->irq[irq].clump = rqi->zrq.rqinfo.clump;
 
-    fname = _zhpeu_asprintf("%s_poll_%u", DEV_PATH, irq);
+    _zhpeu_asprintf(&fname, "%s_poll_%u", DEV_PATH, irq);
     if (!fname) {
         ret = -ENOMEM;
         goto done;
@@ -1329,7 +1333,7 @@ static char *zhpe_qkdata_id_str(const struct zhpeq_mr_desc_v1 *desc)
         goto done;
 
     uuid_unparse_upper(uue->uuid, uuid_str);
-    ret = zhpeu_asprintf("0x%p %s", desc->addr_cookie, uuid_str);
+    _zhpeu_asprintf(&ret, "0x%p %s", desc->addr_cookie, uuid_str);
 
  done:
     return ret;

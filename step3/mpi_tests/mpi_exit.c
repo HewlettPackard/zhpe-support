@@ -57,7 +57,6 @@ static char             buf[4096];
 int main(int argc, char **argv)
 {
     MPI_Request         *requests = NULL;
-    MPI_Status          *statuses = NULL;
     int                 req = 0;
     int                 i;
     uint64_t            wakeup;
@@ -66,12 +65,7 @@ int main(int argc, char **argv)
     MPI_CALL(MPI_Comm_size, MPI_COMM_WORLD, &n_ranks);
     MPI_CALL(MPI_Comm_rank, MPI_COMM_WORLD, &my_rank);
 
-    requests = calloc(n_ranks * 2, sizeof(*requests));
-    statuses = calloc(n_ranks * 2, sizeof(*statuses));
-    if (!requests || !statuses) {
-        print_err("%s,%u:%d:out of memory\n", __func__, __LINE__, my_rank);
-        MPI_Abort(MPI_COMM_WORLD, 1);
-    }
+    requests = xcalloc(n_ranks * 2, sizeof(*requests));
 
     for (i = 0; i < n_ranks; i++) {
         MPI_CALL(MPI_Irecv, buf, sizeof(buf), MPI_CHAR, i, 0, MPI_COMM_WORLD,
@@ -81,7 +75,7 @@ int main(int argc, char **argv)
         MPI_CALL(MPI_Isend, buf, sizeof(buf), MPI_CHAR, i, 0, MPI_COMM_WORLD,
                  &requests[req++]);
     }
-    MPI_CALL(MPI_Waitall, req, requests, statuses);
+    MPI_CALL(MPI_Waitall, req, requests, MPI_STATUSES_IGNORE);
     MPI_CALL(MPI_Barrier, MPI_COMM_WORLD);
 
     wakeup = get_cycles(NULL) + zhpeu_init_time->freq;

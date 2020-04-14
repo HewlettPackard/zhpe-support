@@ -625,10 +625,7 @@ static inline bool zhpeq_is_asic(void)
 }
 
 int zhpeq_get_zaddr(const char *node, const char *service,
-                    struct sockaddr_zhpe *sz);
-
-int zhpeq_get_src_zaddr(struct sockaddr_zhpe *sz, uint32_t queue,
-                        bool gcid_only);
+                    bool source, struct sockaddr_zhpe *sz);
 
 /* Info/debugging */
 

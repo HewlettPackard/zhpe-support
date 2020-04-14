@@ -198,6 +198,22 @@ static struct zhpe_stats *zhpe_stats_list;
 static int              zhpe_stats_num_counters = 0;
 static __u32            perf_typeid = 0;
 
+static void __attribute__((constructor)) lib_init(void)
+{
+    if (getenv("ZHPE_STATS_INIT")) {
+        zhpe_stats_init("libzhpe_stats");
+        zhpe_stats_test(0);
+        zhpe_stats_open(1);
+    }
+}
+
+static void __attribute__((destructor)) lib_fini(void)
+{
+    if (getenv("ZHPE_STATS_INIT")) {
+        zhpe_stats_close();
+        zhpe_stats_finalize();
+    }
+}
 
 /* forward declarations */
 static void stats_flush(struct zhpe_stats *zstats);

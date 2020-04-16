@@ -1,6 +1,3 @@
-set(MPI_C_COMPILER ${INSD}/bin/mpicc)
-set(MPI_CXX_COMPILER ${INSD}/bin/mpicxx)
-
 include(FindMPI)
 include_directories(AFTER ${MPI_C_INCLUDE_PATH})
 

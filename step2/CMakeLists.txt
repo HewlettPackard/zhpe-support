@@ -5,8 +5,8 @@ cmake_minimum_required(VERSION 3.5)
 project (libzhpeq2)
 
 include("../common.cmake")
-include("../libzhpe_stats.cmake")
 include("../libfabric.cmake")
+include("../libzhpe_stats.cmake")
 
 include_directories(BEFORE ../include asic/include)
 

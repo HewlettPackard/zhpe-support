@@ -119,7 +119,11 @@ static int __driver_cmd(union zhpe_op *op, size_t req_len, size_t rsp_len,
     if (ret < 0)
         goto done;
 
-    res = read(dev_fd, op, rsp_len);
+    for (;;) {
+        res = read(dev_fd, op, rsp_len);
+        if (res != -1 || errno != EINTR)
+            break;
+    }
     ret = zhpeu_check_func_io(__func__, __LINE__, "read", DEV_PATH,
                               rsp_len, res, 0);
     if (ret < 0)

@@ -290,6 +290,7 @@ static int ztq_completions(struct zhpeq_tq *ztq)
             break;
         }
         zhpeq_tq_cq_entry_done(ztq, cqe);
+        ret++;
     }
 
     return ret;

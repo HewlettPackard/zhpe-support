@@ -698,7 +698,7 @@ static_assert(INET6_ADDRSTRLEN >= ZHPE_ADDRSTRLEN, "ZHPE_ADDRSTRLEN");
 
 const char *sockaddr_ntop(const void *addr, char *buf, size_t len);
 
-int zhpeu_asprintf(char **strp, const char *fmt, ...) PRINTF_ARGS(2, 3);
+char *zhpeu_asprintf(const char *fmt, ...) PRINTF_ARGS(1, 2);
 
 static inline char *sockaddr_str(const void *addr)
 {
@@ -731,8 +731,7 @@ static inline char *sockaddr_str(const void *addr)
     default:
         break;
     }
-    if (zhpeu_asprintf(&ret, "%s:%s:%u", family, ntop, port) == -1)
-            ret = NULL;
+    ret = zhpeu_asprintf("%s:%s:%u", family, ntop, port);
 
     return ret;
 }

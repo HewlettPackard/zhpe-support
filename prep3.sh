@@ -5,17 +5,17 @@ set -e
 APPNAME=$(basename $0)
 APPDIR=$(cd $(dirname $0); pwd)
 
-echo PREP $@
+echo PREP3 $@
 
 usage () {
     cat <<EOF >&2
 Usage:
-$APPNAME -z [-o <opts>] [-d|s <path>] <libdir>
+$APPNAME -z [-o <opts>] [-d|s <path>] <libdir> <mpidir>
 Do CMake configuration.
 <insdir>    : installation directory
- -d <path>  : driver source directory
+ -d <path>  : ignored
  -o <opts>  : add C compiler options (defines or optimization)
- -s <path>  : path to simulator headers 
+ -s <path>  : ignored
  -z         : enable zhpe_stats
 EOF
     exit 1
@@ -48,7 +48,7 @@ while getopts 'd:o:s:z' OPT; do
 done
 
 shift $((( OPTIND - 1 )))
-(( $# == 1 )) || usage
+(( $# == 2 )) || usage
 
 DRVR=$(cd $DRVR ; pwd)
 
@@ -58,37 +58,23 @@ fi
 
 LIBD=$1
 [[ "$LIBD" == /* ]] || LIBD=$PWD/$LIBD
+MPID=$2
 
 (
     cd $APPDIR
     B=build
-    rm -rf $B
-    mkdir $B
     cd $B
     (
-	D=step1
-	ln -sfT $DRVR $APPDIR/$D/asic
+	D=step3
+	rm -rf $D
 	mkdir $D
 	cd $D
 	cmake \
 	     -D COPT="$COPT" \
-	     -D INSD="$LIBD" \
+	     -D INSD="$LIBD/$MPID" \
 	     -D LIBD="$LIBD" \
-	     -D SIMH="$SIMH" \
-	     -D ZSTA="$ZSTA" \
-	     ../../$D
-    )
-    (
-	D=step2
-	ln -sfT $DRVR $APPDIR/$D/asic
-	mkdir $D
-	cd $D
-	cmake \
-	     -D COPT="$COPT" \
-	     -D INSD="$LIBD" \
-	     -D LIBD="$LIBD" \
-	     -D SIMH="$SIMH" \
 	     -D ZSTA="$ZSTA" \
 	     ../../$D
     )
 )
+exit 0

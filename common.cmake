@@ -2,7 +2,7 @@ set(CMAKE_INSTALL_PREFIX ${INSD})
 
 message("COPT " ${COPT})
 message("INSD " ${INSD})
-message("LIKW " ${LIKW})
+message("LIBD " ${LIBD})
 message("SIMH " ${SIMH})
 message("ZSTA " ${ZSTA})
 
@@ -18,5 +18,5 @@ endif (CMAKE_COMPILER_IS_GNUCC)
 set(THREADS_PREFER_PTHREAD_FLAG TRUE)
 find_package(Threads REQUIRED)
 
-include_directories(include ${INSD}/include)
-link_directories(${INSD}/lib)
+include_directories(include ${LIBD}/include)
+link_directories(${LIBD}/lib)

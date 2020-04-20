@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2019 Hewlett Packard Enterprise Development LP.
+ * Copyright (C) 2017-2020 Hewlett Packard Enterprise Development LP.
  * All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -438,7 +438,7 @@ int zhpeq_commit(struct zhpeq *zq, uint32_t qindex, uint32_t n_entries)
         wqe = zq->wq + ((qindex + i) & qmask);
         zhpe_stats_stamp(zhpe_stats_subid(ZHPQ, 60), (uintptr_t)zq,
                          wqe->hdr.cmp_index,
-                         (uintptr_t)zq->context[wqe->hdr.cmp_index]);
+                         (uintptr_t)zq->context[wqe->hdr.cmp_index], 0, 0, 0);
     }
     zhpe_stats_restart_all();
 #endif
@@ -930,7 +930,8 @@ ssize_t zhpeq_cq_read(struct zhpeq *zq, struct zhpeq_cq_entry *entries,
              cq_valid(old, qmask)) {
             if (i > 0 || !b_ops->cq_poll || polled) {
                 if (i == 0)
-                    zhpe_stats_stamp(zhpe_stats_subid(ZHPQ, 70), (uintptr_t)zq);
+                    zhpe_stats_stamp(zhpe_stats_subid(ZHPQ, 70), (uintptr_t)zq,
+                                     0, 0, 0, 0, 0);
                 break;
             }
             ret = b_ops->cq_poll(zq, n_entries);
@@ -945,7 +946,8 @@ ssize_t zhpeq_cq_read(struct zhpeq *zq, struct zhpeq_cq_entry *entries,
             continue;
         entries[i].z.context = get_context(zq, &entries[i].z);
         zhpe_stats_stamp(zhpe_stats_subid(ZHPQ, 80), (uintptr_t)zq,
-                         entries[i].z.index, (uintptr_t)entries[i].z.context);
+                         entries[i].z.index, (uintptr_t)entries[i].z.context,
+                         0, 0, 0);
         if (entries[i].z.status != ZHPEQ_CQ_STATUS_SUCCESS)
             print_err("%s,%u:head 0x%x index 0x%x status 0x%x\n",
                       __func__, __LINE__, old, entries[i].z.index,

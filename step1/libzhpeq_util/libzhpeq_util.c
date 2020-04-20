@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2019 Hewlett Packard Enterprise Development LP.
+ * Copyright (C) 2017-2020 Hewlett Packard Enterprise Development LP.
  * All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -777,9 +777,9 @@ char *_sockaddr_port_str(const char *callf, uint line, const void *addr)
         errno = EAFNOSUPPORT;
         goto done;
     }
-    if (asprintf(&ret, "%d", ntohs(sa->sin_port))) {
-        ret = NULL;
-        print_func_err(callf, line, "asprintf", "", ENOMEM);
+    ret = zhpeu_asprintf("%d", ntohs(sa->sin_port));
+    if (!ret) {
+        print_func_err(callf, line, "zhpeu_asprintf", "", ENOMEM);
         errno = ENOMEM;
     }
 
@@ -1044,20 +1044,6 @@ int sockaddr_cmpx(const union sockaddr_in46 *sa1,
     return ret;
 }
 
-int zhpeu_asprintf(char **strp, const char *fmt, ...)
-{
-    int                 ret;
-    va_list             ap;
-
-    va_start(ap, fmt);
-    ret = vasprintf(strp, fmt, ap);
-    va_end(ap);
-    if (ret == -1)
-        *strp = NULL;
-
-    return ret;
-}
-
 bool zhpeu_work_process(struct zhpeu_work_head *head, bool lock, bool unlock)
 {
     bool                ret = false;
@@ -1179,7 +1165,25 @@ void *zhpeu_calloc_aligned(size_t alignment, size_t nmemb, size_t size,
     return ret;
 }
 
-/* Don't want to require _GNU_SOURCE in header. */
+/* Keep _GNU_SOURCE out of the headers. */
+
+char *zhpeu_asprintf(const char *fmt, ...)
+{
+    char                *ret;
+    int                 rc;
+    va_list             ap;
+
+    va_start(ap, fmt);
+    rc = vasprintf(&ret, fmt, ap);
+    va_end(ap);
+    if (rc == -1) {
+        errno = ENOMEM;
+        ret = NULL;
+    }
+
+    return ret;
+}
+
 void zhpeu_yield(void)
 {
     abort_posix(pthread_yield,);

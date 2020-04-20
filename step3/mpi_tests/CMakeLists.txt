@@ -1,6 +1,3 @@
-set(MPI_C_COMPILER ${INSD}/bin/mpicc)
-set(MPI_CXX_COMPILER ${INSD}/bin/mpicxx)
-
 include(FindMPI)
 include_directories(AFTER ${MPI_C_INCLUDE_PATH})
 
@@ -13,6 +10,10 @@ target_link_libraries(zhpeq_lf PUBLIC zhpeq_util fabric)
 install(TARGETS zhpeq_lf DESTINATION lib)
 install(FILES ${CMAKE_SOURCE_DIR}/include/zhpeq_lf.h DESTINATION include)
 
+add_executable(mpi_exit mpi_exit.c)
+set_target_properties(mpi_exit PROPERTIES LINK_FLAGS ${MPI_C_LINK_FLAGS})
+target_link_libraries(mpi_exit PUBLIC fabric zhpeq_util ${MPI_C_LIBRARIES})
+
 add_executable(mpi_lf_threads mpi_lf_threads.c)
 set_target_properties(mpi_lf_threads PROPERTIES LINK_FLAGS ${MPI_C_LINK_FLAGS})
 target_link_libraries(
@@ -23,4 +24,8 @@ set_target_properties(mpi_send PROPERTIES LINK_FLAGS ${MPI_C_LINK_FLAGS})
 target_link_libraries(
   mpi_send PUBLIC fabric zhpe_stats zhpeq_util ${MPI_C_LIBRARIES})
 
-install(TARGETS mpi_lf_threads mpi_send DESTINATION libexec)
+add_executable(mpi_zbw mpi_zbw.c)
+set_target_properties(mpi_zbw PROPERTIES LINK_FLAGS ${MPI_C_LINK_FLAGS})
+target_link_libraries(mpi_zbw PUBLIC fabric zhpeq_util ${MPI_C_LIBRARIES})
+
+install(TARGETS mpi_exit mpi_lf_threads mpi_send mpi_zbw DESTINATION libexec)

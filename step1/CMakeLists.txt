@@ -6,7 +6,6 @@ project (libzhpeq1)
 
 include("../common.cmake")
 include("../simh.cmake")
-include("../likwid.cmake")
 
 include_directories(BEFORE ../include asic/include)
 

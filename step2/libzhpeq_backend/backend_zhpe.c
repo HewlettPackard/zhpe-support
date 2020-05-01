@@ -423,7 +423,9 @@ static int zhpe_domain_remove_addr(struct zhpeq_domi *domi, void *addr_cookie)
             ret = zhpeu_update_error(ret, rc);
         }
         (void)tdelete(uue->uuid, &dev_uuid_tree, compare_uuid);
-        ret = zhpeu_update_error(ret, __do_uuid_free(uue->uuid));
+        /* Do not free our UUID. */
+        if (memcmp(uue->uuid, zhpeq_uuid, sizeof(zhpeq_uuid)))
+            ret = zhpeu_update_error(ret, __do_uuid_free(uue->uuid));
         free(uue);
     }
 
@@ -1221,8 +1223,9 @@ static int zhpe_mmap(const struct zhpeq_mr_desc_v1 *desc_orig,
     struct zhpeq_key_data *qkdata = NULL;
     struct zhpeq_mr_desc_v1 *desc;
     uint64_t            pgoff;
+    int32_t             old;
 
-    zmdesc = xmalloc(sizeof(*zmdesc));
+    zmdesc = xcalloc(1, sizeof(*zmdesc));
     desc = xmalloc(sizeof(*desc));
     *desc  = *desc_orig;
     desc->hdr.version &= ~ZHPEQ_MR_VREG;
@@ -1236,10 +1239,10 @@ static int zhpe_mmap(const struct zhpeq_mr_desc_v1 *desc_orig,
 
     ret = do_rmr_import(uue->uuid, desc->rsp_zaddr, qkdata->z.len,
                         qkdata->z.access, &qkdata->z.zaddr, &pgoff);
-    if (ret < 0) {
-        qkdata->z.zaddr = 0;
+    if (ret < 0)
         goto done;
-    }
+    old = atm_inc(&uue->ref);
+    assert_always(old > 0);
     desc->hdr.version |= ZHPEQ_MR_VREG;
 
     zmdesc->addr = _zhpeu_mmap(addr, length, prot, flags, dev_fd, pgoff);

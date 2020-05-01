@@ -70,6 +70,10 @@ int testit(size_t length)
     if (length > 0)
     {
         buf1 = zhpe_mmap_alloc(length);
+        if (!buf1) {
+            print_err("zhpe_mmap_alloc() failed\n");
+            return ret;
+        }
         printf("Writing to buf:\n");
         for (i = 0, p = (uint16_t *) buf1; i < length; i += sizeof (*p), p++)
             *p = (i | 1);

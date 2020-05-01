@@ -73,7 +73,7 @@ static int av_init(struct fab_conn *conn, int timeout, fi_addr_t *fi_addr)
     else if (timeout < 0)
         retry = NULL;
     else {
-        retry_args.timeout_ns = (uint64_t)timeout * 100000;
+        retry_args.timeout_ns = (uint64_t)timeout * 1000000;
         clock_gettime_monotonic(&retry_args.ts_beg);
     }
 

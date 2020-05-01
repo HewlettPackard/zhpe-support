@@ -68,9 +68,10 @@ struct zhpe_stats_ops {
     void   (*stamp)(struct zhpe_stats *zstats, uint32_t subid,
                     uint64_t d1, uint64_t d2, uint64_t d3, uint64_t d4,
                     uint64_t d5, uint64_t d6);
-    void   (*setvals)(struct zhpe_stats *zstats, struct zhpe_stats_record *rec);
+    void   (*recordme)(struct zhpe_stats *zstats, uint32_t subid,
+                       uint32_t op_flag);
     struct zhpe_stats_record *(*nextslot)(struct zhpe_stats *zstats);
-    void   (*saveme)(struct zhpe_stats *zstats, char *dest, char *src);
+    void   (*setvals)(struct zhpe_stats *zstats, struct zhpe_stats_record *rec);
 };
 
 struct zhpe_stats {
@@ -78,11 +79,10 @@ struct zhpe_stats {
     struct zhpe_stats_record    *buffer;
     uint64_t                    *sim_buf;
     struct zhpe_stats_ops       *zhpe_stats_ops;
-    struct zhpe_stats_ops       *saved_zhpe_stats_ops;
-    struct zhpe_stats_ops       *disabled_zhpe_stats_ops;
     struct perf_event_mmap_page **zhpe_stats_mmap_list;
     uint64_t                    *zhpe_stats_config_list;
-    uint32_t                    num_slots;
+    uint32_t                    slots_num;
+    uint32_t                    slots_mask;
     int                         fd;
     uint16_t                    uid;
     size_t                      head;

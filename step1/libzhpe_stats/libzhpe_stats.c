@@ -60,7 +60,7 @@
  * zhpe_stats_init callocs and sets up zhpe_stats.
  * zhpe_stats_finalize frees zhpe_stats.
  *
- * stats_common_closed frees zhpe_stats->buffer and sets it to NULL.
+ * stats_cmn_closed frees zhpe_stats->buffer and sets it to NULL.
  *
  */
 
@@ -148,10 +148,6 @@ static void stats_nop_setvals(struct zhpe_stats *zstats,
 {
 }
 
-static void stats_nop_saveme(struct zhpe_stats *zstats, char *dest, char *src)
-{
-}
-
 static void stats_nop_zstats_uint32(struct zhpe_stats *zstats, uint32_t dum)
 {
 }
@@ -171,29 +167,28 @@ static struct zhpe_stats_ops zhpe_stats_nops = {
     .stop               = stats_nop_zstats_uint32,
     .stamp              = stats_nop_stamp,
     .setvals            = stats_nop_setvals,
-    .saveme             = stats_nop_saveme,
 };
 
 static struct zhpe_stats dummy =
 {
     .zhpe_stats_ops= &zhpe_stats_nops,
-    .saved_zhpe_stats_ops= &zhpe_stats_nops,
 };
 
 __thread struct zhpe_stats *zhpe_stats = &dummy;
 
 #ifdef HAVE_ZHPE_STATS
 
-#define ZHPE_STATS_BUF_COUNT_MAX (16 * MiB)
+#define ZHPE_STATS_BUF_COUNT_MAX (MiB)
 
 /* Common definitions/code */
 static char             *zhpe_stats_dir;
 static char             *zhpe_stats_unique;
 static pthread_mutex_t  zhpe_stats_mutex = PTHREAD_MUTEX_INITIALIZER;
 static uint64_t         zhpe_stats_buf_count;
-static uint64_t         zhpe_stats_buf_mask;
 static size_t           zhpe_stats_profile;
 static struct zhpe_stats *zhpe_stats_list;
+static struct zhpe_stats_ops stats_ops_enabled;
+static struct zhpe_stats_ops stats_ops_disabled;
 
 static int              zhpe_stats_num_counters = 0;
 static __u32            perf_typeid = 0;
@@ -224,7 +219,7 @@ static void stats_cmn_enable(struct zhpe_stats *zstats)
         return;
 
     zstats->enabled = ZHPE_STATS_ENABLED;
-    zstats->zhpe_stats_ops = zstats->saved_zhpe_stats_ops;
+    zstats->zhpe_stats_ops = &stats_ops_enabled;
     zstats->zhpe_stats_ops->restart_all(zstats);
 }
 
@@ -232,13 +227,15 @@ static void stats_cmn_disable(struct zhpe_stats *zstats)
 {
     zstats->zhpe_stats_ops->pause_all(zstats);
     zstats->enabled = ZHPE_STATS_DISABLED;
-    zstats->zhpe_stats_ops = zstats->disabled_zhpe_stats_ops;
+    zstats->zhpe_stats_ops = &stats_ops_disabled;
 }
 
 /* don't free zstats */
-static void stats_common_close(struct zhpe_stats *zstats)
+static void stats_cmn_close(struct zhpe_stats *zstats)
 {
     struct zhpe_stats   **zsprev;
+
+    zstats->zhpe_stats_ops->recordme(zstats, 0, ZHPE_STATS_OP_CLOSE);
 
     stats_flush(zstats);
     if (zstats->fd != -1)
@@ -260,6 +257,61 @@ static void stats_common_close(struct zhpe_stats *zstats)
     return;
 }
 
+static void gdb_find_timestamp(struct zhpe_stats *zstats, uint64_t timestamp)
+{
+    uint64_t            cur = zstats->head;
+    uint64_t            delta;
+
+    if (!zstats->head)
+        return;
+
+    for (delta = cur / 2, cur = delta; delta;) {
+        if (zstats->buffer[cur].val0 > timestamp)
+            cur -= delta;
+        else if (zstats->buffer[cur].val0 < timestamp)
+            cur -= delta;
+        else {
+            zstats->head_gdb = cur + 1;
+            return;
+        }
+    }
+    /* Edge, doesn't have to be perfect. */
+    if (zstats->buffer[cur].val0 < timestamp)
+        cur = min(cur + 2, zstats->head - 1);
+    zstats->head_gdb = cur + 1;
+}
+
+void zhpe_stats_gdb_tidx(pid_t tid, size_t idx)
+{
+    struct zhpe_stats   *zstats_tid = NULL;
+    struct zhpe_stats   *zstats;
+    uint64_t            timestamp;
+
+    for (zstats = zhpe_stats_list; zstats; zstats = zstats->next) {
+        if (tid == zstats->tid) {
+            zstats_tid = zstats;
+            break;
+        }
+        zstats->head_gdb = 0;
+    }
+    if (!zstats)
+        return;
+
+    if (idx >= zstats_tid->head) {
+        if (zstats_tid->head > 0)
+            idx = zstats_tid->head;
+    }
+
+    zstats_tid->head_gdb = idx + 1;
+    timestamp = zstats_tid->buffer[idx].val0;
+
+    for (zstats = zhpe_stats_list; zstats; zstats = zstats->next) {
+        if (zstats == zstats_tid)
+            continue;
+        gdb_find_timestamp(zstats, timestamp);
+    }
+}
+
 static void stats_flush_all(void)
 {
     struct zhpe_stats   *zstats;
@@ -269,13 +321,13 @@ static void stats_flush_all(void)
         stats_flush(zstats);
 }
 
-void zhpe_stats_finalize()
+void zhpe_stats_finalize(void)
 {
     struct zhpe_stats   *zstats = zhpe_stats;
     int                 open_count;
 
     /* Close the current thread. */
-    zstats->saved_zhpe_stats_ops->close(zstats);
+    zstats->zhpe_stats_ops->close(zstats);
 
     mutex_lock(&zhpe_stats_mutex);
     for (zstats = zhpe_stats_list, open_count = 0; zstats;
@@ -317,14 +369,27 @@ static void stats_write_metadata(struct zhpe_stats *zstats)
 /* overwrite when full */
 /* todo: check compilation output for NDEBUG option when compile with 5 */
 static struct zhpe_stats_record *
-stats_simple_nextslot(struct zhpe_stats *zstats)
+stats_nextslot_noflush(struct zhpe_stats *zstats)
 {
-    assert(zstats->buffer);
     struct zhpe_stats_record *rec;
 
-    assert(zstats->head < zstats->num_slots - 1);
+    assert(zstats->buffer);
 
-    rec = &(zstats->buffer[(zhpe_stats_buf_mask & zstats->head++)]);
+    rec = &(zstats->buffer[(zstats->head++ & zstats->slots_mask)]);
+
+    return rec;
+}
+
+static struct zhpe_stats_record *
+stats_nextslot_flush(struct zhpe_stats *zstats)
+{
+    struct zhpe_stats_record *rec;
+
+    assert(zstats->buffer);
+    if (unlikely((zstats->head & zstats->slots_mask) == zstats->slots_mask))
+        stats_flush(zstats);
+
+    rec = &(zstats->buffer[(zstats->head++ & zstats->slots_mask)]);
 
     return rec;
 }
@@ -354,12 +419,17 @@ static uint64_t do_rdpmc(struct zhpe_stats *zstats, uint index)
     return ((uint64_t)hi << 32 | lo);
 }
 
-static void stats_setvals_just1_rdpmc(struct zhpe_stats *zstats,
-                                      struct zhpe_stats_record *rec)
+static void stats_setvals_1_rdpmc(struct zhpe_stats *zstats,
+                                  struct zhpe_stats_record *rec)
 {
 
     rec->val0 = do_rdtscp();
     rec->val1 = do_rdpmc(zstats, 0);
+    rec->val2 = 0;
+    rec->val3 = 0;
+    rec->val4 = 0;
+    rec->val5 = 0;
+    rec->val6 = 0;
 }
 
 static void stats_setvals_2_rdpmc(struct zhpe_stats *zstats,
@@ -369,6 +439,10 @@ static void stats_setvals_2_rdpmc(struct zhpe_stats *zstats,
     rec->val0 = do_rdtscp();
     rec->val1 = do_rdpmc(zstats, 0);
     rec->val2 = do_rdpmc(zstats, 1);
+    rec->val3 = 0;
+    rec->val4 = 0;
+    rec->val5 = 0;
+    rec->val6 = 0;
 }
 
 static void stats_setvals_6_rdpmc(struct zhpe_stats *zstats,
@@ -384,36 +458,50 @@ static void stats_setvals_6_rdpmc(struct zhpe_stats *zstats,
     rec->val6 = do_rdpmc(zstats, 5);
 }
 
+static void stats_setvals_stamp(struct zhpe_stats *zstats,
+                                struct zhpe_stats_record *rec)
+{
+
+    rec->val0 = do_rdtscp();
+    rec->val1 = 0;
+    rec->val2 = 0;
+    rec->val3 = 0;
+    rec->val4 = 0;
+    rec->val5 = 0;
+    rec->val6 = 0;
+}
+
 #ifdef HAVE_ZHPE_SIM
 static void stats_setvals_hpe_sim(struct zhpe_stats *zstats,
                                   struct zhpe_stats_record *rec)
 {
-    //uint64_t len =  sizeof(uint64_t);
-    ProcCtlData *foo;
+    ProcCtlData *simdata = (void *)zstats->sim_buf;
+    int64_t             rc;
+
     rec->val0 = do_rdtscp();
-    foo = (void *)zstats->sim_buf;
 
     assert(zstats->sim_buf);
-    int64_t ret;
 
-    ret = sim_api_data_rec(DATA_REC_PAUSE, (uint16_t)zstats->uid,
-                                        (uintptr_t)zstats->sim_buf);
-    if (ret)
-    {
+    rc = sim_api_data_rec(DATA_REC_PAUSE, (uint16_t)zstats->uid,
+                          (uintptr_t)simdata);
+    if (rc) {
         print_func_err(__func__, __LINE__, "sim_api_data_rec",
-                       "DATA_REC_PAUSE", -ret);
+                       "DATA_REC_PAUSE", -rc);
         abort();
     }
 
-    rec->val1 = foo->cpl0ExecInstTotal;
-    rec->val2 = foo->cpl3ExecInstTotal;
+    rec->val1 = simdata->cpl0ExecInstTotal;
+    rec->val2 = simdata->cpl3ExecInstTotal;
+    rec->val3 = 0;
+    rec->val4 = 0;
+    rec->val5 = 0;
+    rec->val6 = 0;
 
-    ret = sim_api_data_rec(DATA_REC_START, (uint16_t)zstats->uid,
-                                        (uintptr_t)zstats->sim_buf);
-    if (ret)
-    {
+    rc = sim_api_data_rec(DATA_REC_START, (uint16_t)zstats->uid,
+                          (uintptr_t)zstats->sim_buf);
+    if (rc) {
         print_func_err(__func__, __LINE__, "sim_api_data_rec",
-                       "DATA_REC_START", -ret);
+                       "DATA_REC_START", -rc);
         abort();
     }
 }
@@ -433,22 +521,9 @@ static void stats_setvals_hpe_sim(struct zhpe_stats *zstats,
 #endif // HAVE_ZHPE_SIM
 
 
-static inline void stats_vmemcpy_saveme(struct zhpe_stats *zstats,
-                                        char *dest, char *src)
-{
-    uint64_t len =  sizeof(struct zhpe_stats_record);
-    __vmemcpy(movntdq, movntdqa, dest, src, len);
-}
-
-static inline void stats_memcpy_saveme(struct zhpe_stats *zstats,
-                                       char *dest, char *src)
-{
-    uint64_t len =  sizeof(struct zhpe_stats_record);
-    memcpy(dest, src, len);
-}
-
-static void stats_recordme_memcpy(struct zhpe_stats *zstats,
-                                  uint32_t subid, uint32_t opflag)
+#if 0
+static void stats_recordme_vmemcpy(struct zhpe_stats *zstats, uint32_t subid,
+                                   uint32_t opflag)
 {
     struct zhpe_stats_record *dest;
     struct zhpe_stats_record tmp;
@@ -456,9 +531,24 @@ static void stats_recordme_memcpy(struct zhpe_stats *zstats,
     tmp.subid = subid;
     tmp.op_flag = opflag;
 
-    dest = stats_simple_nextslot(zstats);
+    dest = zstats->zhpe_stats_ops->nextslot(zstats);
     zstats->zhpe_stats_ops->setvals(zstats, &tmp);
-    stats_memcpy_saveme(zstats, (char *)dest, (char *)&tmp);
+    __vmemcpy(movntdq, movntdqa, dest, &tmp, sizeof(*dest));
+}
+#endif
+
+static void stats_recordme_memcpy(struct zhpe_stats *zstats, uint32_t subid,
+                                  uint32_t opflag)
+{
+    struct zhpe_stats_record *dest;
+    struct zhpe_stats_record tmp;
+
+    tmp.subid = subid;
+    tmp.op_flag = opflag;
+
+    dest = zstats->zhpe_stats_ops->nextslot(zstats);
+    zstats->zhpe_stats_ops->setvals(zstats, &tmp);
+    memcpy(dest, &tmp, sizeof(*dest));
 }
 
 static void stats_recordme(struct zhpe_stats *zstats, uint32_t subid,
@@ -466,118 +556,116 @@ static void stats_recordme(struct zhpe_stats *zstats, uint32_t subid,
 {
     struct zhpe_stats_record *dest;
 
-    dest = stats_simple_nextslot(zstats);
+    dest = zstats->zhpe_stats_ops->nextslot(zstats);
     dest->subid = subid;
     dest->op_flag = opflag;
-
     zstats->zhpe_stats_ops->setvals(zstats, dest);
 }
 
-#define SS1    \
-do {            \
-    zhpe_stats_start(ZHPE_STATS_SUBID_STARTSTOP);      \
-    zhpe_stats_stop(ZHPE_STATS_SUBID_STARTSTOP);      \
+#define SS1                                             \
+do {                                                    \
+    zhpe_stats_start(ZHPE_STATS_SUBID_STARTSTOP);       \
+    zhpe_stats_stop(ZHPE_STATS_SUBID_STARTSTOP);        \
 } while (0)
 
-#define SS10    \
-do {            \
-    SS1;       \
-    SS1;       \
-    SS1;       \
-    SS1;       \
-    SS1;       \
-    SS1;       \
-    SS1;       \
-    SS1;       \
-    SS1;       \
-    SS1;       \
+#define SS10                                            \
+do {                                                    \
+    SS1;                                                \
+    SS1;                                                \
+    SS1;                                                \
+    SS1;                                                \
+    SS1;                                                \
+    SS1;                                                \
+    SS1;                                                \
+    SS1;                                                \
+    SS1;                                                \
+    SS1;                                                \
 } while (0)
 
-#define SS100    \
-do {            \
-    SS10;       \
-    SS10;       \
-    SS10;       \
-    SS10;       \
-    SS10;       \
-    SS10;       \
-    SS10;       \
-    SS10;       \
-    SS10;       \
-    SS10;       \
+#define SS100                                           \
+do {                                                    \
+    SS10;                                               \
+    SS10;                                               \
+    SS10;                                               \
+    SS10;                                               \
+    SS10;                                               \
+    SS10;                                               \
+    SS10;                                               \
+    SS10;                                               \
+    SS10;                                               \
+    SS10;                                               \
 } while (0)
 
-#define S_STAMP_S1    \
-do {            \
-    zhpe_stats_start(ZHPE_STATS_SUBID_S_STAMP_S);      \
-    zhpe_stats_stamp(89888786, 89, 88, 87, 86, 54, 32);       \
-    zhpe_stats_stop(ZHPE_STATS_SUBID_S_STAMP_S);      \
+#define S_STAMP_S1                                      \
+do {                                                    \
+    zhpe_stats_start(ZHPE_STATS_SUBID_S_STAMP_S);       \
+    zhpe_stats_stamp(89888786, 89, 88, 87, 86, 54, 32); \
+    zhpe_stats_stop(ZHPE_STATS_SUBID_S_STAMP_S);        \
 } while (0)
 
-#define S_STAMP_S10    \
-do {            \
-    S_STAMP_S1;       \
-    S_STAMP_S1;       \
-    S_STAMP_S1;       \
-    S_STAMP_S1;       \
-    S_STAMP_S1;       \
-    S_STAMP_S1;       \
-    S_STAMP_S1;       \
-    S_STAMP_S1;       \
-    S_STAMP_S1;       \
-    S_STAMP_S1;       \
+#define S_STAMP_S10                                     \
+do {                                                    \
+    S_STAMP_S1;                                         \
+    S_STAMP_S1;                                         \
+    S_STAMP_S1;                                         \
+    S_STAMP_S1;                                         \
+    S_STAMP_S1;                                         \
+    S_STAMP_S1;                                         \
+    S_STAMP_S1;                                         \
+    S_STAMP_S1;                                         \
+    S_STAMP_S1;                                         \
+    S_STAMP_S1;                                         \
 } while (0)
 
-#define S_STAMP_S100    \
-do {            \
-    S_STAMP_S10;       \
-    S_STAMP_S10;       \
-    S_STAMP_S10;       \
-    S_STAMP_S10;       \
-    S_STAMP_S10;       \
-    S_STAMP_S10;       \
-    S_STAMP_S10;       \
-    S_STAMP_S10;       \
-    S_STAMP_S10;       \
-    S_STAMP_S10;       \
+#define S_STAMP_S100                                    \
+do {                                                    \
+    S_STAMP_S10;                                        \
+    S_STAMP_S10;                                        \
+    S_STAMP_S10;                                        \
+    S_STAMP_S10;                                        \
+    S_STAMP_S10;                                        \
+    S_STAMP_S10;                                        \
+    S_STAMP_S10;                                        \
+    S_STAMP_S10;                                        \
+    S_STAMP_S10;                                        \
+    S_STAMP_S10;                                        \
 } while (0)
 
-#define S_STARTSTOP_S1    \
-do {            \
-    zhpe_stats_start(ZHPE_STATS_SUBID_S_SS_S);      \
-    zhpe_stats_start(0);      \
-    zhpe_stats_stop(0);      \
-    zhpe_stats_stop(ZHPE_STATS_SUBID_S_SS_S);      \
+#define S_STARTSTOP_S1                                  \
+do {                                                    \
+    zhpe_stats_start(ZHPE_STATS_SUBID_S_SS_S);          \
+    zhpe_stats_start(0);                                \
+    zhpe_stats_stop(0);                                 \
+    zhpe_stats_stop(ZHPE_STATS_SUBID_S_SS_S);           \
 } while (0)
 
-#define S_STARTSTOP_S10    \
-do {            \
-    S_STARTSTOP_S1;       \
-    S_STARTSTOP_S1;       \
-    S_STARTSTOP_S1;       \
-    S_STARTSTOP_S1;       \
-    S_STARTSTOP_S1;       \
-    S_STARTSTOP_S1;       \
-    S_STARTSTOP_S1;       \
-    S_STARTSTOP_S1;       \
-    S_STARTSTOP_S1;       \
-    S_STARTSTOP_S1;       \
+#define S_STARTSTOP_S10                                 \
+do {                                                    \
+    S_STARTSTOP_S1;                                     \
+    S_STARTSTOP_S1;                                     \
+    S_STARTSTOP_S1;                                     \
+    S_STARTSTOP_S1;                                     \
+    S_STARTSTOP_S1;                                     \
+    S_STARTSTOP_S1;                                     \
+    S_STARTSTOP_S1;                                     \
+    S_STARTSTOP_S1;                                     \
+    S_STARTSTOP_S1;                                     \
+    S_STARTSTOP_S1;                                     \
 } while (0)
 
-#define S_STARTSTOP_S100    \
-do {            \
-    S_STARTSTOP_S10;       \
-    S_STARTSTOP_S10;       \
-    S_STARTSTOP_S10;       \
-    S_STARTSTOP_S10;       \
-    S_STARTSTOP_S10;       \
-    S_STARTSTOP_S10;       \
-    S_STARTSTOP_S10;       \
-    S_STARTSTOP_S10;       \
-    S_STARTSTOP_S10;       \
-    S_STARTSTOP_S10;       \
+#define S_STARTSTOP_S100                                \
+do {                                                    \
+    S_STARTSTOP_S10;                                    \
+    S_STARTSTOP_S10;                                    \
+    S_STARTSTOP_S10;                                    \
+    S_STARTSTOP_S10;                                    \
+    S_STARTSTOP_S10;                                    \
+    S_STARTSTOP_S10;                                    \
+    S_STARTSTOP_S10;                                    \
+    S_STARTSTOP_S10;                                    \
+    S_STARTSTOP_S10;                                    \
+    S_STARTSTOP_S10;                                    \
 } while (0)
-
 
 void zhpe_stats_test(uint16_t uid)
 {
@@ -595,29 +683,25 @@ uint64_t src1[8] CACHE_ALIGNED;
 /* single thread, no need to lock */
 static void stats_flush(struct zhpe_stats *zstats)
 {
+    size_t              req = (zstats->head & zstats->slots_mask);
+    ssize_t             res;
+
     assert(zstats->buffer);
-
-    ssize_t     res;
-    uint64_t    bufsize;
-
-    assert(zstats->head < zstats->num_slots - 1);
-    bufsize = (zhpe_stats_buf_mask & zstats->head)
-                * (sizeof(struct zhpe_stats_record));
+    assert(req < zstats->slots_num);
+    if (!req)
+        return;
     io_wmb();
-    res = write(zstats->fd, zstats->buffer, bufsize);
-    if (check_func_ion(__func__, __LINE__, "write", bufsize, false,
-                       bufsize, res, 0) < 0)
+    req *= sizeof(struct zhpe_stats_record);
+    res = write(zstats->fd, zstats->buffer, req);
+    if (check_func_ion(__func__, __LINE__, "write", req, false,
+                       req, res, 0) < 0)
         abort();
-
-    zstats->head = 0;
 }
 
 static void rdpmc_stats_close(struct zhpe_stats *zstats)
 {
     int                 i;
     int                 err;
-
-    stats_recordme(zstats, 0, ZHPE_STATS_OP_CLOSE);
 
     if (prctl(PR_TASK_PERF_EVENTS_DISABLE) == -1) {
         err = -errno;
@@ -631,9 +715,8 @@ static void rdpmc_stats_close(struct zhpe_stats *zstats)
     free(zstats->zhpe_stats_mmap_list);
     free(zstats->zhpe_stats_config_list);
 
-    stats_common_close(zstats);
+    stats_cmn_close(zstats);
 }
-
 
 #ifdef HAVE_ZHPE_SIM
 static void sim_stats_close(struct zhpe_stats *zstats)
@@ -646,7 +729,7 @@ static void sim_stats_close(struct zhpe_stats *zstats)
         print_func_err(__func__, __LINE__, "sim_api_data_rec",
                        "DATA_REC_END", -ret);
 
-    stats_common_close(zstats);
+    stats_cmn_close(zstats);
 }
 
 #else
@@ -657,51 +740,34 @@ static void sim_stats_close(struct zhpe_stats *zstats)
 
 #endif // HAVE_ZHPE_SIM
 
-/* cache2 profile */
-static void stats_start_memcpy(struct zhpe_stats *zstats, uint32_t subid)
-{
-    stats_recordme_memcpy(zstats, subid, ZHPE_STATS_OP_START);
-}
-
-static void stats_stop_memcpy(struct zhpe_stats *zstats, uint32_t subid)
-{
-    stats_recordme_memcpy(zstats, subid, ZHPE_STATS_OP_STOP);
-}
-
-static void stats_stop_all_memcpy(struct zhpe_stats *zstats)
-{
-    stats_recordme(zstats, 0, ZHPE_STATS_OP_RESTART_ALL);
-}
-
-
 static void stats_start(struct zhpe_stats *zstats, uint32_t subid)
 {
 //printf("IN stats_start\n");
-    stats_recordme(zstats, subid, ZHPE_STATS_OP_START);
+    zstats->zhpe_stats_ops->recordme(zstats, subid, ZHPE_STATS_OP_START);
 }
 
 static void stats_stop(struct zhpe_stats *zstats, uint32_t subid)
 {
 //printf("IN stats_stop\n");
-    stats_recordme(zstats, subid, ZHPE_STATS_OP_STOP);
+    zstats->zhpe_stats_ops->recordme(zstats, subid, ZHPE_STATS_OP_STOP);
 }
 
 static void stats_pause_all(struct zhpe_stats *zstats)
 {
 //printf("IN stats_pause_all\n");
-    stats_recordme(zstats, 0, ZHPE_STATS_OP_PAUSE_ALL);
+    zstats->zhpe_stats_ops->recordme(zstats, 0, ZHPE_STATS_OP_PAUSE_ALL);
 }
 
 static void stats_restart_all(struct zhpe_stats *zstats)
 {
 //printf("IN stats_restart_all\n");
-    stats_recordme(zstats, 0, ZHPE_STATS_OP_RESTART_ALL);
+    zstats->zhpe_stats_ops->recordme(zstats, 0, ZHPE_STATS_OP_RESTART_ALL);
 }
 
 static void stats_stop_all(struct zhpe_stats *zstats)
 {
 //printf("IN stats_stop_all\n");
-    stats_recordme(zstats, 0, ZHPE_STATS_OP_STOP_ALL);
+    zstats->zhpe_stats_ops->recordme(zstats, 0, ZHPE_STATS_OP_STOP_ALL);
 }
 
 /* generic */
@@ -711,7 +777,7 @@ static void stats_stamp(struct zhpe_stats *zstats, uint32_t subid,
 {
     struct zhpe_stats_record    *dest;
 
-    dest = stats_simple_nextslot(zstats);
+    dest = zstats->zhpe_stats_ops->nextslot(zstats);
     dest->subid = subid;
     dest->op_flag = ZHPE_STATS_OP_STAMP;
 
@@ -724,8 +790,8 @@ static void stats_stamp(struct zhpe_stats *zstats, uint32_t subid,
     dest->val6 = d6;
 }
 
-static struct zhpe_stats_ops stats_ops_rdpmc = {
-    .close              = rdpmc_stats_close,
+static struct zhpe_stats_ops stats_ops_enabled = {
+    .close              = stats_cmn_close,
     .enable             = stats_cmn_enable,
     .disable            = stats_cmn_disable,
     .pause_all          = stats_pause_all,
@@ -734,40 +800,10 @@ static struct zhpe_stats_ops stats_ops_rdpmc = {
     .start              = stats_start,
     .stop               = stats_stop,
     .stamp              = stats_stamp,
-    .setvals            = stats_setvals_6_rdpmc,
-    .saveme             = stats_memcpy_saveme,
 };
 
-static struct zhpe_stats_ops stats_ops_rdpmc_just1val = {
-    .close              = rdpmc_stats_close,
-    .enable             = stats_cmn_enable,
-    .disable            = stats_cmn_disable,
-    .pause_all          = stats_pause_all,
-    .restart_all        = stats_restart_all,
-    .stop_all           = stats_stop_all,
-    .start              = stats_start,
-    .stop               = stats_stop,
-    .stamp              = stats_stamp,
-    .setvals            = stats_setvals_just1_rdpmc,
-    .saveme             = stats_memcpy_saveme,
-};
-
-static struct zhpe_stats_ops stats_ops_rdpmc_2vals = {
-    .close              = rdpmc_stats_close,
-    .enable             = stats_cmn_enable,
-    .disable            = stats_cmn_disable,
-    .pause_all          = stats_pause_all,
-    .restart_all        = stats_restart_all,
-    .stop_all           = stats_stop_all,
-    .start              = stats_start,
-    .stop               = stats_stop,
-    .stamp              = stats_stamp,
-    .setvals            = stats_setvals_2_rdpmc,
-    .saveme             = stats_memcpy_saveme,
-};
-
-static struct zhpe_stats_ops stats_ops_rdpmc_disabled = {
-    .close              = rdpmc_stats_close,
+static struct zhpe_stats_ops stats_ops_disabled = {
+    .close              = stats_cmn_close,
     .enable             = stats_cmn_enable,
     .disable            = stats_cmn_disable,
     .pause_all          = stats_nop_zstats,
@@ -776,50 +812,6 @@ static struct zhpe_stats_ops stats_ops_rdpmc_disabled = {
     .start              = stats_nop_zstats_uint32,
     .stop               = stats_nop_zstats_uint32,
     .stamp              = stats_nop_stamp,
-    .setvals            = stats_nop_setvals,
-    .saveme             = stats_nop_saveme,
-};
-
-static struct zhpe_stats_ops stats_ops_rdpmc_memcpy = {
-    .close              = rdpmc_stats_close,
-    .enable             = stats_cmn_enable,
-    .disable            = stats_cmn_disable,
-    .pause_all          = stats_pause_all,
-    .restart_all        = stats_restart_all,
-    .stop_all           = stats_stop_all_memcpy,
-    .start              = stats_start_memcpy,
-    .stop               = stats_stop_memcpy,
-    .stamp              = stats_stamp,
-    .setvals            = stats_setvals_6_rdpmc,
-    .saveme             = stats_memcpy_saveme,
-};
-
-static struct zhpe_stats_ops stats_ops_hpe_sim_disabled = {
-    .close              = sim_stats_close,
-    .enable             = stats_cmn_enable,
-    .disable            = stats_cmn_disable,
-    .pause_all          = stats_nop_zstats,
-    .restart_all        = stats_nop_zstats,
-    .stop_all           = stats_nop_zstats,
-    .start              = stats_nop_zstats_uint32,
-    .stop               = stats_nop_zstats_uint32,
-    .stamp              = stats_stamp,
-    .setvals            = stats_setvals_hpe_sim,
-    .saveme             = stats_memcpy_saveme,
-};
-
-static struct zhpe_stats_ops stats_ops_hpe_sim = {
-    .close              = sim_stats_close,
-    .enable             = stats_cmn_enable,
-    .disable            = stats_cmn_disable,
-    .pause_all          = stats_pause_all,
-    .restart_all        = stats_restart_all,
-    .stop_all           = stats_stop_all,
-    .start              = stats_start,
-    .stop               = stats_stop,
-    .stamp              = stats_stamp,
-    .setvals            = stats_setvals_hpe_sim,
-    .saveme             = stats_memcpy_saveme,
 };
 
 static void init_rdpmc_profile(struct zhpe_stats *zstats, __u32 petype,
@@ -925,7 +917,7 @@ static void stats_sim_open(struct zhpe_stats *zstats, uint16_t uid)
 
 #endif // HAVE_ZHPE_SIM
 
-static void stats_common_open(struct zhpe_stats *zstats, uint16_t uid)
+static void stats_cmn_open(struct zhpe_stats *zstats, uint16_t uid)
 {
     char                *fname = NULL;
     int                 err;
@@ -943,11 +935,11 @@ static void stats_common_open(struct zhpe_stats *zstats, uint16_t uid)
     /* create zstats */
     zstats = xcalloc(1, sizeof(*zstats));
 
-    zstats->zhpe_stats_ops = &zhpe_stats_nops;
-    zstats->disabled_zhpe_stats_ops = &stats_ops_rdpmc_disabled;
+    zstats->zhpe_stats_ops = &stats_ops_enabled;
     zstats->uid = uid;
-    zstats->num_slots = zhpe_stats_buf_count;
-    zstats->buffer = xmalloc_cachealigned(zstats->num_slots *
+    zstats->slots_num = zhpe_stats_buf_count;
+    zstats->slots_mask = zhpe_stats_buf_count - 1;
+    zstats->buffer = xmalloc_cachealigned(zstats->slots_num *
                                           sizeof(struct zhpe_stats_record));
     zstats->tid = syscall(SYS_gettid);
 
@@ -962,74 +954,53 @@ static void stats_common_open(struct zhpe_stats *zstats, uint16_t uid)
     }
     free(fname);
 
-    zhpe_stats = zstats;
-    mutex_lock(&zhpe_stats_mutex);
-    zstats->next = zhpe_stats_list;
-    zhpe_stats_list = zstats;
-    mutex_unlock(&zhpe_stats_mutex);
-
     switch (zhpe_stats_profile) {
 
     case ZHPE_STATS_PROFILE_CARBON:
-        zstats->zhpe_stats_ops = &stats_ops_hpe_sim;
-        zstats->disabled_zhpe_stats_ops = &stats_ops_hpe_sim_disabled;
         stats_sim_open(zstats, uid);
+        break;
+
+    case ZHPE_STATS_PROFILE_STAMPS:
         break;
 
     case ZHPE_STATS_PROFILE_CPU_JUST1:
         init_rdpmc_profile(zstats, PERF_TYPE_RAW, 1,
                            RAW_PERF_HW_RETIRED_INSTRUCTIONS);
-        zstats->zhpe_stats_ops = &stats_ops_rdpmc_just1val;
         break;
 
     case ZHPE_STATS_PROFILE_HW_JUST1:
-        zstats->zhpe_stats_ops = &stats_ops_rdpmc_just1val;
         init_rdpmc_profile(zstats, PERF_TYPE_HARDWARE, 1,
                            PERF_COUNT_HW_INSTRUCTIONS);
         break;
 
     case ZHPE_STATS_PROFILE_HW:
-        zstats->zhpe_stats_ops = &stats_ops_rdpmc_2vals;
         init_rdpmc_profile(zstats, PERF_TYPE_HARDWARE, 2,
                            PERF_COUNT_HW_INSTRUCTIONS,
                            PERF_COUNT_HW_CPU_CYCLES);
         break;
 
     case ZHPE_STATS_PROFILE_CPU:
-        zstats->zhpe_stats_ops = &stats_ops_rdpmc;
         init_rdpmc_profile(zstats, PERF_TYPE_RAW, 6,
                            RAW_PERF_HW_RETIRED_INSTRUCTIONS,
-                           RAW_PERF_HW_RETIRED_CONDITIONAL_BRANCH_INSTRUCTIONS,
                            RAW_PERF_HW_CPU_CYCLES,
                            DISPATCH_RESOURCE_STALL_CYCLES0,
                            DISPATCH_RESOURCE_STALL_CYCLES1,
+                           RAW_PERF_HW_RETIRED_CONDITIONAL_BRANCH_INSTRUCTIONS,
                            RAW_PERF_HW_BRANCH_MISSES);
         break;
 
     case ZHPE_STATS_PROFILE_CPU2:
-        zstats->zhpe_stats_ops = &stats_ops_rdpmc;
         init_rdpmc_profile(zstats, PERF_TYPE_RAW, 6,
                            RAW_PERF_HW_RETIRED_INSTRUCTIONS,
-                           RAW_PERF_HW_RETIRED_CONDITIONAL_BRANCH_INSTRUCTIONS,
-                           RAW_PERF_HW_RETIRED_BRANCH_INSTRUCTIONS,
                            RAW_PERF_HW_CPU_CYCLES,
                            DISPATCH_RESOURCE_STALL_CYCLES0,
+                           RAW_PERF_HW_RETIRED_CONDITIONAL_BRANCH_INSTRUCTIONS,
+                           RAW_PERF_HW_RETIRED_BRANCH_INSTRUCTIONS,
                            RAW_PERF_HW_BRANCH_MISSES);
         break;
 
     case ZHPE_STATS_PROFILE_CACHE:
-        zstats->zhpe_stats_ops = &stats_ops_rdpmc;
-        init_rdpmc_profile(zstats, perf_typeid, 6,
-                           ALL_DC_ACCESSES,
-                           L2_CACHE_MISS_FROM_DC_MISS,
-                           L2_CACHE_HIT_FROM_DC_MISS,
-                           L2_CACHE_MISS_FROM_L2_HWPF1,
-                           L2_CACHE_MISS_FROM_L2_HWPF2,
-                           L2_CACHE_HIT_FROM_L2_HWPF);
-        break;
-
     case ZHPE_STATS_PROFILE_CACHE2:
-        zstats->zhpe_stats_ops = &stats_ops_rdpmc_memcpy;
         init_rdpmc_profile(zstats, perf_typeid, 6,
                            ALL_DC_ACCESSES,
                            L2_CACHE_MISS_FROM_DC_MISS,
@@ -1041,7 +1012,11 @@ static void stats_common_open(struct zhpe_stats *zstats, uint16_t uid)
 
     }
 
-    zstats->saved_zhpe_stats_ops = zstats->zhpe_stats_ops;
+    zhpe_stats = zstats;
+    mutex_lock(&zhpe_stats_mutex);
+    zstats->next = zhpe_stats_list;
+    zhpe_stats_list = zstats;
+    mutex_unlock(&zhpe_stats_mutex);
 
     stats_write_metadata(zstats);
 }
@@ -1085,35 +1060,64 @@ bool zhpe_stats_init(const char *stats_unique)
 
     ret = false;
 
+    stats_ops_enabled.recordme = stats_recordme;
+    stats_ops_enabled.nextslot = stats_nextslot_noflush;
+
     print_err("Setting ZHPE_STATS_PROFILE to %s.\n", tmp);
 
     if (!strcmp("carbon", tmp)) {
         zhpe_stats_profile = ZHPE_STATS_PROFILE_CARBON;
+        stats_ops_enabled.close = sim_stats_close;
+        stats_ops_enabled.setvals = stats_setvals_hpe_sim;
+    } else if (!strcmp("stamps", tmp)) {
+        zhpe_stats_profile = ZHPE_STATS_PROFILE_STAMPS;
+        stats_ops_enabled.setvals = stats_setvals_stamp;
+        stats_ops_enabled.nextslot = stats_nextslot_flush;
     } else if (!strcmp("just1cpu", tmp)) {
         zhpe_stats_profile = ZHPE_STATS_PROFILE_CPU_JUST1;
         perf_typeid = PERF_TYPE_RAW;
+        stats_ops_enabled.close = rdpmc_stats_close;
+        stats_ops_enabled.setvals = stats_setvals_1_rdpmc;
     } else if (!strcmp("just1hw", tmp)) {
         zhpe_stats_profile = ZHPE_STATS_PROFILE_HW_JUST1;
         perf_typeid = PERF_TYPE_HARDWARE;
+        stats_ops_enabled.close = rdpmc_stats_close;
+        stats_ops_enabled.setvals = stats_setvals_1_rdpmc;
     } else if (!strcmp("hw", tmp)) {
         zhpe_stats_profile = ZHPE_STATS_PROFILE_HW;
         perf_typeid = PERF_TYPE_HARDWARE;
+        stats_ops_enabled.close = rdpmc_stats_close;
+        stats_ops_enabled.setvals = stats_setvals_2_rdpmc;
     } else if (!strcmp("cpu", tmp)) {
         zhpe_stats_profile = ZHPE_STATS_PROFILE_CPU;
         perf_typeid = PERF_TYPE_RAW;
+        stats_ops_enabled.close = rdpmc_stats_close;
+        stats_ops_enabled.setvals = stats_setvals_6_rdpmc;
     } else if (!strcmp("cpu2", tmp)) {
         zhpe_stats_profile = ZHPE_STATS_PROFILE_CPU2;
         perf_typeid = PERF_TYPE_RAW;
+        stats_ops_enabled.close = rdpmc_stats_close;
+        stats_ops_enabled.setvals = stats_setvals_6_rdpmc;
     } else if (!strcmp("cache", tmp)) {
         zhpe_stats_profile = ZHPE_STATS_PROFILE_CACHE;
         perf_typeid = PERF_TYPE_RAW;
+        stats_ops_enabled.close = rdpmc_stats_close;
+        stats_ops_enabled.setvals = stats_setvals_6_rdpmc;
     } else if (!strcmp("cache2", tmp)) {
         zhpe_stats_profile = ZHPE_STATS_PROFILE_CACHE2;
         perf_typeid = PERF_TYPE_RAW;
+        stats_ops_enabled.close = rdpmc_stats_close;
+        stats_ops_enabled.setvals = stats_setvals_6_rdpmc;
+        stats_ops_enabled.recordme = stats_recordme_memcpy;
     }
 
     if (zhpe_stats_profile == 0)
         goto done;
+
+    stats_ops_disabled.close = stats_ops_enabled.close;
+    stats_ops_disabled.recordme = stats_ops_enabled.recordme;
+    stats_ops_disabled.nextslot = stats_ops_enabled.nextslot;
+    stats_ops_disabled.setvals = stats_ops_enabled.setvals;
 
 #ifdef HAVE_ZHPE_SIM
     if (sim_api_is_sim()) {
@@ -1153,8 +1157,6 @@ bool zhpe_stats_init(const char *stats_unique)
         __func__, __LINE__, zhpe_stats_buf_count);
     }
 
-    zhpe_stats_buf_mask = zhpe_stats_buf_count - 1;
-
     zhpe_stats_dir = xstrdup_or_null(stats_dir);
     zhpe_stats_unique = xstrdup_or_null(stats_unique);
 
@@ -1175,16 +1177,12 @@ void zhpe_stats_open(uint16_t uid)
 {
     struct zhpe_stats *zstats = zhpe_stats;
 
-    stats_common_open(zstats, uid);
+    stats_cmn_open(zstats, uid);
 }
 
 #else
 
 void zhpe_stats_test(uint16_t uid)
-{
-}
-
-void zhpe_stats_flush()
 {
 }
 

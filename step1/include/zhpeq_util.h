@@ -508,8 +508,6 @@ struct zhpeu_init_time {
 
 extern struct zhpeu_init_time *zhpeu_init_time;
 
-#define page_size       (zhpeu_init_time->pagesz)
-
 #define MSEC_PER_SEC    ((uint64_t)1000)
 #define USEC_PER_SEC    ((uint64_t)1000000)
 #define NSEC_PER_SEC    ((uint64_t)1000000000)
@@ -573,6 +571,9 @@ static inline void clwb_range(const void *addr, size_t length, bool fence)
 #define clock_gettime_monotonic(...)                            \
     clock_gettime(CLOCK_MONOTONIC, __VA_ARGS__)
 
+#define gettimeofday(...)                                       \
+    zhpeu_syscall(zhpeu_fatal, gettimeofday, __VA_ARGS__)
+
 static inline uint64_t ts_delta(struct timespec *ts_beg,
                                 struct timespec *ts_end)
 {
@@ -621,6 +622,10 @@ uint *zhpeu_random_array(uint *array, uint entries);
 int zhpeu_munmap(void *addr, size_t length);
 void *zhpeu_mmap(void *addr, size_t length, int prot, int flags,
                  int fd, off_t offset);
+
+
+#define ZHPEU_TM_STR_LEN        (35)
+char *zhpeu_tm_to_str(char *str, size_t max_len, struct tm *tm, uint nsec);
 
 char *zhpeu_get_cpuinfo_val(FILE *fp, char *buf, size_t buf_size,
                             uint field, const char *name, ...);
@@ -883,17 +888,17 @@ static inline uint64_t mask2_up(uint64_t val, uint64_t size)
 
 static inline uint64_t page_off(uint64_t val)
 {
-    return mask2_off(val, page_size);
+    return mask2_off(val, zhpeu_init_time->pagesz);
 }
 
 static inline uint64_t page_down(uint64_t val)
 {
-    return mask2_down(val, page_size);
+    return mask2_down(val, zhpeu_init_time->pagesz);
 }
 
 static inline uint64_t page_up(uint64_t val)
 {
-    return mask2_up(val, page_size);
+    return mask2_up(val, zhpeu_init_time->pagesz);
 }
 
 static inline uint64_t l1_off(uint64_t val)
@@ -1094,7 +1099,9 @@ do {                                                            \
 
 #ifdef _ZHPEQ_TEST_COMPAT_
 
-#define appname                 zhpeu_appname
+#define appname                 (zhpeu_appname)
+#define page_size               (zhpeu_init_time->pagesz)
+
 #define check_func_io           zhpeu_check_func_io
 #define check_func_ion          zhpeu_check_func_ion
 #define connect_sock            _zhpeu_sock_connect

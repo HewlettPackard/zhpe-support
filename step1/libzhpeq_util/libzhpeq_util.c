@@ -1320,6 +1320,24 @@ void *zhpeu_mmap(void *addr, size_t length, int prot, int flags,
     return ret;
 }
 
+char *zhpeu_tm_to_str(char *str, size_t max_len, struct tm *tm, uint nsec)
+{
+    char                fmt_buf[32];
+    char                time_buf[ZHPEU_TM_STR_LEN];
+
+    if (!max_len)
+        return str;
+
+    /* XXXX-XX-XXTXX:XX:XX.XXXXXXXXX+XXXX, 35 bytes w/null */
+    snprintf(fmt_buf, sizeof(fmt_buf), "%s.%09u%s", "%FT%H:%M:%S", nsec, "%z");
+    strftime(time_buf, sizeof(time_buf), fmt_buf, tm);
+    time_buf[sizeof(time_buf) - 1] = '\0';
+    strncpy(str, time_buf, max_len);
+    str[max_len - 1] = '\0';
+
+    return str;
+}
+
 static bool thr_wait_signal_atomic_fast(struct zhpeu_thr_wait *thr_wait)
 {
     int32_t             old = ZHPEU_THR_WAIT_IDLE;

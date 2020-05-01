@@ -253,7 +253,8 @@ static inline
 int fab_mrmem_alloc(struct fab_conn *conn, struct fab_mrmem *mrmem, size_t len,
                     uint64_t access)
 {
-    return fab_mrmem_alloc_aligned(conn, mrmem, page_size, len, access);
+    return fab_mrmem_alloc_aligned(conn, mrmem, zhpeu_init_time->pagesz,
+                                   len, access);
 }
 
 #define _fab_mrmem_alloc(...)                                   \

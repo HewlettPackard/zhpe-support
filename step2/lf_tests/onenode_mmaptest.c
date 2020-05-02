@@ -35,8 +35,9 @@
  */
 
 /*
- * This is a self-contained hello world that takes one argument: a memory length.
-*/
+ * This is a self-contained hello world that takes one argument:
+ * a memory length.
+ */
 
 #define _GNU_SOURCE
 
@@ -59,21 +60,20 @@ static void usage(bool help)
     exit(help ? 0 : 255);
 }
 
-
-int testit(size_t length)
+static int testit(size_t length)
 {
     size_t    i;
     int       ret = -1;
     void     *buf1;
     uint16_t *p;
 
-    if (length > 0)
-    {
-        buf1 = zhpe_mmap_alloc(length);
-        if (!buf1) {
-            print_err("zhpe_mmap_alloc() failed\n");
-            return ret;
-        }
+    buf1 = zhpe_mmap_alloc(length);
+    if (!buf1) {
+        print_err("zhpe_mmap_alloc() failed\n");
+        return ret;
+    }
+    /* Minimum underlying length is 1 page. */
+    if (length > 0) {
         printf("Writing to buf:\n");
         for (i = 0, p = (uint16_t *) buf1; i < length; i += sizeof (*p), p++)
             *p = (i | 1);
@@ -90,11 +90,11 @@ int testit(size_t length)
         }
         print_err("Saw %d errors out of %lu\n", ret,i);
     }
-    else buf1 = zhpe_mmap_alloc(1);
 
     ret = zhpe_munmap_free(buf1);
     if (ret < 0)
-        print_func_err(__func__, __LINE__, "zhpe_munmap_free", FI_ZHPE_OPS_V1, ret);
+        print_func_err(__func__, __LINE__, "zhpe_munmap_free",
+                       FI_ZHPE_OPS_V1, ret);
     return ret;
 }
 
@@ -109,13 +109,9 @@ int main(int argc, char **argv)
     if (argc < 2)
         usage(true);
 
-    /* set length */
-    mmap_len=atoi(argv[1]);
-    if ((mmap_len >= 2) && (parse_kb_uint64_t(__func__, __LINE__, "mmap_len",
-        argv[1], &mmap_len, 0,
-        sizeof(uint16_t), SIZE_MAX,
-        PARSE_KB | PARSE_KIB)))
-            usage(false);
+    if (parse_kb_uint64_t(__func__, __LINE__, "mmap_len", argv[1], &mmap_len, 0,
+                          sizeof(uint16_t), SIZE_MAX, PARSE_KB | PARSE_KIB) < 0)
+        usage(false);
 
     for (int i=0; i< iterations; i++)
     {

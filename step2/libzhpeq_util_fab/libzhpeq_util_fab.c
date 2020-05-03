@@ -568,19 +568,38 @@ int fab_eq_cm_event(struct fab_conn *conn, int timeout, uint32_t expected,
 int fab_mrmem_alloc_aligned(struct fab_conn *conn, struct fab_mrmem *mrmem,
                             size_t alignment, size_t len, uint64_t access)
 {
-    int                 ret;
+    int                 ret = 0;
 
-    ret = -_posix_memalign(&mrmem->mem, alignment, len);
-    if (ret < 0) {
-        mrmem->mem = NULL;
+    mrmem->mr = NULL;
+    mrmem->mem = NULL;
+    mrmem->len = len;
+    mrmem->mem_free = NULL;
+    mrmem->len_free = len;
+    if (unlikely(!len))
+        goto done;
+    if (unlikely(alignment & (alignment - 1))) {
+        ret = -EINVAL;
         goto done;
     }
-    memset(mrmem->mem, 0, len);
-    mrmem->len = len;
+    if (unlikely(alignment > zhpeu_init_time->pagesz))
+        mrmem->len_free += alignment;
+
+    mrmem->mem_free = zhpeu_mmap(NULL, mrmem->len_free, PROT_READ | PROT_WRITE,
+                                 MAP_ANONYMOUS | MAP_PRIVATE | MAP_POPULATE,
+                                 -1, 0);
+    if (!mrmem->mem_free) {
+        ret = -ENOMEM;
+        goto done;
+    }
+    mrmem->mem = mrmem->mem_free;
+    if (unlikely(alignment > zhpeu_init_time->pagesz)) {
+        alignment--;
+        mrmem->mem = (void *)(((uintptr_t)mrmem->mem + alignment) & ~alignment);
+    }
 
     if (!access)
         access = (FI_READ | FI_WRITE | FI_REMOTE_READ | FI_REMOTE_WRITE);
-    ret = fi_mr_reg(conn->dom->domain, mrmem->mem, len, access, 0, 0, 0,
+    ret = fi_mr_reg(conn->dom->domain, mrmem->mem, mrmem->len, access, 0, 0, 0,
                     &mrmem->mr, NULL);
     if (ret < 0) {
         fab_print_func_err(__func__, __LINE__, "fi_mr_reg", "", ret);
@@ -588,6 +607,9 @@ int fab_mrmem_alloc_aligned(struct fab_conn *conn, struct fab_mrmem *mrmem,
     }
 
  done:
+    if (ret < 0)
+        fab_mrmem_free(mrmem);
+
     return ret;
 }
 
@@ -599,7 +621,11 @@ int fab_mrmem_free(struct fab_mrmem *mrmem)
         goto done;
 
     ret = FI_CLOSE(mrmem->mr);
-    free(mrmem->mem);
+    if (mrmem->mem_free) {
+        ret = zhpeu_update_error(ret, munmap(mrmem->mem_free, mrmem->len_free));
+        mrmem->mem = NULL;
+        mrmem->mem_free = NULL;
+    }
 
  done:
     return ret;

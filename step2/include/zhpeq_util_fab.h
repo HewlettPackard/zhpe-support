@@ -58,6 +58,8 @@ struct fab_mrmem {
     struct fid_mr       *mr;
     void                *mem;
     size_t              len;
+    void                *mem_free;
+    size_t              len_free;
 };
 
 struct fab_info {

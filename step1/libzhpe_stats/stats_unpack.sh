@@ -30,6 +30,7 @@ MATCHEM=$APPDIR/matchem.awk
 
 python3 $UNPACKDATA ${INPUT} > ${INPUT}.dat
 echo "    output: ${INPUT}.dat"
+exit 0
 
 awk -F, -f $MATCHEM ${INPUT}.dat > ${INPUT}.dat.matched
 echo "    output: ${INPUT}.dat.matched"

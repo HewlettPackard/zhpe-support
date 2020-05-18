@@ -68,6 +68,9 @@ struct zhpe_stats_ops {
     void   (*stamp)(struct zhpe_stats *zstats, uint32_t subid,
                     uint64_t d1, uint64_t d2, uint64_t d3, uint64_t d4,
                     uint64_t d5, uint64_t d6);
+    void   (*stamp_dbg)(struct zhpe_stats *zstats, uint32_t subid,
+                        uint64_t d1, uint64_t d2, uint64_t d3, uint64_t d4,
+                        uint64_t d5, uint64_t d6);
     void   (*recordme)(struct zhpe_stats *zstats, uint32_t subid,
                        uint32_t op_flag);
     struct zhpe_stats_record *(*nextslot)(struct zhpe_stats *zstats);
@@ -81,12 +84,12 @@ struct zhpe_stats {
     struct zhpe_stats_ops       *zhpe_stats_ops;
     struct perf_event_mmap_page **zhpe_stats_mmap_list;
     uint64_t                    *zhpe_stats_config_list;
-    uint32_t                    slots_num;
     uint32_t                    slots_mask;
     int                         fd;
     uint16_t                    uid;
     size_t                      head;
     size_t                      head_gdb;
+    size_t                      tail_gdb;
     pid_t                       tid;
     uint8_t                     enabled;
 };
@@ -169,22 +172,40 @@ static inline void zhpe_stats_stamp(uint32_t subid,
     zstats->zhpe_stats_ops->stamp(zstats, subid, d1, d2, d3, d4, d5, d6);
 }
 
-#ifdef NDEBUG
-static inline void zhpe_stats_stamp_dbg(const char *func, uint line,
-                                        uint64_t d3,
-                                        uint64_t d4, uint64_t d5, uint64_t d6)
-{
-}
-#else // NDEBUG
 static inline void zhpe_stats_stamp_dbg(const char *func, uint line,
                                         uint64_t d3,
                                         uint64_t d4, uint64_t d5, uint64_t d6)
 {
     struct zhpe_stats *zstats = zhpe_stats;
-    zstats->zhpe_stats_ops->stamp(zstats, zhpe_stats_subid(DBG, 0),
-                                  (uintptr_t)func, line, d3, d4, d5, d6);
+    zstats->zhpe_stats_ops->stamp_dbg(zstats, zhpe_stats_subid(DBG, 0),
+                                      (uintptr_t)func, line, d3, d4, d5, d6);
 }
-#endif // NDEBUG
+
+#if 0
+#define zhpe_stats_stamp_dbg(_func, _line, _d3, _d4, _d5, _d6)          \
+{                                                                       \
+    static bool         __print_done = false;                           \
+    const char          *__func = (_func);                              \
+    uint                __line = (_line);                               \
+                                                                        \
+    if (unlikely(!__print_done)) {                                      \
+        fprintf(stderr,"%s,%u:pid %d stamp 0x%lx\n", __func, __line,    \
+                getpid(), (uintptr_t)__func);                           \
+        __print_done = true;                                            \
+    }                                                                   \
+    zhpe_stats_stamp(zhpe_stats_subid(DBG, 0),                          \
+                     (uintptr_t)__func, __line,                         \
+                     (_d3), (_d4), (_d5), (_d6));                       \
+}
+#endif
+
+static inline void zhpe_stats_stamp_dbgc(uint64_t d1, uint64_t d2, uint64_t d3,
+                                         uint64_t d4, uint64_t d5, uint64_t d6)
+{
+    struct zhpe_stats *zstats = zhpe_stats;
+    zstats->zhpe_stats_ops->stamp_dbg(zstats, zhpe_stats_subid(DBG, 1),
+                                      d1, d2, d3, d4, d5, d6);
+}
 
 #else // HAVE_ZHPE_STATS
 
@@ -229,6 +250,11 @@ static inline void zhpe_stats_stamp(uint32_t subid,
 static inline void zhpe_stats_stamp_dbg(const char *func, uint line,
                                         uint64_t d3,
                                         uint64_t d4, uint64_t d5, uint64_t d6)
+{
+}
+
+static inline void zhpe_stats_stamp_dbgc(uint64_t d1, uint64_t d2, uint64_t d3,
+                                         uint64_t d4, uint64_t d5, uint64_t d6)
 {
 }
 

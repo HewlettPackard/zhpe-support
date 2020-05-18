@@ -142,7 +142,7 @@ enum {
     ZHPE_STATS_PROFILE_HW           = 107,
     ZHPE_STATS_PROFILE_HW_JUST1     = 108,
     ZHPE_STATS_PROFILE_RDTSCP       = 109,
-    ZHPE_STATS_PROFILE_STAMPS       = 110,
+    ZHPE_STATS_PROFILE_STAMP_DBG    = 110,
 };
 
 /* for looking up hpe_sim offsets */

@@ -39,7 +39,7 @@ def prettyPrintRecord(aRecord):
     print('opflag:{}, subid:{}, val0:{}, val1:{},  val2:{}, val3:{}, val4:{}, val5:{}, val6:{}'.format(aRecord.opflag,aRecord.subid,aRecord.val1,aRecord.val2,aRecord.val3,aRecord.val4,aRecord.val5,aRecord.val6))
 
 def printRecord(aRecord):
-    print('{},{},{},{},{},{},{},{},{}'.format(aRecord.opflag,aRecord.subid,aRecord.val0,aRecord.val1,aRecord.val2,aRecord.val3,aRecord.val4,aRecord.val5,aRecord.val6))
+    print('{},{},{},{},{},{},{},{},{}'.format(aRecord.opflag,aRecord.subid,aRecord.val0,hex(aRecord.val1),hex(aRecord.val2),hex(aRecord.val3),hex(aRecord.val4),hex(aRecord.val5),hex(aRecord.val6)))
 
 def printStatsForArray(aName, anArray):
     idx=0

@@ -34,81 +34,17 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-/*
- * John said that the goal is to fill the command buffers and send them without
- * involving the command queue.
- *
- *      - Unidirectional
- *      - Instead of reserving entries, fill them all and leave them populated.
- *      - At set up time, allocate the command buffer (zhpeq_tq_alloc) and
- *        then populate all the wq entries, using zhpe_tq_puti.
- *      - Make ztq_write check if the tail is 1/2 the size of the array
- *        and do a zhpeq_tq_commit if so.
- *      - Keep size < ZHPEQ_MAX_IMM
- *      - Clean up options/usage/extraneous functions
- *      - Launch servers and clients separately using MPI, and set port number to
- *        initial port number + rank id.
- *      - After that works, then launch servers and clients at once
- *        using MPI, and set port number to port number + rank id%(worldsize/2)
- *      - Use MPI instead of socket communication.
- *      - Use a single server (rank 0).
- *      - Delete extraneous args.
- *      - Simplify:
- *          - Server needs only to allocate/share receive queue.
- *          - Client does not need transmit nor receive queue.
- *          - Client does not need transmit nor receive queue.
- *          - Server needs tell clients the sa.
- *      - Have rank 0 allocate a single buffer big enough for everyone,
- *        broadcast the information, and have the other ranks compute their spot.
- *        Exchange addresses and insert the remote address in the domain.
- *
- *      - make stride a parameter
- *
- * TIME:
- *      John Byrne:
- *        - Take the do_barrier function in mpi_barrier and use it to
- *          measure the skew of your barrier.
- *        - Take a look in mpi_zbw to see how MPI_Comm_split gets used.
- *        - You can make a communicator for 1-64 to synchronize the start
- *          and use MPI_COMM_WORLD for the end.
- *        - Also sample the wall clock after the cycles at the end of
- *          each rank and sort and show the maximum skew.
- *          Instead of passing ops_completed to cycles_to_usec() pass in 1
- *          to get the wall clock time and adjust the ops-per-second
- *          calculation accordingly.
- *          Print out both versions of the time from the cycles and the clock.
- *          Look in the tqinfo and print out the slice and queue.
- *
- *  - Get do_barrier to work with all ranks
- *  - Split so just clients call do_barrier
- */
 
 #include <zhpeq.h>
 #include <zhpeq_util.h>
-#include <zhpe_stats.h>
 
 #include <sys/queue.h>
 
 #include <mpi.h>
 
-#define BACKLOG         (10)
-#ifdef DEBUG
-#define TIMEOUT         (-1)
-#else
-#define TIMEOUT         (10000)
-#endif
-#define WARMUP_MIN      (1024)
-#define RX_WINDOW       (64)
-#define TX_WINDOW       (64)
-#define L1_CACHELINE    ((size_t)64)
-#define ZTQ_LEN         (1023)
-
 /* global variables */
 int  my_rank;
 int  worldsize;
-int  client_rank;
-int  client_worldsize;
-MPI_Comm client_comm;
 
 #define MPI_CALL(_func, ...)                                    \
 do {                                                            \
@@ -157,14 +93,14 @@ struct stuff {
     uint64_t            ops_completed;       /* client-only */
     size_t              ring_entry_aligned;
     size_t              ring_ops;
-    size_t              ring_end_off;
+    size_t              ring_len;
     uint32_t            cmdq_entries;
     void                *addr_cookie;
 };
 
 
 struct timerank {
-    struct timespec     ts_barrier;
+    struct timespec     time;
     int                 rank;
 };
 
@@ -174,10 +110,10 @@ int tr_compare(const void *v1, const void *v2)
     const struct timerank *tr1 = v1;
     const struct timerank *tr2 = v2;
 
-    ret = arithcmp(tr1->ts_barrier.tv_sec, tr2->ts_barrier.tv_sec);
+    ret = arithcmp(tr1->time.tv_sec, tr2->time.tv_sec);
     if (ret)
         return ret;
-    ret = arithcmp(tr1->ts_barrier.tv_nsec, tr2->ts_barrier.tv_nsec);
+    ret = arithcmp(tr1->time.tv_nsec, tr2->time.tv_nsec);
     if (ret)
         return ret;
     ret = arithcmp(tr1->rank, tr2->rank);
@@ -187,48 +123,33 @@ int tr_compare(const void *v1, const void *v2)
     return 0;
 }
 
-void do_barrier(int barrier_id)
+void do_timesort(const char *label, struct timespec *time)
 {
     struct timerank     *tr_all = NULL;
-    struct timerank     tr_self;
+    struct timerank     tr_self = {
+        .time           = *time,
+        .rank           = my_rank,
+    };
     int                 i;
     uint64_t            delta;
-    char                time_str[ZHPEU_TM_STR_LEN];
 
-    tr_self.rank = my_rank;
-    if (client_rank == 0)
-        tr_all = xcalloc(client_worldsize, sizeof(*tr_all));
-
-// printf("my_rank is %d; client_rank is %d; client_worldsize is %d\n",my_rank, client_rank, client_worldsize);
-
-    MPI_CALL(MPI_Barrier, MPI_COMM_WORLD);
-   // MPI_CALL(MPI_Barrier, client_comm);
-    clock_gettime(CLOCK_REALTIME, &tr_self.ts_barrier);
+    if (my_rank == 0)
+        tr_all = xcalloc(worldsize, sizeof(*tr_all));
 
     /* Lazy about structs. */
-    MPI_CALL(MPI_Gather, &tr_self, sizeof(tr_self), MPI_CHAR,
-             tr_all, sizeof(*tr_all), MPI_CHAR, 0, client_comm);
+    MPI_CALL(MPI_Gather, &tr_self, sizeof(tr_self), MPI_BYTE,
+             tr_all, sizeof(*tr_all), MPI_BYTE, 0, MPI_COMM_WORLD);
 
-    if (client_rank != 0)
+    if (my_rank != 0)
         return;
 
-    qsort(tr_all, client_worldsize, sizeof(*tr_all), tr_compare);
+    qsort(tr_all + 1, worldsize - 1, sizeof(*tr_all), tr_compare);
 
-    zhpeu_tm_to_str(time_str, sizeof(time_str),
-                    localtime(&tr_all[0].ts_barrier.tv_sec),
-                    tr_all[0].ts_barrier.tv_nsec);
-
-#if 0
-    for (i = 0;  i < client_worldsize - 1; i++) {
-        delta = ts_delta(&tr_all[0].ts_barrier, &tr_all[i].ts_barrier);
-        printf("do_barrier output: barrier %5d rank %3d delta %10.3f usec\n",
-               barrier_id, tr_all[i].rank, (double)delta / 1000.0);
+    for (i = 1; i < worldsize; i++) {
+        delta = ts_delta(&tr_all[1].time, &tr_all[i].time);
+        printf("%s:%s rank %3d delta %10.3f usec\n",
+               __func__, label, tr_all[i].rank, (double)delta / 1000.0);
     }
-#endif
-    i = client_worldsize - 1;
-    delta = ts_delta(&tr_all[0].ts_barrier, &tr_all[i].ts_barrier);
-    printf("do_barrier output: barrier %5d rank %3d delta %10.3f usec\n",
-            barrier_id, tr_all[i].rank, (double)delta / 1000.0);
 }
 
 static void stuff_free(struct stuff *stuff)
@@ -249,8 +170,8 @@ static void stuff_free(struct stuff *stuff)
     }
     zhpeq_domain_free(stuff->zqdom);
 
-    if ((my_rank == 0) && (stuff->rx_addr))
-        munmap(stuff->rx_addr, stuff->ring_end_off);
+    if (stuff->rx_addr)
+        munmap(stuff->rx_addr, stuff->ring_len * (worldsize - 1));
 }
 
 /* server allocates and broadcasts ztq_remote_rx_addr to all clients */
@@ -262,7 +183,7 @@ static int do_mem_setup(struct stuff *conn)
     uint64_t            ztq_remote_rx_addr;
 
     const struct args   *args = conn->args;
-    size_t              mask = L1_CACHELINE - 1;
+    size_t              mask = L1_CACHE_BYTES - 1;
     size_t              req;
     union zhpe_hw_wq_entry *wqe;
     int                 i;
@@ -271,15 +192,13 @@ static int do_mem_setup(struct stuff *conn)
 
     /* everyone needs this */
     conn->ring_entry_aligned = (args->ring_entry_len + mask) & ~mask;
+    conn->ring_len = conn->ring_entry_aligned * conn->cmdq_entries;
+    req = conn->ring_len * (worldsize - 1);
 
     /* only server sets up rx_addr */
     if (my_rank == 0) {
-        req = conn->ring_entry_aligned * conn->cmdq_entries * (worldsize - 1);
-        conn->ring_end_off = req;
-
         conn->rx_addr = mmap( NULL, req, PROT_READ | PROT_WRITE,
-                         MAP_ANONYMOUS | MAP_SHARED,
-                         -1 , 0);
+                              MAP_ANONYMOUS | MAP_SHARED, -1 , 0);
 
         ret = zhpeq_mr_reg(conn->zqdom, conn->rx_addr, req,
                            (ZHPEQ_MR_GET | ZHPEQ_MR_PUT |
@@ -291,7 +210,8 @@ static int do_mem_setup(struct stuff *conn)
                                   conn->ztq_local_kdata->z.access,
                                   blob, &blob_len);
         if (ret < 0) {
-                print_func_err(__func__, __LINE__, "zhpeq_qkdata_export", "", ret);
+                print_func_err(__func__, __LINE__, "zhpeq_qkdata_export", "",
+                               ret);
                 goto done;
         }
     }
@@ -302,14 +222,14 @@ static int do_mem_setup(struct stuff *conn)
 
     ztq_remote_rx_addr = (uintptr_t)conn->rx_addr;
 
-    MPI_CALL(MPI_Bcast, &ztq_remote_rx_addr, 1, MPI_UINT64_T, 0, MPI_COMM_WORLD);
+    MPI_CALL(MPI_Bcast, &ztq_remote_rx_addr, 1, MPI_UINT64_T, 0,
+             MPI_COMM_WORLD);
 
     /* only clients set up ztq_remote_rx_addr */
     if (my_rank > 0) {
-        ztq_remote_rx_addr += conn->ring_entry_aligned *
-                              conn->cmdq_entries * (my_rank - 1);
-        ret = zhpeq_qkdata_import(conn->zqdom, conn->addr_cookie, blob, blob_len,
-                              &conn->ztq_remote_kdata);
+        ztq_remote_rx_addr += conn->ring_len * (my_rank - 1);
+        ret = zhpeq_qkdata_import(conn->zqdom, conn->addr_cookie,
+                                  blob, blob_len, &conn->ztq_remote_kdata);
         if (ret < 0) {
             print_func_err(__func__, __LINE__, "zhpeq_qkdata_import", "", ret);
             goto done;
@@ -321,11 +241,11 @@ static int do_mem_setup(struct stuff *conn)
 
         }
         ret = zhpeq_rem_key_access(conn->ztq_remote_kdata,
-                               ztq_remote_rx_addr, conn->ring_end_off,
-                               0, &conn->ztq_remote_rx_zaddr);
+                                   ztq_remote_rx_addr, conn->ring_len,
+                                   0, &conn->ztq_remote_rx_zaddr);
         if (ret < 0) {
-            print_func_err(__func__, __LINE__, "zhpeq_rem_key_access",
-                           "", ret);
+            print_func_err(__func__, __LINE__, "zhpeq_rem_key_access", "",
+                           ret);
             goto done;
         }
     }
@@ -333,7 +253,7 @@ static int do_mem_setup(struct stuff *conn)
     if (my_rank > 0) {
         if (args->use_geti) {
             /* Loop and fill in my commmand buffers with geti commands. */
-            for (i =0; i<conn->cmdq_entries; i++) {
+            for (i = 0; i < conn->cmdq_entries; i++) {
                 wqe = &conn->ztq->wq[i];
                 zhpeq_tq_geti(wqe, 0, args->ring_entry_len,
                        conn->ztq_remote_rx_zaddr+(i*conn->ring_entry_aligned));
@@ -341,7 +261,7 @@ static int do_mem_setup(struct stuff *conn)
             }
         } else {
             /* Loop and fill in my commmand buffers puti commands. */
-            for (i =0; i<conn->cmdq_entries; i++) {
+            for (i = 0; i < conn->cmdq_entries; i++) {
                 wqe = &conn->ztq->wq[i];
                 memset(zhpeq_tq_puti(wqe, 0, args->ring_entry_len,
                        conn->ztq_remote_rx_zaddr+(i*conn->ring_entry_aligned)),
@@ -349,13 +269,6 @@ static int do_mem_setup(struct stuff *conn)
                 wqe->hdr.cmp_index = i;
             }
         }
-#if 0
-        wqe = &conn->ztq->wq[conn->cmdq_entries - 1];
-        printf("%s,%u:rank %d op 0x%04x cmp_index 0x%04x len 0x%02x"
-               " rem 0x%016" PRIx64 "\n",
-               __func__, __LINE__, my_rank, wqe->hdr.opcode, wqe->hdr.cmp_index,
-               wqe->imm.len, wqe->imm.rem_addr);
-#endif
     }
 
  done:
@@ -390,7 +303,7 @@ static void ztq_completions(struct stuff *conn)
     while ((cqe = tq_cq_entry(ztq, mystride - 1))) {
         /* unlikely() to optimize the no-error case. */
         if (unlikely(cqe->status != ZHPE_HW_CQ_STATUS_SUCCESS))
-            print_err("ERROR: %s,%u:rank %d index 0x%x status 0x%x\n",
+            print_err("ERROR: %s,%u:rank %3d index 0x%x status 0x%x\n",
                       __func__, __LINE__, my_rank, cqe->index, cqe->status);
         ztq->cq_head += mystride;
         conn->ops_completed += mystride;
@@ -423,14 +336,15 @@ static void ztq_write(struct stuff *conn)
 /* Use existing pre-populated command buffer. */
 static int do_client_unidir(struct stuff *conn)
 {
-    double              clocktime;
+    double              qclocktime;
+    double              bclocktime;
     struct timespec     start_clocktime;
-    struct timespec     now_clocktime;
+    struct timespec     qend_clocktime;
+    struct timespec     bend_clocktime;
 
-    //MPI_CALL(MPI_Barrier, MPI_COMM_WORLD);
-    /* call do_barrier here */
-    do_barrier(1);
-
+    /* Make sure barrier connections are built. */
+    MPI_CALL(MPI_Barrier, MPI_COMM_WORLD);
+    MPI_CALL(MPI_Barrier, MPI_COMM_WORLD);
     clock_gettime(CLOCK_REALTIME, &start_clocktime);
 
     while (conn->ring_ops) {
@@ -441,19 +355,24 @@ static int do_client_unidir(struct stuff *conn)
     while ((int32_t)(conn->ztq->wq_tail_commit - conn->ztq->cq_head) > 0)
         ztq_completions(conn);
 
-    clock_gettime(CLOCK_REALTIME, &now_clocktime);
-    clocktime = (double)ts_delta(&start_clocktime, &now_clocktime) / 1000.0;
+    clock_gettime(CLOCK_REALTIME, &qend_clocktime);
+    MPI_CALL(MPI_Barrier, MPI_COMM_WORLD);
+    clock_gettime(CLOCK_REALTIME, &bend_clocktime);
 
+    do_timesort(NULL, &start_clocktime);
+    do_timesort(NULL, &qend_clocktime);
+    do_timesort(NULL, &bend_clocktime);
     MPI_CALL(MPI_Barrier, MPI_COMM_WORLD);
 
-    if (my_rank == 0)
-        printf("queue size:%"PRIu32"\n",conn->ztq->tqinfo.cmdq.ent);
+    qclocktime = (double)ts_delta(&start_clocktime, &qend_clocktime) / 1000.0;
+    bclocktime = (double)ts_delta(&start_clocktime, &bend_clocktime) / 1000.0;
 
-    printf("%s:rank:%d; ops count:%"PRIu64"; slice:%d; queue:%d;"
-           "clocktime, usec:%.3f; ops per sec:%.3f\n",
+    printf("%s:rank:%3d; ops:%"PRIu64"; slice:%d; queue:%3d; "
+           "qtime, usec:%.3f; btime, usec:%.3f; qMops/s:%.3f; bMops/s %.3f\n",
            appname, my_rank, conn->ops_completed, conn->ztq->tqinfo.slice,
-           conn->ztq->tqinfo.queue, clocktime,
-           (double)(conn->ops_completed * 1000000) / clocktime);
+           conn->ztq->tqinfo.queue, qclocktime, bclocktime,
+           (double)conn->ops_completed / qclocktime,
+           (double)conn->ops_completed / bclocktime);
 
     return 0;
 }
@@ -485,7 +404,7 @@ int do_queue_setup(struct stuff *conn)
         slice_mask |= SLICE_DEMAND;
 
         ret = zhpeq_tq_alloc(conn->zqdom, args->ring_entries,
-                             args->ring_entries, 0, 1, slice_mask, &conn->ztq);
+                             args->ring_entries, 0, 0, slice_mask, &conn->ztq);
         if (ret < 0) {
             print_func_err(__func__, __LINE__, "zhpeq_tq_qalloc", "", ret);
             goto done;
@@ -494,17 +413,15 @@ int do_queue_setup(struct stuff *conn)
     }
 
     /* verify everyone's command queue is same size */
-    MPI_CALL(MPI_Reduce, &conn->cmdq_entries, &ent_sum, 1, MPI_UINT32_T,
-                        MPI_SUM, 0, MPI_COMM_WORLD);
-    MPI_CALL(MPI_Reduce, &conn->cmdq_entries, &ent_max, 1, MPI_UINT32_T,
-                        MPI_MAX, 0, MPI_COMM_WORLD);
+    MPI_CALL(MPI_Reduce, &conn->cmdq_entries, &ent_sum, 1,
+             MPI_UINT32_T, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_CALL(MPI_Reduce, &conn->cmdq_entries, &ent_max, 1,
+             MPI_UINT32_T, MPI_MAX, 0, MPI_COMM_WORLD);
 
     if (my_rank == 0) {
-        if ((ent_max * (worldsize -1))  != ent_sum) {
-           print_func_err(__func__, __LINE__, "ent_min != ent_max", "",
-                          ent_sum);
-           print_func_err(__func__, __LINE__, "ent_min != ent_max", "",
-                          ent_max);
+        if ((ent_max * (worldsize - 1)) != ent_sum) {
+            print_err("%s,%u:cmdq entries inconsistent: %u %u\n",
+                      __func__, __LINE__, ent_max, ent_sum);
            goto done;
         }
         conn->cmdq_entries = ent_max;
@@ -546,45 +463,59 @@ int do_queue_setup(struct stuff *conn)
     return ret;
 }
 
-static int do_server(const struct args *oargs)
+static int do_server(const struct args *args)
 {
     int                 ret;
-    struct args         one_args = *oargs;
-    struct args         *args = &one_args;
-    struct stuff        conn = {
+    struct stuff        stuff = {
         .args           = args,
     };
+    struct stuff        *conn = &stuff;
+    struct timespec     zero_time = { 0, 0 };
 
-    ret = do_queue_setup(&conn);
+    assert_always(my_rank == 0);
+
+    ret = do_queue_setup(conn);
     if (ret < 0)
         goto done;
 
     MPI_CALL(MPI_Barrier, MPI_COMM_WORLD);
     MPI_CALL(MPI_Barrier, MPI_COMM_WORLD);
+    MPI_CALL(MPI_Barrier, MPI_COMM_WORLD);
+    do_timesort("start", &zero_time);
+    do_timesort("qend ", &zero_time);
+    do_timesort("bend ", &zero_time);
+    printf("queue size:%"PRIu32"; stride:%u\n",
+           conn->cmdq_entries, args->stride);
+    /* Take this out to check finalize race. */
+    MPI_CALL(MPI_Barrier, MPI_COMM_WORLD);
+
  done:
-    stuff_free(&conn);
+    stuff_free(conn);
+
     return ret;
 }
 
 static int do_client(const struct args *args)
 {
     int                 ret;
-    struct stuff        conn = {
+    struct stuff        stuff = {
         .args           = args,
         .ring_ops       = args->ring_ops,
     };
+    struct stuff        *conn = &stuff;
 
-    ret = do_queue_setup(&conn);
+    ret = do_queue_setup(conn);
     if (ret < 0)
         goto done;
 
-    ret = do_client_unidir(&conn);
+    ret = do_client_unidir(conn);
     if (ret < 0)
         goto done;
 
 
  done:
-    stuff_free(&conn);
+    stuff_free(conn);
+
     return ret;
 }
 
@@ -599,7 +530,7 @@ static void usage(bool help)
         "All sizes may be postfixed with [kmgtKMGT] to specify the"
         " base units.\n"
         "Lower case is base 10; upper case is base 2.\n"
-        "All three arguments required.\n"
+        "All three arguments and at least two ranks required.\n"
         "Options:\n"
         " -g: use geti instead of puti to transfer data\n"
         " -s <stride>: stride for checking completions\n"
@@ -616,27 +547,17 @@ static void usage(bool help)
 int main(int argc, char **argv)
 {
     int                 ret = 1;
-    struct args         args = { .stride=0,
-                                 .slice=-1,
-                                 .use_geti=false,
-                               };
+    struct args         args = {
+        .slice          = -1,
+    };
     int                 opt;
     int                 rc;
-    uint64_t            stride64;
-    uint64_t            slice64;
-    int                 color;
+    uint64_t            val64;
 
     MPI_CALL(MPI_Init, &argc,&argv);
     MPI_CALL(MPI_Comm_rank, MPI_COMM_WORLD, &my_rank);
     MPI_CALL(MPI_Comm_size, MPI_COMM_WORLD, &worldsize);
 
-    color = (my_rank == 0) ? MPI_UNDEFINED : 1;
-    MPI_CALL(MPI_Comm_split, MPI_COMM_WORLD, color, my_rank, &client_comm);
-
-    if (my_rank > 0) {
-         MPI_CALL(MPI_Comm_rank, client_comm, &client_rank);
-         MPI_CALL(MPI_Comm_size, client_comm, &client_worldsize);
-    }
     zhpeq_util_init(argv[0], LOG_INFO, false);
 
     rc = zhpeq_init(ZHPEQ_API_VERSION, &zhpeq_attr);
@@ -662,20 +583,19 @@ int main(int argc, char **argv)
             if (args.stride)
                 usage(false);
             if (parse_kb_uint64_t(__func__, __LINE__, "stride",
-                                  optarg, &stride64, 0, 1,
-                                  UINT32_MAX, PARSE_KB | PARSE_KIB) < 0)
+                                  optarg, &val64, 0, 1, UINT32_MAX,
+                                  PARSE_KB | PARSE_KIB) < 0)
                 usage(false);
-            args.stride=(uint32_t)(stride64);
+            args.stride = val64;
             break;
 
         case 'S':
             if (args.slice > 0)
                 usage(false);
             if (parse_kb_uint64_t(__func__, __LINE__, "slice",
-                                  optarg, &slice64, 0, 0,
-                                  3, PARSE_KB | PARSE_KIB) < 0)
+                                  optarg, &val64, 0, 0, 3, 0) < 0)
                 usage(false);
-            args.slice=(int)(slice64);
+            args.slice = val64;
             break;
 
         default:
@@ -684,28 +604,23 @@ int main(int argc, char **argv)
         }
     }
 
-    if (! args.stride)
+    if (!args.stride)
         args.stride=64;
-
-    if (my_rank == 0)
-        printf("args.stride was %d\n",args.stride);
 
     opt = argc - optind;
 
-    if (opt != 3)
+    if (opt != 3 || worldsize < 2)
         usage(false);
 
     if (parse_kb_uint64_t(__func__, __LINE__, "entry_len",
                           argv[optind++], &args.ring_entry_len, 0,
                           sizeof(uint8_t), ZHPEQ_MAX_IMM,
                           PARSE_KB | PARSE_KIB) < 0 ||
-               parse_kb_uint64_t(__func__, __LINE__, "ring_entries",
-                          argv[optind++], &args.ring_entries, 0, 1,
-                             SIZE_MAX, PARSE_KB | PARSE_KIB) < 0 ||
-               parse_kb_uint64_t(__func__, __LINE__,
-                          "op_counts",
-                          argv[optind++], &args.ring_ops, 0, 1,
-                          SIZE_MAX,
+        parse_kb_uint64_t(__func__, __LINE__, "ring_entries",
+                          argv[optind++], &args.ring_entries, 0, 1, SIZE_MAX,
+                          PARSE_KB | PARSE_KIB) < 0 ||
+        parse_kb_uint64_t(__func__, __LINE__, "op_counts",
+                          argv[optind++], &args.ring_ops, 0, 1, SIZE_MAX,
                           PARSE_KB | PARSE_KIB) < 0)
         usage(false);
 
@@ -722,8 +637,6 @@ int main(int argc, char **argv)
  done:
     if (ret > 0)
         MPI_Abort(MPI_COMM_WORLD, ret);
-    if (my_rank > 0)
-        MPI_CALL(MPI_Comm_free, &client_comm);
     MPI_CALL(MPI_Finalize);
     return ret;
 }

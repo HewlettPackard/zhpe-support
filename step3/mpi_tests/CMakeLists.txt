@@ -36,7 +36,7 @@ target_link_libraries(mpi_send PUBLIC zhpe_stats zhpeq_util ${MPI_C_LIBRARIES})
 
 add_executable(mpi_xingflood mpi_xingflood.c)
 set_target_properties(mpi_xingflood PROPERTIES LINK_FLAGS ${MPI_C_LINK_FLAGS})
-target_link_libraries(mpi_xingflood PUBLIC zhpe_stats zhpeq zhpeq_util ${MPI_C_LIBRARIES})
+target_link_libraries(mpi_xingflood PUBLIC zhpeq zhpeq_util ${MPI_C_LIBRARIES})
 
 add_executable(mpi_zbw mpi_zbw.c)
 set_target_properties(mpi_zbw PROPERTIES LINK_FLAGS ${MPI_C_LINK_FLAGS})

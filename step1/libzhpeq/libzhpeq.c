@@ -262,8 +262,7 @@ int zhpeq_init(int api_version, struct zhpeq_attr *attr)
     int                 ret = -EINVAL;
     static int          init_status = 1;
 
-    if (!zhpeu_expected_saw("api_version", ZHPEQ_API_VERSION, api_version) ||
-        !attr)
+    if (!zhpeu_expected_saw("api_version", ZHPEQ_API_VERSION, api_version))
         goto done;
 
     if (init_status > 0) {
@@ -271,11 +270,12 @@ int zhpeq_init(int api_version, struct zhpeq_attr *attr)
         if (init_status > 0) {
             ret = zhpe_lib_init(&b_attr);
             init_status = (ret <= 0 ? ret : 0);
-            *attr = b_attr;
         }
         mutex_unlock(&init_mutex);
     }
     ret = init_status;
+    if (!ret && attr)
+        *attr = b_attr;
 
  done:
     return ret;

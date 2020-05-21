@@ -528,6 +528,11 @@ static inline uint64_t nsec_to_cycles(uint64_t nsec)
     return (nsec * zhpeu_init_time->freq / NSEC_PER_SEC);
 }
 
+static inline uint64_t cycles_to_nsec(uint64_t cycles)
+{
+    /* A little scaling: assume >= 1Ghz and ~3 digit precision. */
+    return (cycles * 1000) / (zhpeu_init_time->freq / 1000000);
+}
 /* On any hardware we care about, rdtsc will work for timing. */
 
 #ifdef __x86_64__
@@ -579,6 +584,17 @@ static inline uint64_t ts_delta(struct timespec *ts_beg,
 {
     return ((uint64_t)1000000000) * (ts_end->tv_sec - ts_beg->tv_sec) +
         (ts_end->tv_nsec - ts_beg->tv_nsec);
+}
+
+static inline int ts_cmp(const struct timespec *ts1, struct timespec *ts2)
+{
+    int                 ret;
+
+    ret = arithcmp(ts1->tv_sec, ts2->tv_sec);
+    if (ret)
+        return ret;
+
+    return arithcmp(ts1->tv_nsec, ts2->tv_nsec);
 }
 
 enum {
@@ -864,7 +880,7 @@ static inline uint64_t mask2_off(uint64_t val, uint64_t size)
     uint64_t            mask = (size - 1);
 
     /* size must be power of 2. */
-    assert(!(size & (size -1)));
+    assert(!(size & (size - 1)));
     return (val & mask);
 }
 
@@ -873,7 +889,7 @@ static inline uint64_t mask2_down(uint64_t val, uint64_t size)
     uint64_t            mask = ~(size - 1);
 
     /* size must be power of 2. */
-    assert(!(size & (size -1)));
+    assert(!(size & (size - 1)));
     return (val & mask);
 }
 
@@ -882,7 +898,7 @@ static inline uint64_t mask2_up(uint64_t val, uint64_t size)
     uint64_t            mask = ~(size - 1);
 
     /* size must be power of 2. */
-    assert(!(size & (size -1)));
+    assert(!(size & (size - 1)));
     return ((val + size - 1) & mask);
 }
 

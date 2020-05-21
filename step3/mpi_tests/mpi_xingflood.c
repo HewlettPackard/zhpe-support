@@ -63,9 +63,12 @@ do {                                                            \
 } while (0)
 
 struct args {
-    uint64_t            ring_entry_len;
+    int                 argc;
+    char                **argv;
+    uint64_t            ring_xfer_len;
     uint64_t            ring_entries;
-    uint64_t            ring_ops;
+    uint64_t            seconds;
+    uint64_t            runs;
     uint32_t            stride;
     int                 slice;
     enum z_op_types     op_type;
@@ -75,8 +78,8 @@ struct stuff {
     /* Borth client and server. */
     const struct args   *args;
     struct zhpeq_dom    *zqdom;
-    size_t              ring_entry_aligned;
-    size_t              ring_ops;
+    size_t              ring_xfer_aligned;
+    size_t              ring_cycles;
     size_t              ring_len;
     uint32_t            cmdq_entries;
     void                *local_buf;
@@ -91,57 +94,95 @@ struct stuff {
     struct zhpeq_rq     *zrq;
 };
 
-struct timerank {
-    struct timespec     time;
-    int                 rank;
+struct rankdata {
+    uint64_t            run_nsec;
+    struct timespec     start_time;
+    uint64_t            ops_completed;
 };
 
-static int tr_compare(const void *v1, const void *v2)
+struct rundata {
+    double              mops;
+    double              skew;
+};
+
+static void print_rankdata_nonzero(struct timespec *start_time,
+                                   uint64_t run_cyc, uint64_t ops_completed)
 {
-    int                 ret;
-    const struct timerank *tr1 = v1;
-    const struct timerank *tr2 = v2;
+    struct rankdata     rd_self;
 
-    ret = arithcmp(tr1->time.tv_sec, tr2->time.tv_sec);
-    if (ret)
-        return ret;
-    ret = arithcmp(tr1->time.tv_nsec, tr2->time.tv_nsec);
-    if (ret)
-        return ret;
-    ret = arithcmp(tr1->rank, tr2->rank);
-    if (ret)
-        return ret;
+    assert_always(my_rank != 0);
 
-    return 0;
-}
-
-static void do_timesort(const char *label, struct timespec *time)
-{
-    struct timerank     *tr_all = NULL;
-    struct timerank     tr_self = {
-        .time           = *time,
-        .rank           = my_rank,
-    };
-    int                 i;
-    uint64_t            delta;
-
-    if (my_rank == 0)
-        tr_all = xcalloc(worldsize, sizeof(*tr_all));
+    rd_self.start_time  = *start_time;
+    rd_self.run_nsec = cycles_to_nsec(run_cyc);
+    rd_self.ops_completed = ops_completed;
 
     /* Lazy about structs. */
-    MPI_CALL(MPI_Gather, &tr_self, sizeof(tr_self), MPI_BYTE,
-             tr_all, sizeof(*tr_all), MPI_BYTE, 0, MPI_COMM_WORLD);
+    MPI_CALL(MPI_Gather, &rd_self, sizeof(rd_self), MPI_BYTE,
+             NULL, 0, MPI_BYTE, 0, MPI_COMM_WORLD);
+}
 
-    if (my_rank != 0)
-        return;
+static void print_rankdata_zero(const struct args *args, struct rundata *run)
+{
+    struct rankdata     *rd = NULL;
+    struct rankdata     rd_self = { 0 };
+    struct timespec     first_start_time;
+    uint64_t            first_end_nsec;
+    int                 i;
+    uint64_t            start_delta;
+    uint64_t            end_delta;
+    uint64_t            max_skew;
+    double              run_usec;
+    double              mops;
+    char                time_str[ZHPEU_TM_STR_LEN];
 
-    qsort(tr_all + 1, worldsize - 1, sizeof(*tr_all), tr_compare);
+    assert_always(my_rank == 0);
 
-    for (i = 1; i < worldsize; i++) {
-        delta = ts_delta(&tr_all[1].time, &tr_all[i].time);
-        printf("%s:%s rank %3d delta %10.3f usec\n",
-               __func__, label, tr_all[i].rank, (double)delta / 1000.0);
+    rd = xcalloc(worldsize, sizeof(*rd));
+
+    /* Lazy about structs. */
+    MPI_CALL(MPI_Gather, &rd_self, sizeof(rd_self), MPI_BYTE,
+             rd, sizeof(*rd), MPI_BYTE, 0, MPI_COMM_WORLD);
+
+    first_start_time = rd[1].start_time;
+    for (i = 2; i < worldsize; i++) {
+        if (ts_cmp(&first_start_time, &rd[i].start_time) > 0)
+            first_start_time = rd[i].start_time;
     }
+
+    /* Include start skew when finding the first end time. */
+    start_delta = ts_delta(&first_start_time, &rd[1].start_time);
+    first_end_nsec = start_delta + rd[1].run_nsec;
+    for (i = 2; i < worldsize; i++) {
+        start_delta = ts_delta(&first_start_time, &rd[i].start_time);
+        first_end_nsec = min(first_end_nsec, start_delta + rd[i].run_nsec);
+    }
+
+    zhpeu_tm_to_str(time_str, sizeof(time_str),
+                    localtime(&first_start_time.tv_sec),
+                    first_start_time.tv_nsec);
+
+    printf("command:");
+    for (i = 0; i < args->argc; i++)
+        printf(" %s", args->argv[i]);
+    printf("\n");
+    printf("time:   %s\n", time_str);
+    printf("times below in usec\n");
+    max_skew = 0;
+    run->mops = 0.0;
+    for (i = 1; i < worldsize; i++) {
+        start_delta = ts_delta(&first_start_time, &rd[i].start_time);
+        end_delta = start_delta + rd[i].run_nsec - first_end_nsec;
+        max_skew = max(max_skew,start_delta +  end_delta);
+        run_usec =  (double)rd[i].run_nsec / 1000.0;
+        mops = (double)rd[i].ops_completed / run_usec;
+        printf("rank:%3d; start skew:%10.3f; run time:%12.3f; end skew:%10.3lf;"
+               " ops:%10" PRIu64 "; Mops/s:%10.3f\n",
+               i, (double)start_delta / 1000.0, run_usec,
+               (double)end_delta / 1000.0, rd[i].ops_completed, mops);
+        run->mops += mops;
+    }
+    run->skew = (double)max_skew / 1000.0;
+    printf("total Mops/s:%10.3f; max skew:%10.3f \n", run->mops, run->skew);
 }
 
 static void stuff_free(struct stuff *stuff)
@@ -163,32 +204,6 @@ static void stuff_free(struct stuff *stuff)
         munmap(stuff->local_buf, stuff->local_len);
 }
 
-static void usage(bool help) __attribute__ ((__noreturn__));
-
-static void usage(bool help)
-{
-    print_usage(
-        help,
-        "Usage:%s [-gp] [-s stride] [-S slice]\n"
-        "    <entry_len> <ring_entries> <op_count>\n"
-        "All sizes may be postfixed with [kmgtKMGT] to specify the"
-        " base units.\n"
-        "Lower case is base 10; upper case is base 2.\n"
-        "All three arguments, one of [-egp] and at least two ranks required.\n"
-        "Options:\n"
-        " -g: use get to transfer data\n"
-        " -p: use put to transfer data\n"
-        " -s <stride>: stride for checking completions\n"
-        " -S <slice number>: slice number from 0-3\n"
-        "",
-        appname);
-
-    if (help)
-        zhpeq_print_tq_info(NULL);
-
-    exit(help ? 0 : 255);
-}
-
 /* server allocates and broadcasts ztq_remote_rx_addr to all clients */
 /* if not immediate, clients allocate and register tx_addr */
 static int do_mem_setup(struct stuff *conn)
@@ -206,12 +221,12 @@ static int do_mem_setup(struct stuff *conn)
     ret = -EEXIST;
 
     /* everyone needs to set up ring */
-    conn->ring_entry_aligned = l1_up(args->ring_entry_len);
-    conn->ring_len = conn->ring_entry_aligned * conn->cmdq_entries;
+    conn->ring_xfer_aligned = l1_up(args->ring_xfer_len);
+    conn->ring_len = conn->ring_xfer_aligned * conn->cmdq_entries;
 
     if (my_rank == 0)
         conn->local_len = conn->ring_len * (worldsize - 1);
-    else if (args->ring_entry_len > ZHPEQ_MAX_IMM)
+    else if (args->ring_xfer_len > ZHPEQ_MAX_IMM)
         conn->local_len = conn->ring_len;
 
     if (conn->local_len) {
@@ -261,7 +276,7 @@ static int do_mem_setup(struct stuff *conn)
         remote_zaddr = (conn->remote_kdata->z.zaddr +
                         conn->ring_len * (my_rank - 1));
         for (i = 0, cmd_off = 0; i < conn->cmdq_entries;
-             i++, cmd_off += conn->ring_entry_aligned) {
+             i++, cmd_off += conn->ring_xfer_aligned) {
 
             wqe = &conn->ztq->wq[i];
             wqe->hdr.cmp_index = i;
@@ -269,22 +284,22 @@ static int do_mem_setup(struct stuff *conn)
             switch (args->op_type) {
 
             case ZGET:
-                if (args->ring_entry_len <= ZHPEQ_MAX_IMM)
-                    zhpeq_tq_geti(wqe, 0, args->ring_entry_len,
+                if (args->ring_xfer_len <= ZHPEQ_MAX_IMM)
+                    zhpeq_tq_geti(wqe, 0, args->ring_xfer_len,
                                   remote_zaddr + cmd_off);
                 else
                     zhpeq_tq_get(wqe, 0, (uintptr_t)conn->local_buf + cmd_off,
-                                 args->ring_entry_len, remote_zaddr + cmd_off);
+                                 args->ring_xfer_len, remote_zaddr + cmd_off);
                 break;
 
             case ZPUT:
-                if (args->ring_entry_len <= ZHPEQ_MAX_IMM)
-                    memset(zhpeq_tq_puti(wqe, 0, args->ring_entry_len,
+                if (args->ring_xfer_len <= ZHPEQ_MAX_IMM)
+                    memset(zhpeq_tq_puti(wqe, 0, args->ring_xfer_len,
                                          remote_zaddr + cmd_off),
-                           0, args->ring_entry_len);
+                           0, args->ring_xfer_len);
                 else
                     zhpeq_tq_put(wqe, 0, (uintptr_t)conn->local_buf + cmd_off,
-                                 args->ring_entry_len, remote_zaddr + cmd_off);
+                                 args->ring_xfer_len, remote_zaddr + cmd_off);
                 break;
 
             default:
@@ -342,58 +357,39 @@ static void ztq_write(struct stuff *conn)
     qmask = ztq->tqinfo.cmdq.ent - 1;
     avail = qmask - (ztq->wq_tail_commit - ztq->cq_head);
 
-    if (unlikely(avail > qmask / 2)) {
-        if (unlikely(conn->ring_ops < avail)) {
-            if (unlikely(!conn->ring_ops))
-                return;
-            avail = conn->ring_ops;
-        }
+    if (unlikely(avail >= qmask / 2)) {
         ztq->wq_tail_commit += avail;
         qcmwrite64(ztq->wq_tail_commit & qmask,
                    ztq->qcm, ZHPE_XDM_QCM_CMD_QUEUE_TAIL_OFFSET);
-        conn->ring_ops -= avail;
     }
 }
 
 /* Use existing pre-populated command buffer. */
 static int do_client_unidir(struct stuff *conn)
 {
-    double              qclocktime;
-    double              bclocktime;
-    struct timespec     start_clocktime;
-    struct timespec     qend_clocktime;
-    struct timespec     bend_clocktime;
+    uint64_t            run_cyc = conn->args->seconds * get_tsc_freq();
+    uint64_t            start_cyc;
+    struct timespec     start_time;
 
-    /* Make sure barrier connections are built. */
+    conn->ops_completed = 0;
     MPI_CALL(MPI_Barrier, MPI_COMM_WORLD);
-    MPI_CALL(MPI_Barrier, MPI_COMM_WORLD);
-    clock_gettime(CLOCK_REALTIME, &start_clocktime);
+    clock_gettime(CLOCK_REALTIME, &start_time);
+    start_cyc = get_cycles(NULL);
+    run_cyc += start_cyc;
 
-    while (conn->ring_ops) {
+    while (true) {
+        if ((int64_t)(run_cyc - get_cycles(NULL)) <= 0)
+            break;
         ztq_write(conn);
         ztq_completions(conn);
     }
 
     while ((int32_t)(conn->ztq->wq_tail_commit - conn->ztq->cq_head) > 0)
         ztq_completions(conn);
+    run_cyc = get_cycles(NULL) - start_cyc;
 
-    clock_gettime(CLOCK_REALTIME, &qend_clocktime);
     MPI_CALL(MPI_Barrier, MPI_COMM_WORLD);
-    clock_gettime(CLOCK_REALTIME, &bend_clocktime);
-    do_timesort(NULL, &start_clocktime);
-    do_timesort(NULL, &qend_clocktime);
-    do_timesort(NULL, &bend_clocktime);
-    MPI_CALL(MPI_Barrier, MPI_COMM_WORLD);
-
-    qclocktime = (double)ts_delta(&start_clocktime, &qend_clocktime) / 1000.0;
-    bclocktime = (double)ts_delta(&start_clocktime, &bend_clocktime) / 1000.0;
-
-    printf("%s:rank:%3d; ops:%"PRIu64"; slice:%d; queue:%3d; "
-           "qtime, usec:%.3f; btime, usec:%.3f; qMops/s:%.3f; bMops/s:%.3f\n",
-           appname, my_rank, conn->ops_completed, conn->ztq->tqinfo.slice,
-           conn->ztq->tqinfo.queue, qclocktime, bclocktime,
-           (double)conn->ops_completed / qclocktime,
-           (double)conn->ops_completed / bclocktime);
+    print_rankdata_nonzero(&start_time, run_cyc, conn->ops_completed);
 
     return 0;
 }
@@ -491,7 +487,14 @@ static int do_server(const struct args *args)
         .args           = args,
     };
     struct stuff        *conn = &stuff;
-    struct timespec     zero_time = { 0, 0 };
+    struct rundata      *runs = NULL;
+    double              mops_min;
+    double              mops_max;
+    double              mops_tot;
+    double              skew_min;
+    double              skew_max;
+    double              skew_tot;
+    uint                i;
 
     assert_always(my_rank == 0);
 
@@ -499,18 +502,32 @@ static int do_server(const struct args *args)
     if (ret < 0)
         goto done;
 
-    MPI_CALL(MPI_Barrier, MPI_COMM_WORLD);
-    MPI_CALL(MPI_Barrier, MPI_COMM_WORLD);
-    MPI_CALL(MPI_Barrier, MPI_COMM_WORLD);
-    do_timesort("start", &zero_time);
-    do_timesort("qend ", &zero_time);
-    do_timesort("bend ", &zero_time);
-    printf("queue size:%"PRIu32"; stride:%u\n",
-           conn->cmdq_entries, args->stride);
-    /* Take this out to check finalize race. */
-    MPI_CALL(MPI_Barrier, MPI_COMM_WORLD);
+    runs = xcalloc(args->runs, sizeof(*runs));
+
+    for (i = 0; i < args->runs; i++) {
+        MPI_CALL(MPI_Barrier, MPI_COMM_WORLD);
+        MPI_CALL(MPI_Barrier, MPI_COMM_WORLD);
+        print_rankdata_zero(args, &runs[i]);
+    }
+
+    mops_min = mops_max = mops_tot = runs[0].mops;
+    skew_min = skew_max = skew_tot = runs[0].skew;
+    for (i = 1; i < args->runs; i++) {
+        mops_min = min(mops_min, runs[i].mops);
+        mops_max = max(mops_max, runs[i].mops);
+        mops_tot += runs[i].mops;
+        skew_min = min(skew_min, runs[i].skew);
+        skew_max = max(skew_max, runs[i].skew);
+        skew_tot += runs[i].skew;
+    }
+    printf("\n");
+    printf("Mops/s min:%10.3f; ave:%10.3f; max:%10.3f\n",
+           mops_min, mops_tot / (double)args->runs, mops_max);
+    printf("skew   min:%10.3f; ave:%10.3f; max:%10.3f\n",
+           skew_min, skew_tot / (double)args->runs, skew_max);
 
  done:
+    free(runs);
     stuff_free(conn);
 
     return ret;
@@ -521,23 +538,50 @@ static int do_client(const struct args *args)
     int                 ret;
     struct stuff        stuff = {
         .args           = args,
-        .ring_ops       = args->ring_ops,
     };
     struct stuff        *conn = &stuff;
+    uint64_t            i;
 
     ret = do_queue_setup(conn);
     if (ret < 0)
         goto done;
 
-    ret = do_client_unidir(conn);
-    if (ret < 0)
-        goto done;
-
+    for (i = 0; i < args->runs; i++) {
+        ret = do_client_unidir(conn);
+        if (ret < 0)
+            goto done;
+    }
 
  done:
     stuff_free(conn);
 
     return ret;
+}
+
+static void usage(bool help) __attribute__ ((__noreturn__));
+
+static void usage(bool help)
+{
+    print_usage(
+        help,
+        "Usage:%s [-gp] [-s stride] [-S slice] "
+        "<transfer_len> <ring_entries> <seconds> <runs>\n"
+        "All sizes may be postfixed with [kmgtKMGT] to specify the"
+        " base units.\n"
+        "Lower case is base 10; upper case is base 2.\n"
+        "All four arguments, one of [-gp] and at least two ranks required.\n"
+        "Options:\n"
+        " -g: use get to transfer data\n"
+        " -p: use put to transfer data\n"
+        " -s <stride>: stride for checking completions\n"
+        " -S <slice number>: slice number from 0-3\n"
+        "",
+        appname);
+
+    if (help)
+        zhpeq_print_tq_info(NULL);
+
+    exit(help ? 0 : 255);
 }
 
 int main(int argc, char **argv)
@@ -554,7 +598,10 @@ int main(int argc, char **argv)
     if (argc == 1)
         usage(true);
 
-    MPI_CALL(MPI_Init, &argc,&argv);
+    MPI_CALL(MPI_Init, &argc, &argv);
+    args.argc = argc;
+    args.argv = argv;
+
     MPI_CALL(MPI_Comm_rank, MPI_COMM_WORLD, &my_rank);
     MPI_CALL(MPI_Comm_size, MPI_COMM_WORLD, &worldsize);
 
@@ -607,19 +654,32 @@ int main(int argc, char **argv)
 
     opt = argc - optind;
 
-    if (opt != 3 || worldsize < 2)
+    if (opt != 4 || worldsize < 2)
         usage(false);
 
-    if (parse_kb_uint64_t(__func__, __LINE__, "entry_len",
-                          argv[optind++], &args.ring_entry_len, 0,
+    if (parse_kb_uint64_t(__func__, __LINE__, "transfer_len",
+                          argv[optind++], &args.ring_xfer_len, 0,
                           1, SIZE_MAX, PARSE_KB | PARSE_KIB) < 0 ||
         parse_kb_uint64_t(__func__, __LINE__, "ring_entries",
-                          argv[optind++], &args.ring_entries, 0, 1, SIZE_MAX,
+                          argv[optind++], &args.ring_entries, 0, 2, 65536,
                           PARSE_KB | PARSE_KIB) < 0 ||
-        parse_kb_uint64_t(__func__, __LINE__, "op_counts",
-                          argv[optind++], &args.ring_ops, 0, 1, SIZE_MAX,
+        parse_kb_uint64_t(__func__, __LINE__, "seconds",
+                          argv[optind++], &args.seconds, 0, 1, SIZE_MAX,
+                          PARSE_KB | PARSE_KIB) < 0 ||
+        parse_kb_uint64_t(__func__, __LINE__, "runs",
+                          argv[optind++], &args.runs, 0, 1, SIZE_MAX,
                           PARSE_KB | PARSE_KIB) < 0)
         usage(false);
+
+    /*
+     * If ring entries is a power-of-two, decrement by 1 to make tq_alloc
+     * round up to that value.
+     */
+    if (!(args.ring_entries & (args.ring_entries - 1)))
+        args.ring_entries--;
+
+    /* Make sure barrier connections are built. */
+    MPI_CALL(MPI_Barrier, MPI_COMM_WORLD);
 
     if (my_rank == 0) {
         if (do_server(&args) < 0)
@@ -628,6 +688,9 @@ int main(int argc, char **argv)
         if (do_client(&args) < 0)
             goto done;
     }
+
+    /* Take this out to check finalize race. */
+    MPI_CALL(MPI_Barrier, MPI_COMM_WORLD);
 
     ret = 0;
 

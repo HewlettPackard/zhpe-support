@@ -949,22 +949,25 @@ void zhpeq_rx_oos_log(const char *func, uint line,
 
 #endif
 
-static void rx_oos_insert1(struct zhpeq_rx_seq *zseq, void *msg,
+#define RX_OOS_ARRAY_SIZE (64)
+
+static void rx_oos_insert1(struct zhpeq_rx_seq *zseq,
+                           struct zhpe_rdm_entry *rqe,
                            uint32_t oos, struct zhpeq_rx_oos *rx_oos)
 {
     uint32_t            off;
 
     zseq->rx_oos_cnt++;
     zseq->rx_oos_max = max(zseq->rx_oos_max, oos);
-    off = mask2_off(oos, ARRAY_SIZE(rx_oos->msgs));
-    memcpy(&rx_oos->msgs[off], msg, sizeof(rx_oos->msgs[0]));
+    off = mask2_off(oos, ARRAY_SIZE(rx_oos->rqe));
+    rx_oos->rqe[off] = *rqe;
     rx_oos->valid_bits |= ((uint64_t)1 << off);
     zhpeq_rx_oos_log(__func__, __LINE__, zseq->rx_oos_base_seq + oos,
                      (uintptr_t)rx_oos, rx_oos->base_off, rx_oos->valid_bits,
                      0);
 }
 
-static int rx_oos_alloc(struct zhpeq_rx_seq *zseq, void *msg,
+static int rx_oos_alloc(struct zhpeq_rx_seq *zseq, struct zhpe_rdm_entry *rqe,
                         uint32_t oos, struct zhpeq_rx_oos **prev)
 {
     struct zhpeq_rx_oos *rx_oos;
@@ -972,9 +975,9 @@ static int rx_oos_alloc(struct zhpeq_rx_seq *zseq, void *msg,
     rx_oos = zseq->alloc(zseq);
     if (unlikely(!rx_oos))
         return -ENOMEM;
-    rx_oos->base_off = mask2_down(oos, ARRAY_SIZE(rx_oos->msgs));
+    rx_oos->base_off = mask2_down(oos, ARRAY_SIZE(rx_oos->rqe));
     rx_oos->valid_bits = 0;
-    rx_oos_insert1(zseq, msg, oos, rx_oos);
+    rx_oos_insert1(zseq, rqe, oos, rx_oos);
     rx_oos->next = *prev;
     zhpeq_rx_oos_log(__func__, __LINE__, zseq->rx_oos_base_seq + oos,
                      (uintptr_t)rx_oos, (uintptr_t)prev,
@@ -984,7 +987,8 @@ static int rx_oos_alloc(struct zhpeq_rx_seq *zseq, void *msg,
     return 0;
 }
 
-int zhpeq_rx_oos_insert(struct zhpeq_rx_seq *zseq, void *msg, uint32_t seen)
+int zhpeq_rx_oos_insert(struct zhpeq_rx_seq *zseq, struct zhpe_rdm_entry *rqe,
+                        uint32_t seen)
 {
     struct zhpeq_rx_oos	*rx_oos;
     struct zhpeq_rx_oos **prev;
@@ -996,20 +1000,20 @@ int zhpeq_rx_oos_insert(struct zhpeq_rx_seq *zseq, void *msg, uint32_t seen)
 
     for (prev = &zseq->rx_oos_list, rx_oos = *prev; rx_oos;
          prev = &rx_oos->next, rx_oos = *prev) {
-        if (oos >= rx_oos->base_off + ARRAY_SIZE(rx_oos->msgs))
+        if (oos >= rx_oos->base_off + ARRAY_SIZE(rx_oos->rqe))
             continue;
         if (oos < rx_oos->base_off)
             break;
-        rx_oos_insert1(zseq, msg, oos, rx_oos);
+        rx_oos_insert1(zseq, rqe, oos, rx_oos);
         return 0;
     }
 
-    return rx_oos_alloc(zseq, msg, oos, prev);
+    return rx_oos_alloc(zseq, rqe, oos, prev);
 }
 
 bool zhpeq_rx_oos_spill(struct zhpeq_rx_seq *zseq, uint32_t msgs,
                         void (*handler)(void *handler_data,
-                                        struct zhpe_enqa_payload *msg),
+                                        struct zhpe_rdm_entry *rqe),
                         void *handler_data)
 {
     uint32_t            msgs_orig = msgs;
@@ -1022,13 +1026,13 @@ bool zhpeq_rx_oos_spill(struct zhpeq_rx_seq *zseq, uint32_t msgs,
         oos = zseq->seq - zseq->rx_oos_base_seq;
         if (oos < rx_oos->base_off)
             break;
-        assert(oos < rx_oos->base_off + ARRAY_SIZE(rx_oos->msgs));
-        off = mask2_off(oos, ARRAY_SIZE(rx_oos->msgs));
+        assert(oos < rx_oos->base_off + ARRAY_SIZE(rx_oos->rqe));
+        off = mask2_off(oos, ARRAY_SIZE(rx_oos->rqe));
         valid_mask = ((uint64_t)1 << off);
         if (!(rx_oos->valid_bits & valid_mask))
                 break;
         rx_oos->valid_bits &= ~valid_mask;
-        handler(handler_data, &rx_oos->msgs[off]);
+        handler(handler_data, &rx_oos->rqe[off]);
         zhpeq_rx_oos_log(__func__, __LINE__, zseq->rx_oos_base_seq + oos,
                          (uintptr_t)rx_oos, rx_oos->base_off,
                          rx_oos->valid_bits, 0);

@@ -275,11 +275,11 @@ static void rx_oos_free(struct zhpeq_rx_seq *zseq, struct zhpeq_rx_oos *rx_oos)
 static_assert(sizeof(struct enqa_msg) <= sizeof(struct zhpe_enqa_payload),
               "enqa_msg");
 
-static void rx_oos_msg_handler(void *vdata, struct zhpe_enqa_payload *pay)
+static void rx_oos_msg_handler(void *vdata, struct zhpe_rdm_entry *rqe)
 {
     struct enqa_msg *msg_out = vdata;
 
-    memcpy(msg_out, pay, sizeof(*msg_out));
+    memcpy(msg_out, (void *)&rqe->payload, sizeof(*msg_out));
 }
 
 static int conn_rx_msg(struct stuff *conn, struct enqa_msg *msg_out,
@@ -321,7 +321,7 @@ static int conn_rx_msg(struct stuff *conn, struct enqa_msg *msg_out,
                 conn->rx_zseq.seq++;
                 ret = 1;
             } else
-                ret = zhpeq_rx_oos_insert(&conn->rx_zseq, msg, msg_seq);
+                ret = zhpeq_rx_oos_insert(&conn->rx_zseq, rqe, msg_seq);
             zhpeq_rq_entry_done(zrq, rqe);
             zhpeq_rq_head_update(zrq, 0);
             if (ret)

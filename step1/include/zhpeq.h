@@ -203,7 +203,7 @@ struct zhpeq_rx_oos {
     struct zhpeq_rx_oos *next;
     uint64_t            valid_bits;
     uint32_t            base_off;
-    struct zhpe_enqa_payload msgs[64];
+    struct zhpe_rdm_entry rqe[64] CACHE_ALIGNED;
 };
 
 struct zhpeq_rx_seq {
@@ -568,11 +568,12 @@ int zhpeq_rq_get_addr(struct zhpeq_rq *zrq, void *sa, size_t *sa_len);
 int zhpeq_rq_xchg_addr(struct zhpeq_rq *zrq, int sock_fd,
                        void *sa, size_t *sa_len);
 
-int zhpeq_rx_oos_insert(struct zhpeq_rx_seq *zseq, void *msg, uint32_t seen);
+int zhpeq_rx_oos_insert(struct zhpeq_rx_seq *zseq, struct zhpe_rdm_entry *rqe,
+                        uint32_t seen);
 
 bool zhpeq_rx_oos_spill(struct zhpeq_rx_seq *zseq, uint32_t msgs,
                         void (*handler)(void *handler_data,
-                                        struct zhpe_enqa_payload *msg),
+                                        struct zhpe_rdm_entry *rqe),
                         void *handler_data);
 
 #ifdef NDEBUG

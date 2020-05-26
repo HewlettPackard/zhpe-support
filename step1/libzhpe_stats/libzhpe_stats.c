@@ -143,6 +143,11 @@ static void stats_nop_stamp(struct zhpe_stats *zstats,  uint32_t dum,
 {
 }
 
+static void stats_nop_stamp_dbg_func(struct zhpe_stats *zstats,
+                                     const char *func)
+{
+}
+
 static void stats_nop_setvals(struct zhpe_stats *zstats,
                               struct zhpe_stats_record *rec)
 {
@@ -154,7 +159,7 @@ static void stats_nop_zstats_uint32(struct zhpe_stats *zstats, uint32_t dum)
 
 static void stats_nop_zstats(struct zhpe_stats *zstats)
 {
-};
+}
 
 static struct zhpe_stats_ops zhpe_stats_nops = {
     .close              = stats_nop_zstats,
@@ -167,6 +172,7 @@ static struct zhpe_stats_ops zhpe_stats_nops = {
     .stop               = stats_nop_zstats_uint32,
     .stamp              = stats_nop_stamp,
     .stamp_dbg          = stats_nop_stamp,
+    .stamp_dbg_func     = stats_nop_stamp_dbg_func,
     .setvals            = stats_nop_setvals,
 };
 
@@ -232,15 +238,18 @@ static void stats_cmn_disable(struct zhpe_stats *zstats)
 }
 
 /* don't free zstats */
-static void stats_cmn_close(struct zhpe_stats *zstats)
+static void stats_cmn_close(struct zhpe_stats *zstats, bool flush)
 {
     struct zhpe_stats   **zsprev;
 
     zstats->zhpe_stats_ops->recordme(zstats, 0, ZHPE_STATS_OP_CLOSE);
 
-    stats_flush(zstats);
+    if (flush)
+        stats_flush(zstats);
     if (zstats->fd != -1)
         close(zstats->fd);
+    if (zstats->func_file)
+        fclose(zstats->func_file);
 
     mutex_lock(&zhpe_stats_mutex);
     for (zsprev = &zhpe_stats_list; *zsprev; zsprev = &(*zsprev)->next) {
@@ -284,11 +293,9 @@ static void gdb_find_timestamp(struct zhpe_stats *zstats, uint64_t timestamp)
     zstats->head_gdb = tail;
 }
 
-void zhpe_stats_gdb_tidx(pid_t tid, size_t idx)
+void zhpe_stats_gdb_find_timestamp(uint64_t timestamp)
 {
-    struct zhpe_stats   *zstats_tid = NULL;
     struct zhpe_stats   *zstats;
-    uint64_t            timestamp;
 
     for (zstats = zhpe_stats_list; zstats; zstats = zstats->next) {
         zstats->head_gdb = zstats->head;
@@ -296,20 +303,68 @@ void zhpe_stats_gdb_tidx(pid_t tid, size_t idx)
             zstats->tail_gdb = zstats->head_gdb - zstats->slots_mask - 1;
         else
             zstats->tail_gdb = 0;
-        if (tid == zstats->tid)
-            zstats_tid = zstats;
     }
-    if (!zstats_tid || idx >= zstats_tid->head_gdb ||
-        idx < zstats_tid->tail_gdb)
+    if (!timestamp)
         return;
 
-    zstats_tid->head_gdb = idx + 1;
-    timestamp = zstats_tid->buffer[idx & zstats_tid->slots_mask].val0;
-
-    for (zstats = zhpe_stats_list; zstats; zstats = zstats->next) {
-        if (zstats == zstats_tid)
-            continue;
+    for (zstats = zhpe_stats_list; zstats; zstats = zstats->next)
         gdb_find_timestamp(zstats, timestamp);
+}
+
+static struct {
+    struct zhpe_stats   *cur_z;
+    struct zhpe_stats_record *cur_r;
+} zhpe_stats_gdb_data;
+
+void zhpe_stats_gdb_next(void)
+{
+    struct zhpe_stats_record *cur_r = NULL;
+    struct zhpe_stats_record *next_r;
+    struct zhpe_stats   *cur_z;
+    struct zhpe_stats   *next_z;
+
+    for (;;) {
+        for (cur_z = zhpe_stats_list; cur_z; cur_z = cur_z->next) {
+            if (cur_z->head_gdb == cur_z->tail_gdb)
+                continue;
+            cur_r = &cur_z->buffer[(cur_z->head_gdb - 1) & cur_z->slots_mask];
+            break;
+        }
+        if (!cur_z)
+            break;
+        for (next_z = cur_z->next; next_z; next_z = next_z->next) {
+            if (next_z->head_gdb == next_z->tail_gdb)
+                continue;
+            next_r = &next_z->buffer[(next_z->head_gdb - 1) &
+                                     next_z->slots_mask];
+            if (cur_r->val0 < next_r->val0) {
+                cur_z = next_z;
+                cur_r = next_r;
+            }
+        }
+        cur_z->head_gdb--;
+        if (cur_r->op_flag == ZHPE_STATS_OP_STAMP &&
+            cur_r->subid == zhpe_stats_subid(DBG, 0))
+            break;
+    }
+
+    zhpe_stats_gdb_data.cur_z = cur_z;
+    zhpe_stats_gdb_data.cur_r = cur_r;
+}
+
+void zhpe_stats_gdb_find(uint64_t val)
+{
+    struct zhpe_stats_record *cur_r;
+
+    for (;;) {
+        zhpe_stats_gdb_next();
+        if (!zhpe_stats_gdb_data.cur_z)
+            return;
+        cur_r = zhpe_stats_gdb_data.cur_r;
+        if ((cur_r->op_flag == 8 && cur_r->subid == 1000000) &&
+            (cur_r->val1 == val || cur_r->val2 == val || cur_r->val3 == val ||
+             cur_r->val4 == val || cur_r->val5 == val || cur_r->val6 == val))
+            break;
     }
 }
 
@@ -689,18 +744,32 @@ static void stats_flush(struct zhpe_stats *zstats)
     ssize_t             res;
 
     assert(zstats->buffer);
-    if (unlikely(!zstats->head))
+    if (unlikely(zstats->head == zstats->flushed))
         return;
+
+    io_rmb();
+
+    if (zstats->func_file)
+        fflush(zstats->func_file);
 
     req = zstats->head & zstats->slots_mask;
     if (likely(!req))
         req = zstats->slots_mask + 1;
-    io_wmb();
-    req *= sizeof(struct zhpe_stats_record);
+    else if (!zstats->flushed && zstats->head > req) {
+        /* wrap_noflush buffer, save as much as possible. */
+        res = write(zstats->fd, zstats->buffer + req,
+                    (zstats->slots_mask - req + 1) * sizeof(zstats->buffer[0]));
+        if (check_func_ion(__func__, __LINE__, "write", req, false,
+                           req, res, 0) < 0)
+            abort();
+    }
+
+    req *= sizeof(zstats->buffer[0]);
     res = write(zstats->fd, zstats->buffer, req);
     if (check_func_ion(__func__, __LINE__, "write", req, false,
                        req, res, 0) < 0)
         abort();
+    zstats->flushed = zstats->head;
 }
 
 static void rdpmc_stats_close(struct zhpe_stats *zstats)
@@ -720,7 +789,12 @@ static void rdpmc_stats_close(struct zhpe_stats *zstats)
     free(zstats->zhpe_stats_mmap_list);
     free(zstats->zhpe_stats_config_list);
 
-    stats_cmn_close(zstats);
+    stats_cmn_close(zstats, true);
+}
+
+static void stats_stamp_dbg_close(struct zhpe_stats *zstats)
+{
+    stats_cmn_close(zstats, false);
 }
 
 #ifdef HAVE_ZHPE_SIM
@@ -734,7 +808,7 @@ static void sim_stats_close(struct zhpe_stats *zstats)
         print_func_err(__func__, __LINE__, "sim_api_data_rec",
                        "DATA_REC_END", -ret);
 
-    stats_cmn_close(zstats);
+    stats_cmn_close(zstats, true);
 }
 
 #else
@@ -796,7 +870,6 @@ static void stats_stamp(struct zhpe_stats *zstats, uint32_t subid,
 }
 
 static struct zhpe_stats_ops stats_ops_enabled = {
-    .close              = stats_cmn_close,
     .enable             = stats_cmn_enable,
     .disable            = stats_cmn_disable,
     .pause_all          = stats_pause_all,
@@ -806,10 +879,11 @@ static struct zhpe_stats_ops stats_ops_enabled = {
     .stop               = stats_stop,
     .stamp              = stats_stamp,
     .stamp_dbg          = stats_nop_stamp,
+    .stamp_dbg_func     = stats_nop_stamp_dbg_func,
 };
 
 static struct zhpe_stats_ops stats_ops_disabled = {
-    .close              = stats_cmn_close,
+    .close              = rdpmc_stats_close,
     .enable             = stats_cmn_enable,
     .disable            = stats_cmn_disable,
     .pause_all          = stats_nop_zstats,
@@ -819,10 +893,17 @@ static struct zhpe_stats_ops stats_ops_disabled = {
     .stop               = stats_nop_zstats_uint32,
     .stamp              = stats_nop_stamp,
     .stamp_dbg          = stats_nop_stamp,
+    .stamp_dbg_func     = stats_nop_stamp_dbg_func,
 };
 
+static void stats_stamp_dbg_func(struct zhpe_stats *zstats, const char *func)
+{
+    if (fprintf(zstats->func_file, "s/\\(^8,1000000,[^,]\\+,\\)%lu/\\1%s/",
+                (uintptr_t)func, func) < 0)
+        abort();
+}
+
 static struct zhpe_stats_ops stats_ops_enabled_stamp_dbg = {
-    .close              = stats_cmn_close,
     .enable             = stats_cmn_enable,
     .disable            = stats_cmn_disable,
     .pause_all          = stats_nop_zstats,
@@ -832,6 +913,7 @@ static struct zhpe_stats_ops stats_ops_enabled_stamp_dbg = {
     .stop               = stats_nop_zstats_uint32,
     .stamp              = stats_nop_stamp,
     .stamp_dbg          = stats_stamp,
+    .stamp_dbg_func     = stats_stamp_dbg_func,
 };
 
 static void init_rdpmc_profile(struct zhpe_stats *zstats, __u32 petype,
@@ -980,6 +1062,15 @@ static void stats_cmn_open(struct zhpe_stats *zstats, uint16_t uid)
         break;
 
     case ZHPE_STATS_PROFILE_STAMP_DBG:
+        xasprintf(&fname, "%s/%s.%d.func", zhpe_stats_dir, zhpe_stats_unique,
+                  getpid());
+        zstats->func_file = fopen(fname, "w");
+        if (!zstats->func_file) {
+            err = -errno;
+            print_func_err(__func__, __LINE__, "fopen", fname, err);
+            abort();
+        }
+        free(fname);
         break;
 
     case ZHPE_STATS_PROFILE_CPU_JUST1:
@@ -1092,6 +1183,7 @@ bool zhpe_stats_init(const char *stats_unique)
     } else if (!strcmp("stamp_dbg", tmp)) {
         zhpe_stats_profile = ZHPE_STATS_PROFILE_STAMP_DBG;
         enabled_ops = &stats_ops_enabled_stamp_dbg;
+        stats_ops_disabled.close = stats_stamp_dbg_close;
         stats_ops_disabled.setvals = stats_setvals_stamp_dbg;
         stats_ops_disabled.nextslot = stats_nextslot_wrap_noflush;
     } else if (!strcmp("just1cpu", tmp)) {

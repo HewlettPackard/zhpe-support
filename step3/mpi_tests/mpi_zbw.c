@@ -100,6 +100,8 @@ struct stuff {
     uint64_t            rx_rec_idx;
     uint64_t            rec_cnt;
     struct timespec     start_ts;
+    struct timespec     end_ts;
+    struct timespec     barrier_ts;
     uint64_t            start;
     uint64_t            end;
     MPI_Status          *statuses;
@@ -108,6 +110,17 @@ struct stuff {
     int                 dst;
     int                 op_type;
     bool                verbose;
+};
+
+struct timerank {
+    struct timespec     time;
+    int                 rank;
+    pid_t               pid;
+};
+
+struct timegather {
+    struct timerank     *tr;
+    int                 min_idx;
 };
 
 static int n_ranks = -1;
@@ -270,25 +283,89 @@ static void do_send_start(struct stuff *stuff, char *tx_buf)
     }
 }
 
-static void dump_open_files(struct stuff *stuff, const char *base_str,
-                            FILE **results_files, int start_rank, int ranks)
+static int tr_compare(const void *v1, const void *v2)
 {
-    const char          *dir_str = "unidir";
-    char                *fname;
+    int                 ret;
+    const struct timerank *tr1 = v1;
+    const struct timerank *tr2 = v2;
+
+    ret = arithcmp(tr1->time.tv_sec, tr2->time.tv_sec);
+    if (ret)
+        return ret;
+    ret = arithcmp(tr1->time.tv_nsec, tr2->time.tv_nsec);
+    if (ret)
+        return ret;
+    ret = arithcmp(tr1->rank, tr2->rank);
+    if (ret)
+        return ret;
+
+    return 0;
+}
+
+static void gather_times(struct timespec *time, struct timegather *gathered)
+{
+    struct timerank     *tr_all = NULL;
+    struct timerank     tr_self = {
+        .time           = *time,
+        .rank           = my_rank,
+        .pid            = getpid(),
+    };
     int                 i;
-    int                 rc;
-    char                *cp;
-    struct utsname      utsname;
+
+    if (my_rank == 0)
+        tr_all = xcalloc(n_ranks, sizeof(*gathered->tr));
+
+    /* Lazy about structs. */
+    MPI_CALL(MPI_Gather, &tr_self, sizeof(tr_self), MPI_BYTE,
+             tr_all, sizeof(*tr_all), MPI_BYTE, 0, MPI_COMM_WORLD);
+
+    if (my_rank != 0)
+        return;
+
+    gathered->tr = tr_all;
+    qsort(tr_all, n_ranks, sizeof(*tr_all), tr_compare);
+
+    for (i = 0; i < n_ranks; i++) {
+        if (tr_all[i].time.tv_sec || tr_all[i].time.tv_nsec)
+            break;
+    }
+    assert_always(i < n_ranks);
+    gathered->min_idx = i;
+}
+
+static void dump_times(const char *label, FILE *outfile,
+                       struct timerank *tr, int min_idx)
+{
+    int                 i;
+    uint64_t            delta;
+
+    for (i = min_idx; i < n_ranks; i++) {
+        delta = ts_delta(&tr[min_idx].time, &tr[i].time);
+        fprintf(outfile, "%s:%s rank %3d pid %d delta %10.3f usec\n",
+               __func__, label, tr[i].rank, tr[i].pid, (double)delta / 1000.0);
+    }
+}
+
+static void dump_info(int argc, char **argv, struct stuff *stuff)
+{
+    FILE                *info_file = NULL;
+    struct timegather   startg   = { .tr = NULL };
+    struct timegather   endg     = { .tr = NULL };
+    struct timegather   barrierg = { .tr = NULL };
+    char                *fname;
     char                time_str[ZHPEU_TM_STR_LEN];
+    struct utsname      utsname;
+    char                *cp;
+    int                 rc;
+    int                 i;
+
+    gather_times(&stuff->start_ts, &startg);
+    gather_times(&stuff->end_ts, &endg);
+    gather_times(&stuff->barrier_ts, &barrierg);
 
     zhpeu_tm_to_str(time_str, sizeof(time_str),
-                    localtime(&stuff->start_ts.tv_sec),
-                    stuff->start_ts.tv_nsec);
-
-    if (stuff->op_type == NTO1)
-        dir_str = "nto1";
-    else if (stuff->op_type & BIDIR)
-        dir_str = "bidir";
+                    localtime(&startg.tr[startg.min_idx].time.tv_sec),
+                    startg.tr[startg.min_idx].time.tv_nsec);
 
     if (uname(&utsname) == -1) {
         rc = -errno;
@@ -299,6 +376,41 @@ static void dump_open_files(struct stuff *stuff, const char *base_str,
     if (cp)
         *cp = '\0';
 
+    xasprintf(&fname, "%s/info", stuff->results_dir);
+    info_file = fopen(fname, "w");
+    if (!info_file) {
+        rc = -errno;
+        zhpeu_print_func_err(__func__, __LINE__, "fopen", fname, rc);
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    }
+    free(fname);
+
+    fprintf(info_file, "%-10s %s\n", "time:", time_str);
+    fprintf(info_file, "%-10s", "command:");
+    for (i = 0; i < argc; i++)
+        fprintf(info_file, " %s", argv[i]);
+    fprintf(info_file, "\n");
+    fprintf(info_file, "%-10s %" PRIu64 "\n", "opsize:", stuff->size);
+    fprintf(info_file, "%-10s %" PRIu64 "\n", "runtime:", stuff->seconds);
+    fprintf(info_file, "%-10s %s\n", "host:", utsname.nodename);
+    fprintf(info_file, "%-10s %d\n", "my_rank:", my_rank);
+    fprintf(info_file, "%-10s %d\n", "n_ranks:", n_ranks);
+
+    fprintf(info_file, "\n");
+    dump_times("start  ", info_file , startg.tr, startg.min_idx);
+    fprintf(info_file, "\n");
+    dump_times("end    ", info_file , endg.tr, endg.min_idx);
+    fprintf(info_file, "\n");
+    dump_times("barrier", info_file , barrierg.tr, barrierg.min_idx);
+}
+
+static void dump_rec_open(struct stuff *stuff, const char *base_str,
+                          FILE **results_files, int start_rank, int ranks)
+{
+    char                *fname;
+    int                 i;
+    int                 rc;
+
     for (i = start_rank + ranks - 1; i >= start_rank; i--) {
         xasprintf(&fname, "%s/%s.%d", stuff->results_dir, base_str, i);
         results_files[i] = fopen(fname, "w");
@@ -308,15 +420,6 @@ static void dump_open_files(struct stuff *stuff, const char *base_str,
             MPI_Abort(MPI_COMM_WORLD, 1);
         }
         free(fname);
-        fprintf(results_files[i],
-                "opt: %-6s ranks: %d size: %lu tx_ops: %lu rx_ops: %lu"
-                " sec %lu host %s pid %d time %s\n",
-                dir_str, n_ranks, stuff->size, stuff->tx_ops, stuff->rx_ops,
-                stuff->seconds, utsname.nodename, getpid(),
-                zhpeu_tm_to_str(time_str, sizeof(time_str),
-                                localtime(&stuff->start_ts.tv_sec),
-                                stuff->start_ts.tv_nsec));
-
     }
 }
 
@@ -361,7 +464,7 @@ static void dump_rec(struct stuff *stuff, bool send)
         }
         rec = stuff->tx_rec;
         rec_idx = stuff->tx_rec_idx;
-        dump_open_files(stuff, base_str, results_files, my_rank, 1);
+        dump_rec_open(stuff, base_str, results_files, my_rank, 1);
     } else {
         base_str = "recv";
         rec = stuff->rx_rec;
@@ -371,11 +474,11 @@ static void dump_rec(struct stuff *stuff, bool send)
 
         case SENDU:
         case SENDB:
-            dump_open_files(stuff, base_str, results_files, rec->rank, 1);
+            dump_rec_open(stuff, base_str, results_files, rec->rank, 1);
             break;
 
         case NTO1:
-            dump_open_files(stuff, base_str, results_files, 1, n_ranks - 1);
+            dump_rec_open(stuff, base_str, results_files, 1, n_ranks - 1);
             break;
 
         default:
@@ -435,6 +538,7 @@ static void do_recv(struct stuff *stuff)
     do_recv_start(stuff, rx_buf);
 
     MPI_CALL(MPI_Barrier, MPI_COMM_WORLD);
+    clock_gettime(CLOCK_REALTIME, &stuff->start_ts);
 
     stuff->start = get_cycles(NULL);
     stuff->end += stuff->start;
@@ -443,6 +547,9 @@ static void do_recv(struct stuff *stuff)
                      (uintptr_t)__func__, __LINE__, 0, 0, 0, 0);
 
     while (!do_recv_loop(stuff, rx_buf));
+    clock_gettime(CLOCK_REALTIME, &stuff->end_ts);
+    MPI_CALL(MPI_Barrier, MPI_COMM_WORLD);
+    clock_gettime(CLOCK_REALTIME, &stuff->barrier_ts);
     MPI_CALL(MPI_Free_mem, rx_buf);
 
     dump_rec(stuff, false);
@@ -472,10 +579,35 @@ static void do_send(struct stuff *stuff)
     do_send_start(stuff, tx_buf);
 
     while (!do_send_loop(stuff, tx_buf));
+    clock_gettime(CLOCK_REALTIME, &stuff->end_ts);
+    MPI_CALL(MPI_Barrier, MPI_COMM_WORLD);
+    clock_gettime(CLOCK_REALTIME, &stuff->barrier_ts);
     MPI_CALL(MPI_Free_mem, tx_buf);
 
     dump_rec(stuff, true);
 }
+
+#if 0
+
+static void do_send_recv(struct stuff *stuff)
+{
+    int                 half = n_ranks / 2;
+    int                 quarter = n_ranks / 4;
+
+    if (my_rank < half) {
+        if (my_rank < quarter)
+            do_send(stuff);
+        else
+            do_recv(stuff);
+    } else if (my_rank >= half) {
+        if (my_rank - half < quarter)
+            do_recv(stuff);
+        else
+            do_send(stuff);
+    }
+}
+
+#else
 
 static void do_send_recv(struct stuff *stuff)
 {
@@ -520,12 +652,17 @@ static void do_send_recv(struct stuff *stuff)
         recv_done = do_recv_loop(stuff, rx_buf);
         send_done = do_send_loop(stuff, tx_buf);
     }
+    clock_gettime(CLOCK_REALTIME, &stuff->end_ts);
+    MPI_CALL(MPI_Barrier, MPI_COMM_WORLD);
+    clock_gettime(CLOCK_REALTIME, &stuff->barrier_ts);
     MPI_CALL(MPI_Free_mem, rx_buf);
     MPI_CALL(MPI_Free_mem, tx_buf);
 
     dump_rec(stuff, false);
     dump_rec(stuff, true);
 }
+
+#endif
 
 static void do_rma_comm_create(struct stuff *stuff, MPI_Comm *pair_comm,
                                int *dst)
@@ -601,7 +738,7 @@ static void do_rma_loop(struct stuff *stuff, MPI_Win win, char *base, int dst,
             }
         }
         zhpe_stats_stamp_dbg(__func__, __LINE__, 0, 0, 0, 0);
-        MPI_CALL(MPI_Win_flush, dst, win);
+        MPI_CALL(MPI_Win_flush_local, dst, win);
         zhpe_stats_stamp_dbg(__func__, __LINE__, 0, 0, 0, 0);
 
         now = get_cycles(NULL);
@@ -614,8 +751,10 @@ static void do_rma_loop(struct stuff *stuff, MPI_Win win, char *base, int dst,
         if (unlikely((int64_t)(stuff->end - now) < 0))
             break;
     }
+    clock_gettime(CLOCK_REALTIME, &stuff->end_ts);
     MPI_CALL(MPI_Win_unlock, dst, win);
     MPI_CALL(MPI_Barrier, MPI_COMM_WORLD);
+    clock_gettime(CLOCK_REALTIME, &stuff->barrier_ts);
 
     dump_rec(stuff, true);
 }
@@ -782,9 +921,20 @@ int main(int argc, char **argv)
 
     stuff->results_dir = argv[optind++];
 
-    if (stuff->op_type != NTO1 && (n_ranks & 1)) {
-        zhpeu_print_err("An even number of ranks is required for !nto1\n");
-        goto done;
+    if (stuff->op_type != NTO1) {
+#if 0
+        if (stuff->op_type == SENDB) {
+            if (n_ranks & 3) {
+                zhpeu_print_err("Ranks must be a multiple of 4 for this"
+                                " test\n");
+                goto done;
+            }
+        } else
+#endif
+        if (n_ranks & 1) {
+            zhpeu_print_err("Ranks must be a multiple of 2 for this test\n");
+            goto done;
+        }
     }
 
     stuff->rec_cnt = stuff->seconds * SAMPLES_PER_SEC;
@@ -869,6 +1019,13 @@ int main(int argc, char **argv)
     }
 
     MPI_CALL(MPI_Barrier, MPI_COMM_WORLD);
+    if (my_rank == 0)
+        dump_info(argc, argv, stuff);
+    else {
+        gather_times(&stuff->start_ts, NULL);
+        gather_times(&stuff->end_ts, NULL);
+        gather_times(&stuff->barrier_ts, NULL);
+    }
     gdb_barrier();
     ret = 0;
 

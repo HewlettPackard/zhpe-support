@@ -90,7 +90,6 @@ void do_barrier(int barrier)
     double              delta_us = 0.0;
     uint64_t            delta;
     int                 i;
-    char                time_str[ZHPEU_TM_STR_LEN];
 
     if (my_rank == 0)
         tr_all = xcalloc(n_ranks, sizeof(*tr_all));
@@ -109,21 +108,17 @@ void do_barrier(int barrier)
 
     qsort(tr_all, n_ranks, sizeof(*tr_all), tr_compare);
 
-    zhpeu_tm_to_str(time_str, sizeof(time_str),
-                    localtime(&tr_all[0].ts_barrier.tv_sec),
-                    tr_all[0].ts_barrier.tv_nsec);
-
     for (i = 0;  i < n_ranks; i++) {
         delta = ts_delta(&tr_all[0].ts_barrier, &tr_all[i].ts_barrier);
         delta_us = (double)delta / 1000.0;
         if (tr_all[i].rank < 0 || tr_all[i].rank >= n_ranks ||
-            delta_us > 100.0)
+            delta_us > 1000.0)
             fprintf(stderr, "BAD     %5d rank %3d delta %10.3f usec\n",
                     barrier, tr_all[i].rank, delta_us);
+        else if (i == n_ranks - 1)
+            printf("barrier %5d rank %3d delta %10.3f usec\n",
+                   barrier, tr_all[n_ranks - 1].rank, delta_us);
     }
-    if (n_ranks)
-        printf("barrier %5d rank %3d delta %10.3f usec\n",
-               barrier, tr_all[n_ranks - 1].rank, delta_us);
 }
 
 static void usage(bool help) __attribute__ ((__noreturn__));
@@ -132,7 +127,7 @@ static void usage(bool help)
 {
     zhpeu_print_usage(
         help,
-        "Usage:%s\n",
+        "Usage:%s <barriers>\n",
         zhpeu_appname);
 
     MPI_CALL(MPI_Finalize);
@@ -141,30 +136,33 @@ static void usage(bool help)
 
 int main(int argc, char **argv)
 {
-    int                 ret = 1;
-    int                 i;
+    uint64_t            barriers;
+    uint64_t            i;
 
     zhpeu_util_init(argv[0], LOG_INFO, false);
 
-    zhpe_stats_init(zhpeu_appname);
-    zhpe_stats_test(0);
-    zhpe_stats_open(1);
-
     MPI_CALL(MPI_Init, &argc, &argv);
+
     MPI_CALL(MPI_Comm_size, MPI_COMM_WORLD, &n_ranks);
     MPI_CALL(MPI_Comm_rank, MPI_COMM_WORLD, &my_rank);
 
-    if (argc != 1)
+    if (argc != 2)
         usage(false);
 
+    if (_zhpeu_parse_kb_uint64_t("barriers", argv[1], &barriers, 0, 1, SIZE_MAX,
+                                 PARSE_KB | PARSE_KIB) < 0)
+        usage(false);
+
+    zhpe_stats_init(zhpeu_appname);
     zhpe_stats_enable();
-    for (i = 0; i < 10000; i++)
+
+    for (i = 0; i < barriers; i++)
         do_barrier(i);
     zhpe_stats_disable();
 
-    MPI_CALL(MPI_Finalize);
     zhpe_stats_close();
     zhpe_stats_finalize();
+    MPI_CALL(MPI_Finalize);
 
-    return ret;
+    return 0;
 }

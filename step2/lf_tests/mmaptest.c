@@ -216,7 +216,7 @@ static void *do_server_thread(void *targ)
     /* Invalidate any prefetched cache lines. */
     conn->ext_ops->commit(NULL, buf, args->mmap_len, true, true, false);
     /* Compare ramp. */
-    for (i = 0, p =  buf; i < args->mmap_len; i += sizeof(*p), p++) {
+    for (i = 0, p = buf; i < args->mmap_len; i += sizeof(*p), p++) {
         if (*p != (typeof(*p))(i | 1))
             print_err("t %3" PRIu64 " svr off 0x%08lx saw 0x%04x\n",
                       thread->tidx, i, *p);
@@ -336,8 +336,7 @@ static void *do_client_thread(void *targ)
 
     /* Compare ramp. */
     start = now;
-    for (i = 0, p = conn->mdesc->addr; i < args->mmap_len;
-         i += sizeof(*p), p++) {
+    for (i = 0, p = buf; i < args->mmap_len; i += sizeof(*p), p++) {
         if (*p != (typeof(*p))i)
             print_err("t %3" PRIu64 " cli off 0x%08lx saw 0x%04x\n",
                       thread->tidx, i, *p);

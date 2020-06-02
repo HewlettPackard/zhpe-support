@@ -101,7 +101,6 @@ void zhpe_stats_finalize();
 bool zhpe_stats_init(const char *stats_unique);
 void zhpe_stats_open(uint16_t uid);
 void zhpe_stats_test(uint16_t uid);
-uint16_t zhpe_stats_subid(uint16_t uid, uint16_t id);
 
 extern __thread struct zhpe_stats *zhpe_stats;
 
@@ -113,7 +112,7 @@ extern __thread struct zhpe_stats *zhpe_stats;
 
 #else
 
-#define zhpe_stats_subid(_name, _id) 0
+#define zhpe_stats_subid(_name, _id) (0)
 
 #endif
 

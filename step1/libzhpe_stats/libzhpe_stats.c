@@ -316,36 +316,50 @@ static struct {
     struct zhpe_stats_record *cur_r;
 } zhpe_stats_gdb_data;
 
+static struct zhpe_stats_record *
+gdb_next_r(struct zhpe_stats *cur_z, size_t *cur_i)
+{
+    struct zhpe_stats_record *ret;
+
+    do {
+        if (*cur_i <= cur_z->tail_gdb)
+            return NULL;
+        --*cur_i;
+        ret = &cur_z->buffer[*cur_i & cur_z->slots_mask];
+    }  while (ret->op_flag == ZHPE_STATS_OP_STAMP &&
+              ret->subid == zhpe_stats_subid(DBG, 1));
+
+    return ret;
+}
+
 void zhpe_stats_gdb_next(void)
 {
     struct zhpe_stats_record *cur_r = NULL;
     struct zhpe_stats_record *next_r;
     struct zhpe_stats   *cur_z;
     struct zhpe_stats   *next_z;
+    size_t              cur_i;
+    size_t              next_i;
 
-    for (;;) {
-        for (cur_z = zhpe_stats_list; cur_z; cur_z = cur_z->next) {
-            if (cur_z->head_gdb == cur_z->tail_gdb)
-                continue;
-            cur_r = &cur_z->buffer[(cur_z->head_gdb - 1) & cur_z->slots_mask];
+    for (cur_z = zhpe_stats_list; cur_z; cur_z = cur_z->next) {
+        cur_i = cur_z->head_gdb;
+        cur_r = gdb_next_r(cur_z, &cur_i);
+        if (cur_r)
             break;
-        }
-        if (!cur_z)
-            break;
-        for (next_z = cur_z->next; next_z; next_z = next_z->next) {
-            if (next_z->head_gdb == next_z->tail_gdb)
+    }
+    if (cur_r) {
+        for (next_z = cur_z; next_z; next_z = next_z->next) {
+            next_i = next_z->head_gdb;
+            next_r = gdb_next_r(next_z, &next_i);
+            if (!next_r)
                 continue;
-            next_r = &next_z->buffer[(next_z->head_gdb - 1) &
-                                     next_z->slots_mask];
             if (cur_r->val0 < next_r->val0) {
                 cur_z = next_z;
                 cur_r = next_r;
+                cur_i = next_i;
             }
         }
-        cur_z->head_gdb--;
-        if (cur_r->op_flag == ZHPE_STATS_OP_STAMP &&
-            cur_r->subid == zhpe_stats_subid(DBG, 0))
-            break;
+        cur_z->head_gdb = cur_i;
     }
 
     zhpe_stats_gdb_data.cur_z = cur_z;
@@ -355,16 +369,35 @@ void zhpe_stats_gdb_next(void)
 void zhpe_stats_gdb_find(uint64_t val)
 {
     struct zhpe_stats_record *cur_r;
+    struct zhpe_stats   *cur_z;
+    size_t              cur_i;
 
     for (;;) {
         zhpe_stats_gdb_next();
-        if (!zhpe_stats_gdb_data.cur_z)
-            return;
         cur_r = zhpe_stats_gdb_data.cur_r;
-        if ((cur_r->op_flag == 8 && cur_r->subid == 1000000) &&
-            (cur_r->val1 == val || cur_r->val2 == val || cur_r->val3 == val ||
-             cur_r->val4 == val || cur_r->val5 == val || cur_r->val6 == val))
+        if (!cur_r)
+            return;
+        if (cur_r->val1 == val || cur_r->val2 == val ||
+            cur_r->val3 == val || cur_r->val4 == val ||
+            cur_r->val5 == val || cur_r->val6 == val)
             break;
+        if (cur_r->op_flag != ZHPE_STATS_OP_STAMP ||
+            cur_r->subid != zhpe_stats_subid(DBG, 0))
+            continue;
+
+        /* Search continuation records. */
+        cur_z = zhpe_stats_gdb_data.cur_z;
+        cur_i = cur_z->head_gdb;
+        while (++cur_i < cur_z->head) {
+            cur_r = &cur_z->buffer[cur_i & cur_z->slots_mask];
+            if (cur_r->op_flag != ZHPE_STATS_OP_STAMP ||
+                cur_r->subid != zhpe_stats_subid(DBG, 1))
+                break;
+            if (cur_r->val1 == val || cur_r->val2 == val ||
+                cur_r->val3 == val || cur_r->val4 == val ||
+                cur_r->val5 == val || cur_r->val6 == val)
+                return;
+        }
     }
 }
 

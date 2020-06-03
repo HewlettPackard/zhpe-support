@@ -10,6 +10,9 @@ target_link_libraries(famtest PUBLIC zhpeq_util_fab)
 add_executable(gettest gettest.c)
 target_link_libraries(gettest PUBLIC zhpeq_util_fab)
 
+add_executable(mmapspeed mmapspeed.c)
+target_link_libraries(mmapspeed PUBLIC zhpeq_util_fab)
+
 add_executable(mmaptest mmaptest.c)
 target_link_libraries(mmaptest PUBLIC zhpeq_util_fab)
 
@@ -23,5 +26,14 @@ add_executable(ringpong ringpong.c)
 target_link_libraries(ringpong PUBLIC zhpeq_util_fab)
 
 install(
-  TARGETS atomtest burst famtest gettest mmaptest onenode_mmaptest regtest ringpong
+  TARGETS
+  atomtest
+  burst
+  famtest
+  gettest
+  mmapspeed
+  mmaptest
+  onenode_mmaptest
+  regtest
+  ringpong
   DESTINATION libexec)

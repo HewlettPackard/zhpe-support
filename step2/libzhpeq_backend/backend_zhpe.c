@@ -42,11 +42,38 @@
 #include <search.h>
 #include <unistd.h>
 
+struct dev_uuid_tree_entry {
+    uuid_t              uuid;
+    uint64_t            big_req_zaddr;
+    uint64_t            big_rsp_zaddr;
+    int32_t             ref;
+    bool                fam;
+};
+
+struct dev_mr_tree_entry {
+    struct zhpeq_key_data qkdata;
+    int64_t             active;
+    int32_t             ref;
+};
+
+struct dev_mr_policy_entry {
+    struct dev_mr_policy_entry *next;
+    uint64_t            start;
+    uint64_t            end;
+};
+
 static int              dev_fd = -1;
 static pthread_mutex_t  dev_mutex = PTHREAD_MUTEX_INITIALIZER;
 static void             *dev_uuid_tree;
 static void             *dev_mr_tree;
 static uint64_t         big_rsp_zaddr;
+/*
+ * Using glibc tsearch() trees to avoid the need for additional libraries
+ * that aren't a part of CentOS+EPEL+SCL repos, but it has some limitations and
+ * I need to walk the tree to look for overlap and I need to save the
+ * information globally.
+ */
+struct dev_mr_policy_entry *dev_mr_tree_policy_list;
 
 #define BIG_ZMMU_LEN    (((uint64_t)1) << 47)
 #define BIG_ZMMU_REQ_FLAGS \
@@ -62,19 +89,6 @@ enum zhpe_platform {
 
 static int              zhpe_platform;
 static int              domain_open;
-
-struct dev_uuid_tree_entry {
-    uuid_t              uuid;
-    uint64_t            big_req_zaddr;
-    uint64_t            big_rsp_zaddr;
-    int32_t             ref;
-    bool                fam;
-};
-
-struct dev_mr_tree_entry {
-    struct zhpeq_key_data qkdata;
-    int32_t             ref;
-};
 
 static struct zhpe_global_shared_data *shared_global;
 static struct zhpe_local_shared_data *shared_local;
@@ -112,6 +126,8 @@ static int __driver_cmd(union zhpe_op *op, size_t req_len, size_t rsp_len,
 
     op->hdr.version = ZHPE_OP_VERSION;
     op->hdr.index = 0;
+    /* Shut up valgrind. */
+    op->hdr.status = 0;
 
     res = write(dev_fd, op, req_len);
     ret = zhpeu_check_func_io(__func__, __LINE__, "write", DEV_PATH,
@@ -244,12 +260,12 @@ static int zhpe_lib_init(struct zhpeq_attr *attr)
     return ret;
 }
 
-static int compare_uuid(const void *key1, const void *key2)
+static int compare_uuid(const void *newk, const void *treek)
 {
-    const uuid_t        *u1 = key1;
-    const uuid_t        *u2 = key2;
+    const uuid_t        *nu = newk;
+    const uuid_t        *tu = treek;
 
-    return memcmp(*u1, *u2, sizeof(*u1));
+    return memcmp(*nu, *tu, sizeof(*nu));
 }
 
 static int __do_uuid_free(uuid_t uuid)
@@ -813,53 +829,45 @@ static bool zhpe_rq_epoll_enable(struct zhpeq_rqi *rqi)
     return false;
 }
 
-static int compare_qkdata(const void *key1, const void *key2)
+static int compare_qkdata(const void *newk, const void *treek)
 {
     int                 ret;
-    const struct zhpeq_key_data *qk1 = key1;
-    const struct zhpeq_key_data *qk2 = key2;
-    uint64_t            s1;
-    uint64_t            e1;
-    uint32_t            a1;
-    uint64_t            s2;
-    uint64_t            e2;
-    uint32_t            a2;
+    const struct zhpeq_key_data *nqk = newk;
+    const struct zhpeq_key_data *tqk = treek;
 
-    /* Expand the search parameters to the nearest page boundary. */
-    s1 = page_down(qk1->z.vaddr);
-    s2 = page_down(qk2->z.vaddr);
-    ret = arithcmp(s1, s2);
+    /* Expand the search parameters to page boundaries. */
+    ret = arithcmp(page_down(nqk->z.vaddr), page_down(tqk->z.vaddr));
     if (ret)
         return ret;
-    e1 = page_up(qk1->z.vaddr + qk1->z.len);
-    e2 = page_up(qk2->z.vaddr + qk2->z.len);
-    ret = arithcmp(e1, e2);
+    ret = arithcmp(page_up(nqk->z.vaddr + nqk->z.len),
+                   page_up(tqk->z.vaddr + tqk->z.len));
     if (ret)
         return ret;
     /* Mask off user flags in comparison. */
-    a1 = qk1->z.access & ZHPE_MR_USER_MASK;
-    a2 = qk2->z.access & ZHPE_MR_USER_MASK;
-    ret = arithcmp(a1, a2);
+    ret = arithcmp(nqk->z.access & ZHPE_MR_USER_MASK,
+                   tqk->z.access & ZHPE_MR_USER_MASK);
 
     return ret;
 }
 
 static int __do_mr_reg(uint64_t vaddr, size_t len, uint32_t access,
-                       uint64_t *zaddr)
+                       int64_t *active_uptr, uint64_t *zaddr)
 {
     int                 ret;
     union zhpe_op       op;
     union zhpe_req      *req = &op.req;
     union zhpe_rsp      *rsp = &op.rsp;
 
-    req->hdr.opcode = ZHPE_OP_MR_REG;
-    req->mr_reg.vaddr = vaddr;
-    req->mr_reg.len = len;
-    req->mr_reg.access = access;
+    req->hdr.opcode = ZHPE_OP_MR_REG_EXT;
+    req->mr_reg_ext.vaddr = vaddr;
+    req->mr_reg_ext.len = len;
+    req->mr_reg_ext.access = access;
+    req->mr_reg_ext.active_uptr = active_uptr;
 
-    ret = __driver_cmd(&op, sizeof(req->mr_reg), sizeof(rsp->mr_reg), 0);
+    ret = __driver_cmd(&op, sizeof(req->mr_reg_ext),
+                       sizeof(rsp->mr_reg_ext), 0);
     if (ret >= 0)
-        *zaddr = rsp->mr_reg.rsp_zaddr;
+        *zaddr = rsp->mr_reg_ext.rsp_zaddr;
 
     return ret;
 }
@@ -880,6 +888,98 @@ static int __do_mr_free(uint64_t vaddr, size_t len, uint32_t access,
     return __driver_cmd(&op, sizeof(req->mr_free), sizeof(rsp->mr_free), 0);
 }
 
+static void mr_tree_policy_handler(const void *nodep, const VISIT which,
+                                   const int depth)
+{
+    struct dev_mr_tree_entry *mre;
+    struct dev_mr_policy_entry **polprev;
+    struct dev_mr_policy_entry *polcur;
+    struct dev_mr_policy_entry *polnew;
+    uint64_t            mend;
+
+    switch (which) {
+
+    case leaf:
+    case postorder:
+        mre = *(struct dev_mr_tree_entry **)nodep;
+        mend = mre->qkdata.z.vaddr + mre->qkdata.z.len;
+        for (polprev = &dev_mr_tree_policy_list; *polprev;
+             polprev = (*polprev ? &(*polprev)->next : polprev)) {
+
+            polcur = *polprev;
+            /* Any overlap between mr policy range being reset and entry? */
+            if (polcur->start >= mend || polcur->end <= mre->qkdata.z.vaddr)
+                /* No. */
+                continue;
+            /* Policy range contained within entry? */
+            if (polcur->start >= mre->qkdata.z.vaddr && polcur->end <= mend) {
+                /* Yes, delete policy range. */
+                *polprev = polcur->next;
+                free(polcur);
+                continue;
+            }
+            /* Determine nature of overlap.  */
+            if (polcur->start < mre->qkdata.z.vaddr) {
+                /* Policy range begins before entry. */
+                if (polcur->end > mend) {
+                    /* Entry splits policy range. */
+                    polnew = xmalloc(sizeof(*polnew));
+                    polnew->next = polcur->next;
+                    polcur->next = polnew;
+                    polprev = &polnew->next;
+                    polnew->end = polcur->end;
+                    polnew->start = mend;
+                    polcur->end = mre->qkdata.z.vaddr;
+                    continue;
+                } else
+                    /* Policy range ends within entry. */
+                    polcur->end = mre->qkdata.z.vaddr;
+            } else
+                /* Policy range starts inside the entry and continues after. */
+                polcur->start = mend;
+        }
+        break;
+
+    default:
+        break;
+
+    }
+}
+
+static int do_restore_policy(uint64_t start, uint64_t len)
+{
+    int                 ret = 0;
+    int                 rc;
+    struct dev_mr_policy_entry *pol;
+
+    dev_mr_tree_policy_list = pol = xmalloc(sizeof(*pol));
+    pol->next = NULL;
+    pol->start = start;
+    pol->end = start + len;
+    twalk(dev_mr_tree, mr_tree_policy_handler);
+
+    while ((pol = dev_mr_tree_policy_list)) {
+        dev_mr_tree_policy_list = pol->next;
+        if (mbind(TO_PTR(pol->start), pol->end - pol->start,
+                  MPOL_DEFAULT, NULL, 0, 0) == -1) {
+            rc = -errno;
+            /*
+             * For the moment, suppress EFAULT errors as these can
+             * occur correctly when the mr_cache frees a registration
+             * that has been unmapped.
+             */
+            if (rc != -EFAULT) {
+                ret = zhpeu_update_error(ret, rc);
+                zhpeu_print_func_err(__func__, __LINE__,
+                                     "mbind", "default", rc);
+            }
+        }
+        free(pol);
+    }
+
+    return ret;
+}
+
 static int zhpe_mr_reg(struct zhpeq_domi *zqdomi,
                        const void *buf, size_t len,
                        uint32_t access, struct zhpeq_key_data **qkdata_out)
@@ -890,8 +990,8 @@ static int zhpe_mr_reg(struct zhpeq_domi *zqdomi,
     uint64_t            start = page_down((uintptr_t)buf);
     uint64_t            pglen = end - start;
     struct zhpeq_key_data *qkdata = NULL;
+    struct dev_mr_tree_entry *mre = NULL;
     void                **tval;
-    struct dev_mr_tree_entry *mre;
 
     desc = xmalloc(sizeof(*desc));
     qkdata = &desc->qkdata;
@@ -912,7 +1012,8 @@ static int zhpe_mr_reg(struct zhpeq_domi *zqdomi,
 
     mutex_lock(&dev_mutex);
     if (unlikely(!big_rsp_zaddr)) {
-        ret = __do_mr_reg(0, BIG_ZMMU_LEN, BIG_ZMMU_RSP_FLAGS, &big_rsp_zaddr);
+        ret = __do_mr_reg(0, BIG_ZMMU_LEN, BIG_ZMMU_RSP_FLAGS, NULL,
+                          &big_rsp_zaddr);
         if (ret < 0)
             goto done;
     }
@@ -925,7 +1026,6 @@ static int zhpe_mr_reg(struct zhpeq_domi *zqdomi,
 
     mre = *tval;
     if (mre != (void *)qkdata) {
-        qkdata->z.zaddr = mre->qkdata.z.zaddr + page_off(qkdata->z.vaddr);
         mre->ref++;
         goto done;
     }
@@ -934,6 +1034,7 @@ static int zhpe_mr_reg(struct zhpeq_domi *zqdomi,
     mre->qkdata.z.vaddr = start;
     mre->qkdata.z.len = pglen;
     mre->qkdata.z.access = access;
+    mre->active = 0;
     mre->ref = 1;
 
     /* mbind region to turn off NUMA balancing */
@@ -944,25 +1045,30 @@ static int zhpe_mr_reg(struct zhpeq_domi *zqdomi,
         goto done;
     }
     ret = __do_mr_reg(mre->qkdata.z.vaddr, mre->qkdata.z.len,
-                      mre->qkdata.z.access, &mre->qkdata.z.zaddr);
-    /* Restore to default policy on error. (Imperfect) */
-    if (ret < 0 && mbind(TO_PTR(mre->qkdata.z.vaddr), mre->qkdata.z.len,
-                         MPOL_DEFAULT, NULL, 1, 0) == -1)
-        zhpeu_print_func_err(__func__, __LINE__, "mbind", "fixup", -errno);
+                      mre->qkdata.z.access, &mre->active, &mre->qkdata.z.zaddr);
+    /* Try to restore to default policy on error. */
+    if (ret < 0)
+        do_restore_policy(mre->qkdata.z.vaddr, mre->qkdata.z.len);
 
     if (unlikely(ret < 0)) {
         (void)tdelete(qkdata, &dev_mr_tree, compare_qkdata);
         free(mre);
         goto done;
     }
-    qkdata->z.zaddr = (mre->qkdata.z.zaddr + page_off(qkdata->z.vaddr));
+    zhpe_stats_stamp_dbg(__func__, __LINE__,
+                         (uintptr_t)&mre->active, mre->active,
+                         mre->qkdata.z.vaddr, mre->qkdata.z.len);
+
     *tval = mre;
 
  done:
     mutex_unlock(&dev_mutex);
-    if (likely(ret >= 0))
+    if (likely(ret >= 0)) {
+        qkdata->active_uptr = &mre->active;
+        qkdata->z.zaddr = (mre->qkdata.z.zaddr +
+                           qkdata->z.vaddr - mre->qkdata.z.vaddr);
         *qkdata_out = qkdata;
-    else
+    } else
         free(desc);
 
     return ret;
@@ -971,37 +1077,23 @@ static int zhpe_mr_reg(struct zhpeq_domi *zqdomi,
 static int zhpe_mr_free(struct zhpeq_mr_desc_v1 *desc)
 {
     int                 ret = 0;
-    struct zhpeq_key_data *qkdata = &desc->qkdata;
-    void                **tval;
     struct dev_mr_tree_entry *mre;
     int                 rc;
 
     mutex_lock(&dev_mutex);
 
-    tval = tfind(qkdata, &dev_mr_tree, compare_qkdata);
-    assert_always(tval);
-
-    mre = *tval;
+    mre = container_of(desc->qkdata.active_uptr, struct dev_mr_tree_entry,
+                       active);
     assert(mre->ref > 0);
     if (--(mre->ref))
         goto done;
 
-    (void)tdelete(qkdata, &dev_mr_tree, compare_qkdata);
+    assert_always(!(mre->active & ~(uint64_t)1));
+    (void)tdelete(&mre->qkdata, &dev_mr_tree, compare_qkdata);
     ret = __do_mr_free(mre->qkdata.z.vaddr, mre->qkdata.z.len,
                        mre->qkdata.z.access, mre->qkdata.z.zaddr);
-    if (mbind(TO_PTR(mre->qkdata.z.vaddr), mre->qkdata.z.len,
-              MPOL_DEFAULT, NULL, 0, 0) == -1) {
-        rc = -errno;
-        /*
-         * For the moment, suppress EFAULT errors as these can
-         * occur correctly when the mr_cache frees a registration
-         * that has been unmapped.
-         */
-        if (rc != -EFAULT) {
-            ret = zhpeu_update_error(ret, rc);
-            zhpeu_print_func_err(__func__, __LINE__, "mbind", "default", rc);
-        }
-    }
+    if (ret >= 0)
+        ret = do_restore_policy(mre->qkdata.z.vaddr, mre->qkdata.z.len);
     free(mre);
 
     if (!dev_mr_tree && big_rsp_zaddr) {
@@ -1330,6 +1422,17 @@ static int zhpe_rq_get_addr(struct zhpeq_rqi *rqi, void *sa, size_t *sa_len)
     return 0;
 }
 
+static int zhpe_feature_enable(uint64_t features)
+{
+    union zhpe_op       op;
+    union zhpe_req      *req = &op.req;
+    union zhpe_rsp      *rsp = &op.rsp;
+
+    req->hdr.opcode = ZHPE_OP_FEATURE;
+    req->feature.features = features;
+    return driver_cmd(&op, sizeof(req->feature), sizeof(rsp->feature), 0);
+}
+
 static char *zhpe_qkdata_id_str(const struct zhpeq_mr_desc_v1 *desc)
 {
     char                *ret = NULL;
@@ -1378,6 +1481,36 @@ void zhpeq_backend_zhpe_init(int fd)
         return;
 
     zhpeq_register_backend(ZHPEQ_BACKEND_ZHPE, &ops);
+}
+
+#endif
+
+#ifndef NDEBUG
+
+static void mr_tree_dump_handler(const void *nodep, const VISIT which,
+                                 const int depth)
+{
+    struct dev_mr_tree_entry *mre;
+
+    switch (which) {
+
+    case leaf:
+    case postorder:
+        mre = *(struct dev_mr_tree_entry **)nodep;
+        fprintf(stderr,
+                "0x%016" PRIx64 "/0x%016" PRIx64 "/%ld/%d\n",
+                mre->qkdata.z.vaddr, mre->qkdata.z.len, mre->active, mre->ref);
+        break;
+
+    default:
+        break;
+
+    }
+}
+
+void zhpeq_mr_tree_dump(void)
+{
+    twalk(dev_mr_tree, mr_tree_dump_handler);
 }
 
 #endif

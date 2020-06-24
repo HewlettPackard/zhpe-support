@@ -931,7 +931,7 @@ static struct zhpe_stats_ops stats_ops_disabled = {
 
 static void stats_stamp_dbg_func(struct zhpe_stats *zstats, const char *func)
 {
-    if (fprintf(zstats->func_file, "s/\\(^8,1000000,[^,]\\+,\\)%lu/\\1%s/",
+    if (fprintf(zstats->func_file, "s/\\(^8,1000000,[^,]\\+,\\)%lu/\\1%s/\n",
                 (uintptr_t)func, func) < 0)
         abort();
 }
@@ -1103,6 +1103,10 @@ static void stats_cmn_open(struct zhpe_stats *zstats, uint16_t uid)
             print_func_err(__func__, __LINE__, "fopen", fname, err);
             abort();
         }
+        /* Write a byte to force buffer allocation and rewind. */
+        if (fprintf(zstats->func_file, "\n") < 0)
+            abort();
+        rewind(zstats->func_file);
         free(fname);
         break;
 

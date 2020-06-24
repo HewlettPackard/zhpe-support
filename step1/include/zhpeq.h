@@ -71,6 +71,7 @@ enum {
     __IMPORT(MR_REQ_CPU_WC),
     __IMPORT(MR_REQ_CPU_WT),
     __IMPORT(MR_REQ_CPU_UC),
+    __IMPORT(FEATURE_MR_OVERLAP_CHECKING)
 };
 
 #undef __IMPORT
@@ -129,6 +130,7 @@ struct zhpeq_key_data {
     struct zhpe_key_data z;
     struct zhpeq_dom    *zqdom;
     void                *cache_entry;
+    int64_t             *active_uptr;
 #ifdef NOT_YET
     /* ZZZ: registration thread. */
     void                (*ready)(struct zhpeq_key_data *qkdata,
@@ -627,6 +629,8 @@ static inline bool zhpeq_is_asic(void)
 
 int zhpeq_get_zaddr(const char *node, const char *service,
                     bool source, struct sockaddr_zhpe *sz);
+
+int zhpeq_feature_enable(uint64_t features);
 
 /* Info/debugging */
 

@@ -1450,6 +1450,11 @@ done:
     return ret;
 }
 
+int zhpeq_feature_enable(uint64_t features)
+{
+    return zhpe_feature_enable(features);
+}
+
 void zhpeq_print_qkdata(const char *func, uint line,
                         const struct zhpeq_key_data *qkdata)
 {

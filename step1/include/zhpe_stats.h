@@ -97,22 +97,40 @@ struct zhpe_stats {
     uint8_t                     enabled;
 };
 
-void zhpe_stats_finalize();
-bool zhpe_stats_init(const char *stats_unique);
-void zhpe_stats_open(uint16_t uid);
-void zhpe_stats_test(uint16_t uid);
-
 extern __thread struct zhpe_stats *zhpe_stats;
 
 #ifdef HAVE_ZHPE_STATS
 
+void zhpe_stats_finalize();
+bool zhpe_stats_init(const char *stats_unique);
+void zhpe_stats_open(uint16_t uid);
+void zhpe_stats_test(uint16_t uid);
 
 #define zhpe_stats_subid(_name, _id)            \
     ((ZHPE_STATS_SUBID_##_name * 1000) + _id)
 
 #else
 
-#define zhpe_stats_subid(_name, _id) (0)
+#ifndef __LIBZHPE_STATS_C__
+static inline void zhpe_stats_finalize(void)
+{
+}
+
+static inline bool zhpe_stats_init(const char *stats_unique)
+{
+    return false;
+}
+
+static inline void zhpe_stats_open(uint16_t uid)
+{
+}
+
+static inline void zhpe_stats_test(uint16_t uid)
+{
+}
+#endif
+
+#define zhpe_stats_subid(_name, _id) 0
 
 #endif
 

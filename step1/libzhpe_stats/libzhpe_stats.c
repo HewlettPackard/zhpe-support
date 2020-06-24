@@ -36,6 +36,8 @@
 
 #include <zhpeq_util.h>
 
+#define __LIBZHPE_STATS_C__
+
 #include <zhpe_stats.h>
 #include <zhpe_stats_types.h>
 

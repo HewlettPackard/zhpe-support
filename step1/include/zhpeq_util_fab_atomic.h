@@ -330,10 +330,12 @@ static inline int zhpeu_fab_atomic_load(enum fi_datatype type,
         break;
 
     case FI_UINT32:
+    case FI_FLOAT:
         *value = atm_load_rlx((const uint32_t *)src);
         break;
 
     case FI_UINT64:
+    case FI_DOUBLE:
         *value = atm_load_rlx((const uint64_t *)src);
         break;
 
@@ -361,10 +363,12 @@ static inline int zhpeu_fab_atomic_store(enum fi_datatype type,
         break;
 
     case FI_UINT32:
+    case FI_FLOAT:
         atm_store_rlx((uint32_t *)dst, (uint32_t)value);
         break;
 
     case FI_UINT64:
+    case FI_DOUBLE:
         atm_store_rlx((uint64_t *)dst, (uint64_t)value);
         break;
 
@@ -395,11 +399,13 @@ static inline int zhpeu_fab_atomic_copy(enum fi_datatype type,
         break;
 
     case FI_UINT32:
+    case FI_FLOAT:
         value = atm_load_rlx((const uint32_t *)src);
         atm_store_rlx((uint32_t *)dst, (uint32_t)value);
         break;
 
     case FI_UINT64:
+    case FI_DOUBLE:
         value = atm_load_rlx((const uint64_t *)src);
         atm_store_rlx((uint64_t *)dst, (uint64_t)value);
         break;

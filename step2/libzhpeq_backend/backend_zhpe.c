@@ -56,8 +56,8 @@ struct dev_mr_tree_entry {
     int32_t             ref;
 };
 
-struct dev_mr_policy_entry {
-    struct dev_mr_policy_entry *next;
+struct dev_mr_mlock_entry {
+    struct dev_mr_mlock_entry *next;
     uint64_t            start;
     uint64_t            end;
 };
@@ -73,7 +73,7 @@ static uint64_t         big_rsp_zaddr;
  * I need to walk the tree to look for overlap and I need to save the
  * information globally.
  */
-struct dev_mr_policy_entry *dev_mr_tree_policy_list;
+struct dev_mr_mlock_entry *dev_mr_tree_mlock_list;
 
 #define BIG_ZMMU_LEN    (((uint64_t)1) << 47)
 #define BIG_ZMMU_REQ_FLAGS \
@@ -888,13 +888,13 @@ static int __do_mr_free(uint64_t vaddr, size_t len, uint32_t access,
     return __driver_cmd(&op, sizeof(req->mr_free), sizeof(rsp->mr_free), 0);
 }
 
-static void mr_tree_policy_handler(const void *nodep, const VISIT which,
-                                   const int depth)
+static void mr_tree_mlock_handler(const void *nodep, const VISIT which,
+                                  const int depth)
 {
     struct dev_mr_tree_entry *mre;
-    struct dev_mr_policy_entry **polprev;
-    struct dev_mr_policy_entry *polcur;
-    struct dev_mr_policy_entry *polnew;
+    struct dev_mr_mlock_entry **lckprev;
+    struct dev_mr_mlock_entry *lckcur;
+    struct dev_mr_mlock_entry *lcknew;
     uint64_t            mend;
 
     switch (which) {
@@ -903,40 +903,40 @@ static void mr_tree_policy_handler(const void *nodep, const VISIT which,
     case postorder:
         mre = *(struct dev_mr_tree_entry **)nodep;
         mend = mre->qkdata.z.vaddr + mre->qkdata.z.len;
-        for (polprev = &dev_mr_tree_policy_list; *polprev;
-             polprev = (*polprev ? &(*polprev)->next : polprev)) {
+        for (lckprev = &dev_mr_tree_mlock_list; *lckprev;
+             lckprev = (*lckprev ? &(*lckprev)->next : lckprev)) {
 
-            polcur = *polprev;
-            /* Any overlap between mr policy range being reset and entry? */
-            if (polcur->start >= mend || polcur->end <= mre->qkdata.z.vaddr)
+            lckcur = *lckprev;
+            /* Any overlap between mlock range being reset and entry? */
+            if (lckcur->start >= mend || lckcur->end <= mre->qkdata.z.vaddr)
                 /* No. */
                 continue;
-            /* Policy range contained within entry? */
-            if (polcur->start >= mre->qkdata.z.vaddr && polcur->end <= mend) {
-                /* Yes, delete policy range. */
-                *polprev = polcur->next;
-                free(polcur);
+            /* mlock range contained within entry? */
+            if (lckcur->start >= mre->qkdata.z.vaddr && lckcur->end <= mend) {
+                /* Yes, delete mlock range. */
+                *lckprev = lckcur->next;
+                free(lckcur);
                 continue;
             }
             /* Determine nature of overlap.  */
-            if (polcur->start < mre->qkdata.z.vaddr) {
-                /* Policy range begins before entry. */
-                if (polcur->end > mend) {
-                    /* Entry splits policy range. */
-                    polnew = xmalloc(sizeof(*polnew));
-                    polnew->next = polcur->next;
-                    polcur->next = polnew;
-                    polprev = &polnew->next;
-                    polnew->end = polcur->end;
-                    polnew->start = mend;
-                    polcur->end = mre->qkdata.z.vaddr;
+            if (lckcur->start < mre->qkdata.z.vaddr) {
+                /* mlock range begins before entry. */
+                if (lckcur->end > mend) {
+                    /* Entry splits mlock range. */
+                    lcknew = xmalloc(sizeof(*lcknew));
+                    lcknew->next = lckcur->next;
+                    lckcur->next = lcknew;
+                    lckprev = &lcknew->next;
+                    lcknew->end = lckcur->end;
+                    lcknew->start = mend;
+                    lckcur->end = mre->qkdata.z.vaddr;
                     continue;
                 } else
-                    /* Policy range ends within entry. */
-                    polcur->end = mre->qkdata.z.vaddr;
+                    /* mlock range ends within entry. */
+                    lckcur->end = mre->qkdata.z.vaddr;
             } else
-                /* Policy range starts inside the entry and continues after. */
-                polcur->start = mend;
+                /* mlock range starts inside the entry and continues after. */
+                lckcur->start = mend;
         }
         break;
 
@@ -946,35 +946,29 @@ static void mr_tree_policy_handler(const void *nodep, const VISIT which,
     }
 }
 
-static int do_restore_policy(uint64_t start, uint64_t len)
+static int do_munlock(uint64_t start, uint64_t len)
 {
     int                 ret = 0;
     int                 rc;
-    struct dev_mr_policy_entry *pol;
+    struct dev_mr_mlock_entry *lck;
 
-    dev_mr_tree_policy_list = pol = xmalloc(sizeof(*pol));
-    pol->next = NULL;
-    pol->start = start;
-    pol->end = start + len;
-    twalk(dev_mr_tree, mr_tree_policy_handler);
+    dev_mr_tree_mlock_list = lck = xmalloc(sizeof(*lck));
+    lck->next = NULL;
+    lck->start = start;
+    lck->end = start + len;
+    twalk(dev_mr_tree, mr_tree_mlock_handler);
 
-    while ((pol = dev_mr_tree_policy_list)) {
-        dev_mr_tree_policy_list = pol->next;
-        if (mbind(TO_PTR(pol->start), pol->end - pol->start,
-                  MPOL_DEFAULT, NULL, 0, 0) == -1) {
+    while ((lck = dev_mr_tree_mlock_list)) {
+        dev_mr_tree_mlock_list = lck->next;
+        if (munlock(TO_PTR(lck->start), lck->end - lck->start) == -1) {
             rc = -errno;
-            /*
-             * For the moment, suppress EFAULT errors as these can
-             * occur correctly when the mr_cache frees a registration
-             * that has been unmapped.
-             */
-            if (rc != -EFAULT) {
+            /* ENOMEM can be valid if memory is freed first. */
+            if (rc != -ENOMEM) {
                 ret = zhpeu_update_error(ret, rc);
-                zhpeu_print_func_err(__func__, __LINE__,
-                                     "mbind", "default", rc);
+                zhpeu_print_func_err(__func__, __LINE__, "munlock", "", rc);
             }
         }
-        free(pol);
+        free(lck);
     }
 
     return ret;
@@ -1037,18 +1031,23 @@ static int zhpe_mr_reg(struct zhpeq_domi *zqdomi,
     mre->active = 0;
     mre->ref = 1;
 
-    /* mbind region to turn off NUMA balancing */
-    if (mbind(TO_PTR(mre->qkdata.z.vaddr), mre->qkdata.z.len,
-              MPOL_PREFERRED, NULL, 1, 0) == -1) {
+    /*
+     * mbind() changed to mlock(); we needed to disable numa_balancing
+     * globally to deal with edge cases that mbind() couldn't handle and
+     * this was desirable for HPC workloads, anyway. However, under memory
+     * pressure, the system is invalidating mappings to the some registrations,
+     * and that cannot be permitted.
+     */
+    if (mlock(TO_PTR(mre->qkdata.z.vaddr), mre->qkdata.z.len) == -1) {
         ret = -errno;
-        zhpeu_print_func_err(__func__, __LINE__, "mbind", "preferred", ret);
+        zhpeu_print_func_err(__func__, __LINE__, "mlock", "", ret);
         goto done;
     }
     ret = __do_mr_reg(mre->qkdata.z.vaddr, mre->qkdata.z.len,
                       mre->qkdata.z.access, &mre->active, &mre->qkdata.z.zaddr);
-    /* Try to restore to default policy on error. */
+    /* Remove mlock on error. */
     if (ret < 0)
-        do_restore_policy(mre->qkdata.z.vaddr, mre->qkdata.z.len);
+        do_munlock(mre->qkdata.z.vaddr, mre->qkdata.z.len);
 
     if (unlikely(ret < 0)) {
         (void)tdelete(qkdata, &dev_mr_tree, compare_qkdata);
@@ -1093,7 +1092,7 @@ static int zhpe_mr_free(struct zhpeq_mr_desc_v1 *desc)
     ret = __do_mr_free(mre->qkdata.z.vaddr, mre->qkdata.z.len,
                        mre->qkdata.z.access, mre->qkdata.z.zaddr);
     if (ret >= 0)
-        ret = do_restore_policy(mre->qkdata.z.vaddr, mre->qkdata.z.len);
+        ret = do_munlock(mre->qkdata.z.vaddr, mre->qkdata.z.len);
     free(mre);
 
     if (!dev_mr_tree && big_rsp_zaddr) {

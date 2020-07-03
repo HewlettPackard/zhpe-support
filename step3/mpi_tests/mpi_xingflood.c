@@ -316,12 +316,6 @@ static int do_mem_setup(struct stuff *conn)
                                       PROT_READ | PROT_WRITE,
                                       MAP_ANONYMOUS | MAP_SHARED, -1 , 0);
 
-        if (conn->local_buf == NULL) {
-            ret = -errno;
-            print_func_err(__func__, __LINE__, "_zhpeu_mmap", "", ret);
-            goto done;
-        }
-
         ret = zhpeq_mr_reg(conn->zqdom, conn->local_buf, conn->local_len,
                            (ZHPEQ_MR_GET | ZHPEQ_MR_PUT |
                             ZHPEQ_MR_GET_REMOTE | ZHPEQ_MR_PUT_REMOTE),
@@ -347,10 +341,10 @@ static int do_mem_setup(struct stuff *conn)
     }
 
     if (args->role == ZSERVER) {
-            MPI_CALL(MPI_Send, &blob_len, 1, MPI_UINT64_T, my_partner,
-                     0, MPI_COMM_WORLD);
-            MPI_CALL(MPI_Send, blob, ZHPEQ_MAX_KEY_BLOB, MPI_BYTE, my_partner,
-                     0, MPI_COMM_WORLD);
+        MPI_CALL(MPI_Send, &blob_len, 1, MPI_UINT64_T, my_partner,
+                 0, MPI_COMM_WORLD);
+        MPI_CALL(MPI_Send, blob, ZHPEQ_MAX_KEY_BLOB, MPI_BYTE, my_partner,
+                 0, MPI_COMM_WORLD);
     } else {
         MPI_CALL(MPI_Recv, &blob_len, 1, MPI_UINT64_T, my_partner, 0,
                  MPI_COMM_WORLD, MPI_STATUS_IGNORE);

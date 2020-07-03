@@ -129,6 +129,7 @@ struct rundata {
     double              skew;
 };
 
+/* enqa processes all send ops_completed to rank 0*/
 static void print_rankdata_nonzero_enqa(struct stuff *conn)
 {
     struct rankdata     rd_self;
@@ -144,6 +145,7 @@ static void print_rankdata_nonzero_enqa(struct stuff *conn)
              NULL, 0, MPI_BYTE, 0, MPI_COMM_WORLD);
 }
 
+/* get/put servers all send ops_completed to rank 0*/
 static void print_rankdata_nonzero(struct timespec *start_time,
                                    uint64_t run_cyc, struct stuff *conn)
 {
@@ -156,7 +158,6 @@ static void print_rankdata_nonzero(struct timespec *start_time,
     rd_self.ops_completed = conn->ops_completed;
     rd_self.slice = conn->ztq->tqinfo.slice;
 
-    /* Lazy about structs. */
     MPI_CALL(MPI_Gather, &rd_self, sizeof(rd_self), MPI_BYTE,
              NULL, 0, MPI_BYTE, 0, MPI_COMM_WORLD);
 }
@@ -182,7 +183,6 @@ static void print_rankdata_zero(const struct stuff *conn, struct rundata *run)
 
     rd = xcalloc(worldsize, sizeof(*rd));
 
-    /* Lazy about structs. */
     MPI_CALL(MPI_Gather, &rd_self, sizeof(rd_self), MPI_BYTE,
              rd, sizeof(*rd), MPI_BYTE, 0, MPI_COMM_WORLD);
 
@@ -194,7 +194,7 @@ static void print_rankdata_zero(const struct stuff *conn, struct rundata *run)
         }
     }
 
-    first_client = (conn->args->op_type == ZENQA) ? worldsize/2 : 1;
+    first_client = worldsize/2;
     first_start_time = rd[first_client].start_time;
     for (i = first_client + 1; i < worldsize; i++) {
         if (ts_cmp(&first_start_time, &rd[i].start_time) > 0)
@@ -305,8 +305,9 @@ static int do_mem_setup(struct stuff *conn)
     conn->ring_xfer_aligned = l1_up(args->ring_xfer_len);
     conn->ring_len = conn->ring_xfer_aligned * conn->cmdq_entries;
 
-    if (my_rank == 0)
-        conn->local_len = conn->ring_len * (worldsize - 1);
+    /* servers always share target memory */
+    if (args->role == ZSERVER)
+        conn->local_len = conn->ring_len;
     else if (args->ring_xfer_len > ZHPEQ_MAX_IMM)
         conn->local_len = conn->ring_len;
 
@@ -314,13 +315,25 @@ static int do_mem_setup(struct stuff *conn)
         conn->local_buf = _zhpeu_mmap(NULL, conn->local_len,
                                       PROT_READ | PROT_WRITE,
                                       MAP_ANONYMOUS | MAP_SHARED, -1 , 0);
+
+        if (conn->local_buf == NULL) {
+            ret = -errno;
+            print_func_err(__func__, __LINE__, "_zhpeu_mmap", "", ret);
+            goto done;
+        }
+
         ret = zhpeq_mr_reg(conn->zqdom, conn->local_buf, conn->local_len,
                            (ZHPEQ_MR_GET | ZHPEQ_MR_PUT |
                             ZHPEQ_MR_GET_REMOTE | ZHPEQ_MR_PUT_REMOTE),
                            &conn->local_kdata);
 
+        if (ret < 0) {
+            print_func_err(__func__, __LINE__, "zhpeq_mr_reg", "", ret);
+            goto done;
+        }
+
         /* only server exports ztq_local_kdata */
-        if (my_rank == 0) {
+        if (args->role == ZSERVER) {
             blob_len = sizeof(blob);
             ret = zhpeq_qkdata_export(conn->local_kdata,
                                       conn->local_kdata->z.access,
@@ -333,11 +346,18 @@ static int do_mem_setup(struct stuff *conn)
         }
     }
 
-    MPI_CALL(MPI_Bcast, blob, ZHPEQ_MAX_KEY_BLOB, MPI_BYTE, 0, MPI_COMM_WORLD);
-    MPI_CALL(MPI_Bcast, &blob_len, 1, MPI_UINT64_T, 0, MPI_COMM_WORLD);
+    if (args->role == ZSERVER) {
+            MPI_CALL(MPI_Send, &blob_len, 1, MPI_UINT64_T, my_partner,
+                     0, MPI_COMM_WORLD);
+            MPI_CALL(MPI_Send, blob, ZHPEQ_MAX_KEY_BLOB, MPI_BYTE, my_partner,
+                     0, MPI_COMM_WORLD);
+    } else {
+        MPI_CALL(MPI_Recv, &blob_len, 1, MPI_UINT64_T, my_partner, 0,
+                 MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        MPI_CALL(MPI_Recv, blob, ZHPEQ_MAX_KEY_BLOB, MPI_BYTE, my_partner, 0,
+                 MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
-    /* only clients import remote memory */
-    if (my_rank > 0) {
+        /* only clients import remote memory */
         ret = zhpeq_qkdata_import(conn->zqdom, conn->addr_cookie1,
                                   blob, blob_len, &conn->remote_kdata);
         if (ret < 0) {
@@ -350,12 +370,9 @@ static int do_mem_setup(struct stuff *conn)
             goto done;
 
         }
-    }
 
-    if (my_rank > 0) {
         /* Loop and fill in all commmand buffers. */
-        remote_zaddr = (conn->remote_kdata->z.zaddr +
-                        conn->ring_len * (my_rank - 1));
+        remote_zaddr = conn->remote_kdata->z.zaddr;
         for (i = 0, cmd_off = 0; i < conn->cmdq_entries;
              i++, cmd_off += conn->ring_xfer_aligned) {
 
@@ -404,7 +421,7 @@ static inline struct zhpe_cq_entry *tq_cq_entry(struct zhpeq_tq *ztq,
     if (likely(zhpeq_cmp_valid(cqe, qindex, qmask))) {
         return cqe;
     } else {
-        // don't strid
+        // don't stride
     }
 
     return NULL;
@@ -580,7 +597,7 @@ static int do_queue_setup_enqa(struct stuff *conn)
     }
 
     /* Send servers' socket addrs to partners */
-/* don't need to send sa_len . Just send sa */
+    /* don't need to send sa_len . Just send sa? */
     if (args->role == ZSERVER) {
         MPI_CALL(MPI_Send, &sa_len1, 1, MPI_UINT64_T,
                  my_partner, 0, MPI_COMM_WORLD);
@@ -635,8 +652,8 @@ static int do_queue_setup(struct stuff *conn)
         goto done;
     }
 
-    /* Only clients get a ztq. */
-    if (my_rank > 0) {
+    /* Each client needs a ztq. */
+    if (args->role == ZCLIENT) {
         if (args->slice < 0)
             slice_mask = (1 << ((my_rank - 1) & (ZHPE_MAX_SLICES - 1)));
         else
@@ -653,20 +670,24 @@ static int do_queue_setup(struct stuff *conn)
     }
 
     /* verify everyone's command queue is same size */
-    MPI_CALL(MPI_Reduce, &conn->cmdq_entries, &ent_sum, 1,
-             MPI_UINT32_T, MPI_SUM, 0, MPI_COMM_WORLD);
-    MPI_CALL(MPI_Reduce, &conn->cmdq_entries, &ent_max, 1,
-             MPI_UINT32_T, MPI_MAX, 0, MPI_COMM_WORLD);
+    MPI_CALL(MPI_Allreduce, &conn->cmdq_entries, &ent_sum, 1,
+             MPI_UINT32_T, MPI_SUM, MPI_COMM_WORLD);
+    MPI_CALL(MPI_Allreduce, &conn->cmdq_entries, &ent_max, 1,
+             MPI_UINT32_T, MPI_MAX, MPI_COMM_WORLD);
 
+    /* only rank 0 does the check */
     if (my_rank == 0) {
-        if ((ent_max * (worldsize - 1)) != ent_sum) {
+        if ((ent_max * (worldsize/2)) != ent_sum) {
             print_err("%s,%u:cmdq entries inconsistent: %u %u\n",
                       __func__, __LINE__, ent_max, ent_sum);
            goto done;
         }
+    }
+
+    if (args->role == ZSERVER) {
         conn->cmdq_entries = ent_max;
 
-        /* only server gets a zrq */
+        /* Each server gets a zrq */
         ret = zhpeq_rq_alloc(conn->zqdom, 1, 0, &conn->zrq);
         if (ret < 0) {
             print_func_err(__func__, __LINE__, "zhpeq_rq_qalloc", "", ret);
@@ -676,14 +697,18 @@ static int do_queue_setup(struct stuff *conn)
         ret = zhpeq_rq_get_addr(conn->zrq, &sa, &sa_len);
         if (ret < 0)
             goto done;
-    }
 
-    /* server sends remote address to clients */
-    MPI_CALL(MPI_Bcast, &sa_len, 1, MPI_UINT64_T, 0, MPI_COMM_WORLD);
-    MPI_CALL(MPI_Bcast, &sa, (int)sa_len, MPI_BYTE, 0, MPI_COMM_WORLD);
+        MPI_CALL(MPI_Send, &sa_len, 1, MPI_UINT64_T,
+                 my_partner, 0, MPI_COMM_WORLD);
+        MPI_CALL(MPI_Send, &sa, (int)sa_len, MPI_BYTE,
+                 my_partner, 0, MPI_COMM_WORLD);
+    } else {
+        MPI_CALL(MPI_Recv, &sa_len, 1, MPI_UINT64_T,
+                 my_partner, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        MPI_CALL(MPI_Recv, &sa, (int)sa_len, MPI_BYTE,
+                 my_partner, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
-    /* clients insert the remote address in the domain. */
-    if (my_rank > 0) {
+        /* clients insert the remote address in the domain. */
         ret = zhpeq_domain_insert_addr(conn->zqdom, &sa, &conn->addr_cookie1);
         if (ret < 0) {
             print_func_err(__func__, __LINE__,
@@ -696,7 +721,7 @@ static int do_queue_setup(struct stuff *conn)
     /* clients set up and initialize memory. */
     ret = do_mem_setup(conn);
     if (ret < 0) {
-        print_func_err(__func__, __LINE__, "do_mem_xchg", "", ret);
+        print_func_err(__func__, __LINE__, "do_mem_setup", "", ret);
         goto done;
     }
  done:
@@ -741,6 +766,7 @@ static void do_server_loop_enqa(struct stuff *conn)
      }
 }
 
+/* One server per client, for enqa, get, put */
 static int do_server(const struct args *args)
 {
     int                 ret = 0;
@@ -756,6 +782,7 @@ static int do_server(const struct args *args)
     double              skew_max;
     double              skew_tot;
     uint                i;
+    struct rankdata     rd_self;
 
     assert_always(args->role == ZSERVER);
 
@@ -776,8 +803,13 @@ static int do_server(const struct args *args)
 
         if (my_rank == 0)
             print_rankdata_zero(conn, &runs[i]);
-        else /* should only hit enqa */
-            print_rankdata_nonzero_enqa(conn);
+        else if (args->op_type == ZENQA)
+                print_rankdata_nonzero_enqa(conn);
+            else {
+                /* Data will be thrown away */
+                MPI_CALL(MPI_Gather, &rd_self, sizeof(rd_self), MPI_BYTE,
+                         NULL, 0, MPI_BYTE, 0, MPI_COMM_WORLD);
+            }
     }
 
     if (my_rank != 0)
@@ -893,7 +925,8 @@ int main(int argc, char **argv)
     MPI_CALL(MPI_Comm_rank, MPI_COMM_WORLD, &my_rank);
     MPI_CALL(MPI_Comm_size, MPI_COMM_WORLD, &worldsize);
 
-    args.role = my_rank == 0 ? ZSERVER : ZCLIENT;
+    args.role = my_rank < worldsize/2 ? ZSERVER : ZCLIENT;
+    my_partner = ( my_rank + worldsize/2)%worldsize;
 
     while ((opt = getopt(argc, argv, "e:gps:S:")) != -1) {
 
@@ -910,23 +943,23 @@ int main(int argc, char **argv)
                           0, 2, 1024*1024,
                           PARSE_KB | PARSE_KIB) < 0)
                 usage(false);
-            args.role = my_rank < worldsize/2 ? ZSERVER : ZCLIENT;
-            my_partner = ( my_rank + worldsize/2)%worldsize;
 
             break;
 
         case 'g':
             if (args.op_type != ZNONE)
                 usage(false);
+            if (worldsize%2 != 0)
+                usage(false);
             args.op_type = ZGET;
-            args.role = my_rank == 0 ? ZSERVER : ZCLIENT;
             break;
 
         case 'p':
             if (args.op_type != ZNONE)
                 usage(false);
+            if (worldsize%2 != 0)
+                usage(false);
             args.op_type = ZPUT;
-            args.role = my_rank == 0 ? ZSERVER : ZCLIENT;
             break;
 
         case 's':

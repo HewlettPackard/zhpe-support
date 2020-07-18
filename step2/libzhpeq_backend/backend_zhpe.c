@@ -67,6 +67,8 @@ static pthread_mutex_t  dev_mutex = PTHREAD_MUTEX_INITIALIZER;
 static void             *dev_uuid_tree;
 static void             *dev_mr_tree;
 static uint64_t         big_rsp_zaddr;
+static bool             no_thp;
+
 /*
  * Using glibc tsearch() trees to avoid the need for additional libraries
  * that aren't a part of CentOS+EPEL+SCL repos, but it has some limitations and
@@ -252,6 +254,8 @@ static int zhpe_lib_init(struct zhpeq_attr *attr)
         ret = -ENOSYS;
         goto done;
     }
+    if (getenv("ZHPEQ_NOTHP"))
+        no_thp = true;
 
  done:
     if (file)
@@ -962,10 +966,20 @@ static int do_munlock(uint64_t start, uint64_t len)
         dev_mr_tree_mlock_list = lck->next;
         if (munlock(TO_PTR(lck->start), lck->end - lck->start) == -1) {
             rc = -errno;
-            /* ENOMEM can be valid if memory is freed first. */
+            /* ENOMEM can be valid if memory is unmapped first. */
             if (rc != -ENOMEM) {
                 ret = zhpeu_update_error(ret, rc);
                 zhpeu_print_func_err(__func__, __LINE__, "munlock", "", rc);
+            }
+        }
+        if (no_thp &&
+            madvise(TO_PTR(lck->start), lck->end - lck->start,
+                    MADV_HUGEPAGE) == -1) {
+            rc = -errno;
+            /* ENOMEM can be valid if memory is unmapped first. */
+            if (rc != -ENOMEM) {
+                ret = zhpeu_update_error(ret, rc);
+                zhpeu_print_func_err(__func__, __LINE__, "madvise", "hp", rc);
             }
         }
         free(lck);
@@ -1037,7 +1051,17 @@ static int zhpe_mr_reg(struct zhpeq_domi *zqdomi,
      * this was desirable for HPC workloads, anyway. However, under memory
      * pressure, the system is invalidating mappings to the some registrations,
      * and that cannot be permitted.
+     *
+     * Optionally disable Transparent Hugepages as well, if they are
+     * giving grief.
      */
+    if (no_thp &&
+        madvise(TO_PTR(mre->qkdata.z.vaddr), mre->qkdata.z.len,
+                MADV_NOHUGEPAGE) == -1) {
+        ret = -errno;
+        zhpeu_print_func_err(__func__, __LINE__, "madvise", "nothp", ret);
+        goto done;
+    }
     if (mlock(TO_PTR(mre->qkdata.z.vaddr), mre->qkdata.z.len) == -1) {
         ret = -errno;
         zhpeu_print_func_err(__func__, __LINE__, "mlock", "", ret);

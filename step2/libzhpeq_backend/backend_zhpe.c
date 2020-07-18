@@ -1278,7 +1278,7 @@ static int zhpe_fam_qkdata(struct zhpeq_domi *zqdomi, void *addr_cookie,
         start[0] = 0;
         len[0] = 127 * GiB + 16 * MiB;
         start[1] = len[0];
-        len[1] = 128 * GiB - start[1];
+        len[1] = 128 * GiB + MiB - start[1];
         break;
 
     default:

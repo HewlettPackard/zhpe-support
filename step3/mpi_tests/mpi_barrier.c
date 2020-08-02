@@ -64,31 +64,14 @@ struct timerank {
     int                 rank;
 };
 
-int tr_compare(const void *v1, const void *v2)
-{
-    int                 ret;
-    const struct timerank *tr1 = v1;
-    const struct timerank *tr2 = v2;
-
-    ret = arithcmp(tr1->ts_barrier.tv_sec, tr2->ts_barrier.tv_sec);
-    if (ret)
-        return ret;
-    ret = arithcmp(tr1->ts_barrier.tv_nsec, tr2->ts_barrier.tv_nsec);
-    if (ret)
-        return ret;
-    ret = arithcmp(tr1->rank, tr2->rank);
-    if (ret)
-        return ret;
-
-    return 0;
-}
-
 void do_barrier(int barrier)
 {
     struct timerank     *tr_all = NULL;
     struct timerank     tr_self = { .rank = my_rank };
     double              delta_us = 0.0;
     uint64_t            delta;
+    int                 min_idx;
+    int                 max_idx;
     int                 i;
 
     if (my_rank == 0)
@@ -106,19 +89,19 @@ void do_barrier(int barrier)
     if (my_rank != 0)
         return;
 
-    qsort(tr_all, n_ranks, sizeof(*tr_all), tr_compare);
-
-    for (i = 0;  i < n_ranks; i++) {
-        delta = ts_delta(&tr_all[0].ts_barrier, &tr_all[i].ts_barrier);
-        delta_us = (double)delta / 1000.0;
-        if (tr_all[i].rank < 0 || tr_all[i].rank >= n_ranks ||
-            delta_us > 1000.0)
-            fprintf(stderr, "BAD     %5d rank %3d delta %10.3f usec\n",
-                    barrier, tr_all[i].rank, delta_us);
-        else if (i == n_ranks - 1)
-            printf("barrier %5d rank %3d delta %10.3f usec\n",
-                   barrier, tr_all[n_ranks - 1].rank, delta_us);
+    /* Find min/max. */
+    min_idx = 0;
+    max_idx = 0;
+    for (i = 1; i < n_ranks; i++) {
+        if (ts_cmp(&tr_all[i].ts_barrier, &tr_all[max_idx].ts_barrier) > 0)
+            max_idx = i;
+        if (ts_cmp(&tr_all[i].ts_barrier, &tr_all[min_idx].ts_barrier) < 0)
+            min_idx = i;
     }
+    delta = ts_delta(&tr_all[min_idx].ts_barrier, &tr_all[max_idx].ts_barrier);
+    delta_us = (double)delta / 1000.0;
+    printf("barrier %5d rank %3d max delta %10.3f usec\n",
+           barrier, tr_all[max_idx].rank, delta_us);
 }
 
 static void usage(bool help) __attribute__ ((__noreturn__));

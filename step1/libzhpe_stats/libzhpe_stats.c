@@ -1097,8 +1097,8 @@ static void stats_cmn_open(struct zhpe_stats *zstats, uint16_t uid)
         break;
 
     case ZHPE_STATS_PROFILE_STAMP_DBG:
-        xasprintf(&fname, "%s/%s.%d.func", zhpe_stats_dir, zhpe_stats_unique,
-                  getpid());
+        xasprintf(&fname, "%s/%s.%d.%d.func", zhpe_stats_dir, zhpe_stats_unique,
+                  getpid(), uid);
         zstats->func_file = fopen(fname, "w");
         if (!zstats->func_file) {
             err = -errno;

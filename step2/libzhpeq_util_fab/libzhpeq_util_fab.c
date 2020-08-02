@@ -286,7 +286,7 @@ int fab_dom_setupx(const char *service, const char *node, bool passive,
     struct fi_av_attr   av_attr = { .type = FI_AV_TABLE };
 
     ret = finfo_init(service, node, passive,
-                     provider, domain, ep_type, 0, 0, NULL, &dom->finfo);
+                     provider, domain, 0, 0, ep_type, NULL, &dom->finfo);
     if (ret < 0)
         goto done;
 

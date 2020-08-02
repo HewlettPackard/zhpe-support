@@ -531,6 +531,7 @@ static int do_queue_setup_enqa(struct stuff *conn)
     size_t              sa_len1 = sizeof(sa1);
     size_t              sa_len2 = sizeof(sa2);
     int                 slice_mask;
+    char                *cp;
 
     ret = -EINVAL;
 
@@ -543,9 +544,14 @@ static int do_queue_setup_enqa(struct stuff *conn)
         goto done;
     }
 
-    if (args->slice < 0)
-        slice_mask = (1 << ((my_rank - 1) & (ZHPE_MAX_SLICES - 1)));
-    else
+    if (args->slice < 0) {
+        /* mpi_hybrid.sh already sets correctly this so why not use it? */
+        cp = getenv("FI_ZHPE_QUEUE_SLICE");
+        if (cp)
+            slice_mask = (1 << (atoi(cp) & (ZHPE_MAX_SLICES - 1)));
+        else
+            slice_mask = (1 << (my_rank & (ZHPE_MAX_SLICES - 1)));
+    } else
         slice_mask = (1 << args->slice);
     slice_mask |= SLICE_DEMAND;
 
@@ -627,7 +633,6 @@ static int do_queue_setup_enqa(struct stuff *conn)
     return ret;
 }
 
-
 static int do_queue_setup(struct stuff *conn)
 {
     int                 ret;
@@ -636,6 +641,7 @@ static int do_queue_setup(struct stuff *conn)
     size_t              sa_len = sizeof(sa);
     uint32_t            ent_sum, ent_max;
     int                 slice_mask;
+    char                *cp;
 
     ret = -EINVAL;
 
@@ -646,14 +652,19 @@ static int do_queue_setup(struct stuff *conn)
         goto done;
     }
 
+    if (args->slice < 0) {
+        /* mpi_hybrid.sh already sets this correctly so why not use it? */
+        cp = getenv("FI_ZHPE_QUEUE_SLICE");
+        if (cp)
+            slice_mask = (1 << (atoi(cp) & (ZHPE_MAX_SLICES - 1)));
+        else
+            slice_mask = (1 << (my_rank & (ZHPE_MAX_SLICES - 1)));
+    } else
+        slice_mask = (1 << args->slice);
+    slice_mask |= SLICE_DEMAND;
+
     /* Each client needs a ztq. */
     if (args->role == ZCLIENT) {
-        if (args->slice < 0)
-            slice_mask = (1 << ((my_rank - 1) & (ZHPE_MAX_SLICES - 1)));
-        else
-            slice_mask = (1 << args->slice);
-        slice_mask |= SLICE_DEMAND;
-
         ret = zhpeq_tq_alloc(conn->zqdom, args->ring_entries,
                              args->ring_entries, 0, 0, slice_mask, &conn->ztq);
         if (ret < 0) {
@@ -682,7 +693,7 @@ static int do_queue_setup(struct stuff *conn)
         conn->cmdq_entries = ent_max;
 
         /* Each server gets a zrq */
-        ret = zhpeq_rq_alloc(conn->zqdom, 1, 0, &conn->zrq);
+        ret = zhpeq_rq_alloc(conn->zqdom, 1, slice_mask, &conn->zrq);
         if (ret < 0) {
             print_func_err(__func__, __LINE__, "zhpeq_rq_qalloc", "", ret);
             goto done;
@@ -871,17 +882,15 @@ static void usage(bool help)
         "All sizes may be postfixed with [kmgtKMGT] to specify the"
         " base units.\n"
         "Lower case is base 10; upper case is base 2.\n"
-        "All four arguments, one of [-egp] and at least two ranks required.\n"
+        "All four argumentsl one of [-egp]; and an even number\n"
+        "of ranks are required. Additionally for -e, transfer_len\n"
+        "must be <= %"PRIu64"\n"
         "Options:\n"
-        " -e <rdm_ring_entries>: use enqA to transfer data (requires even number of ranks)\n"
+        " -e <rdm_ring_entries>: use enqA to transfer data\n"
         " -g: use get to transfer data\n"
         " -p: use put to transfer data\n"
         " -s <stride>: stride for checking completions\n"
-        " -S <slice number>: slice number from 0-3\n"
-        "\n"
-        "Note: enqA requires even number of ranks and"
-        " limits size to <= %"PRIu64"\n"
-        "",
+        " -S <slice number>: slice number from 0-3\n",
         appname, ZHPE_MAX_ENQA);
 
     if (help)

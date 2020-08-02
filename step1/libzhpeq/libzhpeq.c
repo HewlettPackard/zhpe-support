@@ -281,6 +281,11 @@ int zhpeq_init(int api_version, struct zhpeq_attr *attr)
     return ret;
 }
 
+int zhpeq_open(void)
+{
+    return zhpe_lib_open();
+}
+
 int zhpeq_query_attr(struct zhpeq_attr *attr)
 {
     int                 ret = -EINVAL;

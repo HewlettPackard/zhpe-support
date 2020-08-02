@@ -249,6 +249,8 @@ static inline int zhpeq_lcl_key_access(const struct zhpeq_key_data *qkdata,
 
 int zhpeq_init(int api_version, struct zhpeq_attr *attr);
 
+int zhpeq_open(void);
+
 int zhpeq_query_attr(struct zhpeq_attr *attr);
 
 int zhpeq_domain_alloc(struct zhpeq_dom **zqdom_out);

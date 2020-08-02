@@ -41,6 +41,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <netdb.h>
 #include <pthread.h>
 #include <stdbool.h>

@@ -1531,8 +1531,10 @@ void zhpeu_timing_reset(struct zhpeu_timing *t)
 
 void zhpeu_timing_update(struct zhpeu_timing *t, uint64_t cycles)
 {
-    if ((int64_t)cycles < 0)
+    if ((int64_t)cycles < 0) {
         t->skw++;
+        return;
+    }
     t->tot += cycles;
     t->min = min(t->min, cycles);
     t->max = max(t->max, cycles);

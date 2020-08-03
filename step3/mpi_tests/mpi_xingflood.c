@@ -500,13 +500,13 @@ static int do_client_unidir(struct stuff *conn)
     run_cyc += start_cyc;
 
     while (true) {
-        if ((int64_t)(run_cyc - get_cycles(NULL)) <= 0)
+        if (wrap64sub(get_cycles(NULL), run_cyc) > 0)
             break;
         ztq_write(conn);
         ztq_completions(conn);
     }
 
-    while ((int32_t)(conn->ztq->wq_tail_commit - conn->ztq->cq_head) > 0)
+    while (wrap32sub(conn->ztq->wq_tail_commit, conn->ztq->cq_head) > 0)
         ztq_completions(conn);
     run_cyc = get_cycles(NULL) - start_cyc;
     if (conn->args->op_type == ZENQA)

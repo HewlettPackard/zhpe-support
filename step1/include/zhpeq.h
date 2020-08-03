@@ -564,7 +564,7 @@ static inline bool zhpeq_rq_epoll_check(struct zhpeq_rq *zrq, uint64_t now)
         return false;
     }
 
-    return ((int64_t)(now - zrq->rx_last_time) > zrq->epoll_threshold_cycles);
+    return (wrap64sub(now, zrq->rx_last_time) > zrq->epoll_threshold_cycles);
 }
 
 int zhpeq_rq_get_addr(struct zhpeq_rq *zrq, void *sa, size_t *sa_len);

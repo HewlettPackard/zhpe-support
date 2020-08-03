@@ -125,6 +125,17 @@ _EXTERN_C_BEG
      ((__a) < (__b) ? -1 : ((__a) > (__b) ? 1 : 0));            \
 })
 
+static inline int32_t wrap32sub(uint32_t a, uint32_t b)
+{
+    return (int32_t)(a - b);
+}
+
+static inline int64_t wrap64sub(uint64_t a, uint64_t b)
+{
+    return (int64_t)(a - b);
+}
+
+
 #ifndef ARRAY_SIZE
 #define ARRAY_SIZE(_x)  (sizeof(_x) / sizeof(_x[0]))
 #endif

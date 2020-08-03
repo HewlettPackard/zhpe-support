@@ -82,7 +82,7 @@ int main(int argc, char **argv)
     MPI_CALL(MPI_Bcast, &wakeup, 1, MPI_UINT64_T, 0, MPI_COMM_WORLD);
 
     /* Try to synchrnoize exit as accurately as possible. */
-    while ((int64_t)(get_cycles(NULL) - wakeup) < 0);
+    while (wrap64sub(get_cycles(NULL), wakeup) < 0);
     /* Exit without cleaning up. */
     _exit(0);
 

@@ -233,7 +233,7 @@ static int conn_tx_completions(struct stuff *conn, bool qfull_ok, bool qd_check)
             }
             goto done;
         }
-        oos = (int32_t)(msg->tx_seq - ztq->cq_head);
+        oos = wrap32sub(msg->tx_seq, ztq->cq_head);
         zhpeq_tq_cq_entry_done(ztq, cqe);
         if (unlikely(oos)) {
             conn->tx_oos_cnt++;

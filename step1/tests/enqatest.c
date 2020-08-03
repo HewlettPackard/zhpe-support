@@ -205,7 +205,7 @@ static uint64_t cycles_delay(uint64_t start_cyc, uint64_t delay_cyc)
     delay_cyc += start_cyc;
     for (;;) {
         start_cyc = get_cycles(NULL);
-        if ((int64_t)(start_cyc - delay_cyc) >= 0)
+        if (wrap64sub(start_cyc, delay_cyc) >= 0)
             break;
         yield();
     }

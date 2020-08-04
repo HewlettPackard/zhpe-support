@@ -6,6 +6,9 @@ target_link_libraries(atomtest PUBLIC zhpeq_util_fab zhpeq)
 add_executable(burst burst.c)
 target_link_libraries(burst PUBLIC zhpeq_util_fab)
 
+add_executable(famatom famatom.c)
+target_link_libraries(famatom PUBLIC zhpeq_util_fab)
+
 add_executable(famtest famtest.c)
 target_link_libraries(famtest PUBLIC zhpeq_util_fab)
 
@@ -31,6 +34,7 @@ install(
   TARGETS
   atomtest
   burst
+#  famatom
   famtest
   gettest
   mmapspeed

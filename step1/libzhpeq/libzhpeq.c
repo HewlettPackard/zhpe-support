@@ -57,9 +57,10 @@ static_assert(__x86_64__, "x86-64");
 /* Set to 1 to dump qkdata when registered/exported/imported/freed. */
 #define QKDATA_DUMP     (0)
 
-static pthread_mutex_t  init_mutex  = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t  zaddr_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+static pthread_mutex_t  init_mutex  = PTHREAD_MUTEX_INITIALIZER;
+static int              init_status = 1;
 static struct zhpeq_attr b_attr;
 
 static void insert_none(struct zhpeq_tq *ztq, uint16_t reservation16)
@@ -260,20 +261,20 @@ void zhpeq_register_backend(enum zhpeq_backend backend, struct backend_ops *ops)
 int zhpeq_init(int api_version, struct zhpeq_attr *attr)
 {
     int                 ret = -EINVAL;
-    static int          init_status = 1;
 
     if (!zhpeu_expected_saw("api_version", ZHPEQ_API_VERSION, api_version))
         goto done;
 
-    if (init_status > 0) {
+    ret = atm_load_rlx(&init_status);
+    if (ret > 0) {
         mutex_lock(&init_mutex);
         if (init_status > 0) {
             ret = zhpe_lib_init(&b_attr);
-            init_status = (ret <= 0 ? ret : 0);
-        }
+            atm_store_rlx(&init_status, (ret <= 0 ? ret : 0));
+        } else
+            ret = init_status;
         mutex_unlock(&init_mutex);
     }
-    ret = init_status;
     if (!ret && attr)
         *attr = b_attr;
 
@@ -281,9 +282,19 @@ int zhpeq_init(int api_version, struct zhpeq_attr *attr)
     return ret;
 }
 
-int zhpeq_open(void)
+int zhpeq_present(int api_version)
 {
-    return zhpe_lib_open();
+    int                 ret = -EINVAL;
+
+    if (!zhpeu_expected_saw("api_version", ZHPEQ_API_VERSION, api_version))
+        goto done;
+
+    ret = atm_load_rlx(&init_status);
+    if (ret > 0)
+        ret = zhpe_present();
+
+ done:
+    return ret;
 }
 
 int zhpeq_query_attr(struct zhpeq_attr *attr)

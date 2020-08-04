@@ -190,28 +190,26 @@ static int driver_cmd(union zhpe_op *op, size_t req_len, size_t rsp_len,
 
 static int zhpe_lib_init(struct zhpeq_attr *attr)
 {
-    int                 ret = -EINVAL;
+    int                 ret;
     union zhpe_op       op;
     union zhpe_req      *req = &op.req;
     union zhpe_rsp      *rsp = &op.rsp;
     FILE                *file = NULL;
     char                platform[10];
+    int                 fd;
 
-    /* zhpeq_init() guarantees this will be called only once. */
+    /* zhpeq_init() guarantees to call this only once and is locked. */
 
-    mutex_lock(&dev_mutex);
-    if (dev_fd != -1)
-        goto done_noclose;
-
-    if ((dev_fd = open(DEV_PATH, O_RDWR)) == -1) {
+    if ((fd = open(DEV_PATH, O_RDWR)) == -1) {
         ret = -errno;
         if (ret != -ENOENT)
             zhpeu_print_func_err(__func__, __LINE__, "open", DEV_PATH, ret);
         goto done;
     }
+    atm_store_rlx(&dev_fd, fd);
 
     req->hdr.opcode = ZHPE_OP_INIT;
-    ret = __driver_cmd(&op, sizeof(req->init), sizeof(rsp->init), 0);
+    ret = driver_cmd(&op, sizeof(req->init), sizeof(rsp->init), 0);
     if (ret < 0)
         goto done;
 
@@ -222,6 +220,23 @@ static int zhpe_lib_init(struct zhpeq_attr *attr)
 
     attr->backend = ZHPEQ_BACKEND_ZHPE;
     attr->z = rsp->init.attr;
+
+    shared_global = _zhpeu_mmap(NULL, rsp->init.global_shared_size,
+                                PROT_READ, MAP_SHARED, dev_fd,
+                                rsp->init.global_shared_offset);
+    if (!shared_global) {
+        ret = -errno;
+        goto done;
+    }
+    shared_local = _zhpeu_mmap(NULL, rsp->init.local_shared_size,
+                               PROT_READ | PROT_WRITE, MAP_SHARED, dev_fd,
+                               rsp->init.local_shared_offset);
+    if (!shared_local) {
+        ret = -errno;
+        goto done;
+    }
+
+    memcpy(zhpeq_uuid, rsp->init.uuid, sizeof(zhpeq_uuid));
 
     file = fopen(PLATFORM_PATH, "r");
     if (!file) {
@@ -234,7 +249,6 @@ static int zhpe_lib_init(struct zhpeq_attr *attr)
         zhpeu_print_func_err(__func__, __LINE__, "fgets", PLATFORM_PATH, ret);
         goto done;
     }
-
     if (!strcmp(platform, "carbon\n"))
         zhpe_platform = ZHPE_PLATFORM_CARBON;
     else if (!strcmp(platform, "pfslice\n"))
@@ -245,81 +259,27 @@ static int zhpe_lib_init(struct zhpeq_attr *attr)
         ret = -ENOSYS;
         goto done;
     }
-
- done:
-    if (file)
-        fclose(file);
-    if (dev_fd != -1) {
-        close(dev_fd);
-        dev_fd = -1;
-    }
- done_noclose:
-    mutex_unlock(&dev_mutex);
-
-    return ret;
-}
-
-static int zhpe_lib_open(void)
-{
-    int                 ret = 0;
-    union zhpe_op       op;
-    union zhpe_req      *req = &op.req;
-    union zhpe_rsp      *rsp = &op.rsp;
-
-    /* zhpeq_open() makes no guarantees. */
-    if (likely(shared_local))
-        goto done_unlocked;
-
-    mutex_lock(&dev_mutex);
-    if (likely(shared_local))
-        goto done;
-
-    if ((dev_fd = open(DEV_PATH, O_RDWR)) == -1) {
-        ret = -errno;
-        if (ret != -ENOENT)
-            zhpeu_print_func_err(__func__, __LINE__, "open", DEV_PATH, ret);
-        goto done;
-    }
-
-    req->hdr.opcode = ZHPE_OP_INIT;
-    ret = __driver_cmd(&op, sizeof(req->init), sizeof(rsp->init), 0);
-    if (ret < 0)
-        goto done;
-
-    if (!zhpeu_expected_saw("rsp->init.magic", ZHPE_MAGIC, rsp->init.magic)) {
-        ret = -EINVAL;
-        goto done;
-    }
-
-    memcpy(zhpeq_uuid, rsp->init.uuid, sizeof(zhpeq_uuid));
-
-    shared_global = _zhpeu_mmap(NULL, rsp->init.global_shared_size,
-                                PROT_READ, MAP_SHARED, dev_fd,
-                                rsp->init.global_shared_offset);
-    if (!shared_global) {
-        ret = -errno;
-        goto done;
-    }
-
-    smp_wmb();
-    shared_local = _zhpeu_mmap(NULL, rsp->init.local_shared_size,
-                               PROT_READ | PROT_WRITE, MAP_SHARED, dev_fd,
-                               rsp->init.local_shared_offset);
-    if (!shared_local) {
-        ret = -errno;
-        goto done;
-    }
-
     if (getenv("ZHPEQ_NOTHP"))
         no_thp = true;
 
  done:
-    if (ret < 0 && dev_fd != -1) {
-        close(dev_fd);
-        dev_fd = -1;
+    if (file)
+        fclose(file);
+
+    return ret;
+}
+
+static int zhpe_present(void)
+{
+    int                 ret = 0;
+    int                 fd = -1;
+
+    if (atm_load_rlx(&dev_fd) == -1) {
+        if ((fd = open(DEV_PATH, O_RDWR)) == -1)
+            ret = -errno;
+        else
+            close(fd);
     }
-    mutex_unlock(&dev_mutex);
- done_unlocked:
 
     return ret;
 }

@@ -636,6 +636,8 @@ int zhpeu_sock_getaddrinfo(const char *node, const char *service,
 int zhpeu_sock_getsockname(int fd, union sockaddr_in46 *sa);
 int zhpeu_sock_getpeername(int fd, union sockaddr_in46 *da);
 int zhpeu_sock_connect(const char *node, const char *service);
+int zhpeu_sock_connect_timeout(const char *node, const char *service,
+                               int timeout);
 int zhpeu_sock_send_blob(int fd, const void *blob, size_t blob_len);
 int zhpeu_sock_recv_fixed_blob(int fd, void *blob, size_t blob_len);
 int zhpeu_sock_recv_var_blob(int fd, size_t extra_len,
@@ -853,6 +855,8 @@ static inline void *calloc_cachealigned(size_t nmemb, size_t size)
     zhpeu_call_neg(zhpeu_err, zhpeu_sock_getaddrinfo, int, __VA_ARGS__)
 #define _zhpeu_sock_connect(...)                                \
     zhpeu_call_neg(zhpeu_err, zhpeu_sock_connect, int, __VA_ARGS__)
+#define _zhpeu_sock_connect_timeout(...)                        \
+    zhpeu_call_neg(zhpeu_err, zhpeu_sock_connect_timeout, int, __VA_ARGS__)
 #define _zhpeu_sock_getsockname(...)                            \
     zhpeu_call_neg(zhpeu_err, zhpeu_sock_getsockname, int, __VA_ARGS__)
 #define _zhpeu_sock_getpeername(...)                            \
@@ -1133,6 +1137,7 @@ do {                                                            \
 #define check_func_io           zhpeu_check_func_io
 #define check_func_ion          zhpeu_check_func_ion
 #define connect_sock            _zhpeu_sock_connect
+#define connect_sock_timeout    _zhpeu_sock_connect_timeout
 #define do_getaddrinfo          zhpeu_sock_getaddrinfo
 #define expected_saw            zhpeu_expected_saw
 #define parse_kb_uint64_t(_callf, _line, ...)                   \

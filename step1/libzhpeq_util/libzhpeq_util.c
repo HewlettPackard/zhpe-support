@@ -632,6 +632,7 @@ int zhpeu_sock_getaddrinfo(const char *node, const char *service,
         ret = -errno;
         break;
 
+
     default:
         ret = -EINVAL;
         break;
@@ -650,10 +651,14 @@ int zhpeu_sock_getaddrinfo(const char *node, const char *service,
     return ret;
 }
 
-int zhpeu_sock_connect(const char *node, const char *service)
+int zhpeu_sock_connect_timeout(const char *node, const char *service,
+                               int timeout)
 {
     int                 ret;
     struct addrinfo     *resp = NULL;
+    int                 fd = -1;
+    struct timespec     ts_beg;
+    struct timespec     ts_now;
 
     ret = _zhpeu_sock_getaddrinfo(node, service, AF_UNSPEC, SOCK_STREAM,
                                   false, &resp);
@@ -665,14 +670,38 @@ int zhpeu_sock_connect(const char *node, const char *service)
         zhpeu_print_func_err(__func__, __LINE__, "socket", "", ret);
         goto done;
     }
-    if (connect(ret, resp->ai_addr, resp->ai_addrlen) == -1) {
+    fd = ret;
+    clock_gettime(CLOCK_REALTIME, &ts_beg);
+    for (;;) {
+        if (connect(fd, resp->ai_addr, resp->ai_addrlen) != -1)
+            break;
         ret = -errno;
+        if (ret == -ECONNREFUSED && timeout) {
+            clock_gettime(CLOCK_REALTIME, &ts_now);
+            if (timeout < 0 ||
+                ts_delta(&ts_beg, &ts_now) / NSEC_PER_SEC < timeout) {
+                sleep(1);
+                ret = 0;
+                continue;
+            }
+        }
         zhpeu_print_func_err(__func__, __LINE__, "connect", "", ret);
         goto done;
     }
 
 done:
+    if (ret < 0) {
+        if (fd != -1)
+            close(fd);
+    } else
+        ret = fd;
+
     return ret;
+}
+
+int zhpeu_sock_connect(const char *node, const char *service)
+{
+    return zhpeu_sock_connect_timeout(node, service, 0);
 }
 
 void zhpeu_random_seed(uint seed)

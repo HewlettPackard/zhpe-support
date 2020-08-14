@@ -83,6 +83,7 @@ struct args {
     uint64_t            coff_max;
     uint64_t            soff_min;
     uint64_t            soff_max;
+    int                 timeout;
     bool                imm;
     bool                once_mode;
     bool                qcm;
@@ -719,7 +720,7 @@ static int do_client(const struct args *args)
     uint64_t            soff;
     int                 rc;
 
-    ret = connect_sock(args->node, args->service);
+    ret = connect_sock_timeout(args->node, args->service, args->timeout);
     if (ret < 0)
         goto done;
     conn.sock_fd = ret;
@@ -774,7 +775,7 @@ static void usage(bool help)
 {
     print_usage(
         help,
-        "Usage:%s [-ioqsv] <port> [<node> <buf_len>\n"
+        "Usage:%s [-ioqsv] [-t <conn_timeout>] <port> [<node> <buf_len>\n"
         "    <write_max> <cli_off_max> <svr_off_max>\n"
         "    [<write_min> <cli_off_min> <svr_off_min>]]\n"
         "All sizes may be postfixed with [kmgtKMGT] to specify the"
@@ -786,6 +787,7 @@ static void usage(bool help)
         " -o : run once and then server will exit\n"
         " -q : print qcm and key data\n"
         " -s : stop on first error\n"
+        " -t <conn_timeout> : retry connection for <conn_timeout> seconds\n"
         " -v : verbose: print a line for each loop\n",
         appname);
 
@@ -800,10 +802,12 @@ int main(int argc, char **argv)
     int                 ret = 1;
     struct args         args = {
         .imm            = true,
+        .timeout        = -1,
     };
     bool                client_opt = false;
     int                 opt;
     int                 rc;
+    uint64_t            v64;
 
     zhpeq_util_init(argv[0], LOG_INFO, false);
 
@@ -816,7 +820,7 @@ int main(int argc, char **argv)
     if (argc == 1)
         usage(true);
 
-    while ((opt = getopt(argc, argv, "ioqsv")) != -1) {
+    while ((opt = getopt(argc, argv, "ioqst:v")) != -1) {
 
         /* All opts are client only, now. */
         client_opt = true;
@@ -847,6 +851,15 @@ int main(int argc, char **argv)
             args.stop = true;
             break;
 
+        case 't':
+            if (args.timeout != -1)
+                usage(false);
+            if (parse_kb_uint64_t(__func__, __LINE__, "conn_timeout",
+                                  optarg, &v64, 0, 1, INT_MAX, 0) < 0)
+                usage(false);
+            args.timeout = v64;
+            break;
+
         case 'v':
             if (args.verbose)
                 usage(false);
@@ -858,6 +871,9 @@ int main(int argc, char **argv)
 
         }
     }
+
+    if (args.timeout < 0)
+        args.timeout = 0;
 
     opt = argc - optind;
 

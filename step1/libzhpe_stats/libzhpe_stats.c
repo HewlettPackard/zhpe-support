@@ -240,14 +240,13 @@ static void stats_cmn_disable(struct zhpe_stats *zstats)
 }
 
 /* don't free zstats */
-static void stats_cmn_close(struct zhpe_stats *zstats, bool flush)
+static void stats_cmn_close(struct zhpe_stats *zstats)
 {
     struct zhpe_stats   **zsprev;
 
     zstats->zhpe_stats_ops->recordme(zstats, 0, ZHPE_STATS_OP_CLOSE);
 
-    if (flush)
-        stats_flush(zstats);
+    stats_flush(zstats);
     if (zstats->fd != -1)
         close(zstats->fd);
     if (zstats->func_file)
@@ -824,12 +823,12 @@ static void rdpmc_stats_close(struct zhpe_stats *zstats)
     free(zstats->zhpe_stats_mmap_list);
     free(zstats->zhpe_stats_config_list);
 
-    stats_cmn_close(zstats, true);
+    stats_cmn_close(zstats);
 }
 
 static void stats_stamp_dbg_close(struct zhpe_stats *zstats)
 {
-    stats_cmn_close(zstats, false);
+    stats_cmn_close(zstats);
 }
 
 #ifdef HAVE_ZHPE_SIM
@@ -843,7 +842,7 @@ static void sim_stats_close(struct zhpe_stats *zstats)
         print_func_err(__func__, __LINE__, "sim_api_data_rec",
                        "DATA_REC_END", -ret);
 
-    stats_cmn_close(zstats, true);
+    stats_cmn_close(zstats);
 }
 
 #else

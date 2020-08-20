@@ -281,12 +281,12 @@ static int ztq_completions(struct zhpeq_tq *ztq)
 
     while ((cqe = zhpeq_tq_cq_entry(ztq))) {
         /* unlikely() to optimize the no-error case. */
-        if (unlikely(cqe->status != ZHPE_HW_CQ_STATUS_SUCCESS)) {
+        if (unlikely(cqe->hdr.status != ZHPE_HW_CQ_STATUS_SUCCESS)) {
             cqe_copy = *cqe;
             zhpeq_tq_cq_entry_done(ztq, cqe);
             ret = -EIO;
             print_err("%s,%u:index 0x%x status 0x%x\n", __func__, __LINE__,
-                      cqe_copy.index, cqe_copy.status);
+                      cqe_copy.hdr.index, cqe_copy.hdr.status);
             break;
         }
         zhpeq_tq_cq_entry_done(ztq, cqe);

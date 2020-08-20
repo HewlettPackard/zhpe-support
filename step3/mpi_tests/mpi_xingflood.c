@@ -412,11 +412,8 @@ static inline struct zhpe_cq_entry *tq_cq_entry(struct zhpeq_tq *ztq,
     struct zhpe_cq_entry *cqe = zhpeq_q_entry(ztq->cq, qindex, qmask);
 
     /* likely() to optimize the success case. */
-    if (likely(zhpeq_cmp_valid(cqe, qindex, qmask))) {
+    if (likely(zhpe_cqe_valid(cqe, qindex, qmask)))
         return cqe;
-    } else {
-        // don't stride
-    }
 
     return NULL;
 }
@@ -434,9 +431,10 @@ static void ztq_completions(struct stuff *conn)
 
     while ((cqe = tq_cq_entry(ztq, mystride - 1))) {
         /* unlikely() to optimize the no-error case. */
-        if (unlikely(cqe->status != ZHPE_HW_CQ_STATUS_SUCCESS)){
+        if (unlikely(cqe->hdr.status != ZHPE_HW_CQ_STATUS_SUCCESS)) {
                 print_err("ERROR: %s,%u:rank %3d index 0x%x status 0x%x\n",
-                          __func__, __LINE__, my_rank, cqe->index, cqe->status);
+                          __func__, __LINE__, my_rank, cqe->hdr.index,
+                          cqe->hdr.status);
                  abort();
         }
         ztq->cq_head += mystride;
@@ -736,38 +734,39 @@ static int do_queue_setup(struct stuff *conn)
 static void do_server_loop_enqa(struct stuff *conn)
 {
     struct zhpeq_rq     *zrq = conn->zrq;
-    uint32_t            qmask1 = zrq->rqinfo.cmplq.ent - 1;
-    uint32_t            qmask2 = conn->zrcq->rqinfo.cmplq.ent - 1;
+    uint32_t            qmask = zrq->rqinfo.cmplq.ent - 1;
     struct zhpe_rdm_entry *rqe;
+    uint32_t            pos;
 
     conn->ops_completed = 0;
     for (;;) {
-        rqe = zhpeq_q_entry(zrq->rq, zrq->head + conn->args->stride - 1, qmask1);
-        if (likely(zhpeq_cmp_valid(rqe, zrq->head + conn->args->stride - 1, qmask1))) {
+        /* Stride through primary queue. */
+        pos = zrq->head + conn->args->stride - 1;
+        rqe = zhpeq_q_entry(zrq->rq, pos, qmask);
+        if (likely(zhpe_rqe_valid(rqe, pos, qmask))) {
             zrq->head += conn->args->stride;
             conn->ops_completed += conn->args->stride;
             __zhpeq_rq_head_update(zrq, zrq->head, false);
-        } else {
-            rqe = zhpeq_q_entry(conn->zrcq->rq,
-                                 conn->zrcq->head,
-                                 qmask2);
-            if (likely(zhpeq_cmp_valid(rqe, conn->zrcq->head, qmask2))) {
-                conn->zrcq->head += 1;
-                 __zhpeq_rq_head_update(conn->zrcq, conn->zrcq->head, false);
-                 break;
-            }
+            continue;
+        }
+
+        /* Check for completion message. */
+        rqe = zhpeq_rq_entry(conn->zrcq);
+        if (likely(rqe)) {
+            zhpeq_rq_entry_done(conn->zrcq, rqe);
+            zhpeq_rq_head_update(conn->zrcq, 0);
+            break;
         }
     }
 
+    /* Drain remaining operations. */
     for (;;) {
-        rqe = zhpeq_q_entry(zrq->rq, zrq->head, qmask1);
-        if (likely(zhpeq_cmp_valid(rqe, zrq->head, qmask1))) {
-            zrq->head += 1;
-            conn->ops_completed += 1;
-            __zhpeq_rq_head_update(zrq, zrq->head, false);
-        } else {
-             break;
-        }
+        rqe = zhpeq_rq_entry(zrq);
+        if (unlikely(!rqe))
+            break;
+        zhpeq_rq_entry_done(conn->zrq, rqe);
+        zhpeq_rq_head_update(conn->zrq, 0);
+        conn->ops_completed += 1;
      }
 }
 

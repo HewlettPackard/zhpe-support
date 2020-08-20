@@ -213,15 +213,15 @@ static int conn_tx_completions(struct stuff *conn, bool qfull_ok, bool qd_check)
         conn->tx_avail++;
         msg = zhpeq_tq_cq_context(ztq, cqe);
         /* unlikely() to optimize the no-error case. */
-        if (unlikely(cqe->status != ZHPE_HW_CQ_STATUS_SUCCESS)) {
+        if (unlikely(cqe->hdr.status != ZHPE_HW_CQ_STATUS_SUCCESS)) {
             cqe_copy = *cqe;
             msg_copy = *msg;
             zhpeq_tq_cq_entry_done(ztq, cqe);
             ret = -EIO;
-            if (cqe_copy.status != ZHPE_HW_CQ_STATUS_GENZ_RDM_QUEUE_FULL) {
+            if (cqe_copy.hdr.status != ZHPE_HW_CQ_STATUS_GENZ_RDM_QUEUE_FULL) {
                 zhpeu_print_err("%s,%u:cqe %p ctx %p index 0x%x status 0x%x\n",
                                 __func__, __LINE__, cqe, msg,
-                                cqe_copy.index, cqe_copy.status);
+                                cqe_copy.hdr.index, cqe_copy.hdr.status);
             } else if (!qfull_ok) {
                 /*
                  * Retry: given that we're single threaded and we just

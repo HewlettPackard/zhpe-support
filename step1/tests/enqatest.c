@@ -162,19 +162,19 @@ static int conn_tx_completions(struct stuff *conn)
     if ((cqe = zhpeq_tq_cq_entry(ztq))) {
         conn->tx_avail++;
         /* unlikely() to optimize the no-error case. */
-        if (unlikely(cqe->status != ZHPE_HW_CQ_STATUS_SUCCESS))
+        if (unlikely(cqe->hdr.status != ZHPE_HW_CQ_STATUS_SUCCESS))
             ret = -EIO;
-        if (unlikely(cqe->status != conn->cq_last)) {
+        if (unlikely(cqe->hdr.status != conn->cq_last)) {
             if (conn->cq_count)
                 zhpeu_print_info("%s:%s:status 0x%x %u\n",
                                  zhpeu_appname, conn->lbl, conn->cq_last,
                                  conn->cq_count);
-            conn->cq_last = cqe->status;
+            conn->cq_last = cqe->hdr.status;
             conn->cq_count = 1;
         } else
             conn->cq_count++;
-        if (unlikely(cqe->qd != conn->qd_last)) {
-            conn->qd_last = cqe->qd;
+        if (unlikely(cqe->hdr.qd != conn->qd_last)) {
+            conn->qd_last = cqe->hdr.qd;
             zhpeu_print_info("%s:%s:qd 0x%x\n",
                              zhpeu_appname, conn->lbl, conn->qd_last);
         }

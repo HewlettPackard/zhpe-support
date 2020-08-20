@@ -1651,7 +1651,8 @@ void zhpeq_print_tq_cq(struct zhpeq_tq *ztq, int cnt)
         d = cqe->entry.result.data;
         fprintf(stderr, "%7d:v %u idx 0x%04x status 0x%02x"
                 " data %02x%02x%x02%02x%02x%02x%02x%02x\n",
-                i, cqe->entry.valid, cqe->entry.index, cqe->entry.status,
+                i, cqe->entry.hdr.valid, cqe->entry.hdr.index,
+                cqe->entry.hdr.status,
                 d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]);
     }
 }

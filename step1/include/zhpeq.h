@@ -417,15 +417,6 @@ static inline void *zhpeq_q_entry(void *entries, uint32_t qindex,
     return VPTR(entries, ZHPE_HW_ENTRY_LEN * (qindex & qmask));
 }
 
-static inline bool zhpeq_cmp_valid(volatile void *qent, uint32_t qindex,
-                                   uint32_t qmask)
-{
-    uint                valid = atm_load_rlx((uint8_t *)qent);
-    uint                shift = fls32(qmask);
-
-    return ((valid ^ (qindex >> shift)) & ZHPE_CMP_ENT_VALID_MASK);
-}
-
 static inline struct zhpe_cq_entry *zhpeq_tq_cq_entry(struct zhpeq_tq *ztq)
 {
     uint32_t            qmask = ztq->tqinfo.cmplq.ent - 1;
@@ -433,7 +424,7 @@ static inline struct zhpe_cq_entry *zhpeq_tq_cq_entry(struct zhpeq_tq *ztq)
     struct zhpe_cq_entry *cqe = zhpeq_q_entry(ztq->cq, qindex, qmask);
 
     /* likely() to optimize the success case. */
-    if (likely(zhpeq_cmp_valid(cqe, qindex, qmask)))
+    if (likely(zhpe_cqe_valid(cqe, qindex, qmask)))
         return cqe;
 
     return NULL;
@@ -442,7 +433,7 @@ static inline struct zhpe_cq_entry *zhpeq_tq_cq_entry(struct zhpeq_tq *ztq)
 static inline void *zhpeq_tq_cq_context(struct zhpeq_tq *ztq,
                                         struct zhpe_cq_entry *cqe)
 {
-    return ztq->ctx[cqe->index];
+    return ztq->ctx[cqe->hdr.index];
 }
 
 static inline void zhpeq_tq_cq_entry_done(struct zhpeq_tq *ztq,
@@ -452,7 +443,7 @@ static inline void zhpeq_tq_cq_entry_done(struct zhpeq_tq *ztq,
      * Simple rule: do not access the cqe or the backup copy of the
      * XDM command after this call.
      */
-    zhpeq_tq_unreserve(ztq, cqe->index);
+    zhpeq_tq_unreserve(ztq, cqe->hdr.index);
     ztq->cq_head++;
 }
 
@@ -496,7 +487,7 @@ static inline struct zhpe_rdm_entry *zhpeq_rq_entry(struct zhpeq_rq *zrq)
     struct zhpe_rdm_entry *rqe = zhpeq_q_entry(zrq->rq, qindex, qmask);
 
     /* May not actually be likely, but we want to optimize success. */
-    if (likely(zhpeq_cmp_valid(rqe, qindex, qmask)))
+    if (likely(zhpe_rqe_valid(rqe, qindex, qmask)))
         return rqe;
 
     return NULL;
@@ -509,8 +500,11 @@ static inline void zhpeq_rq_entry_done(struct zhpeq_rq *zrq,
 
     /* Simple rule: do not access the rqe after this call. */
     barrier();
+    /*
+     * I'm not concerned about order because there should be locking for that,
+     * but I am about read/write tearing.
+     */
     new = zrq->head + 1;
-    /* Not concerned about order, but are about read/write tearing. */
     atm_store_rlx(&zrq->head, new);
 }
 

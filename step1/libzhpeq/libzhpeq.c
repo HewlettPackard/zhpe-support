@@ -1528,7 +1528,7 @@ static void wq_print_enq(union zhpe_hw_wq_entry *wqe, uint i, const char *opstr)
 {
     struct zhpe_hw_wq_enqa *enq = &wqe->enqa;
 
-    fprintf(stderr, "%7d:%-7s:f %u idx 0x%04x dgcid 0x%x rspctxid 0x%x\n",
+    fprintf(stderr, "%7d:%-7s:f %u idx 0x%04hx dgcid 0x%x rspctxid 0x%x\n",
             i, opstr, wq_fence(wqe), wq_index(wqe),
             enq->dgcid, enq->rspctxid);
 }
@@ -1537,7 +1537,7 @@ static void wq_print_imm(union zhpe_hw_wq_entry *wqe, uint i, const char *opstr)
 {
     struct zhpe_hw_wq_imm *imm = &wqe->imm;
 
-    fprintf(stderr, "%7d:%-7s:f %u idx 0x%04x len 0x%x rem 0x%lx\n",
+    fprintf(stderr, "%7d:%-7s:f %u idx 0x%04hx len 0x%x rem 0x%lx\n",
             i, opstr, wq_fence(wqe), wq_index(wqe),
             imm->len, imm->rem_addr);
 }
@@ -1546,7 +1546,7 @@ static void wq_print_dma(union zhpe_hw_wq_entry *wqe, uint i, const char *opstr)
 {
     struct zhpe_hw_wq_dma *dma = &wqe->dma;
 
-    fprintf(stderr, "%7d:%-7s:f %u idx 0x%04x len 0x%x rd 0x%lx wr 0x%lx\n",
+    fprintf(stderr, "%7d:%-7s:f %u idx 0x%04hx len 0x%x rd 0x%lx wr 0x%lx\n",
             i, opstr, wq_fence(wqe), wq_index(wqe),
             dma->len, dma->rd_addr, dma->wr_addr);
 }
@@ -1563,7 +1563,7 @@ static void wq_print_atm(union zhpe_hw_wq_entry *wqe, uint i, const char *opstr)
         operands[0] = atm->operands64[0];
         operands[1] = atm->operands64[1];
     }
-    fprintf(stderr, "%7d:%-7s:f %u idx 0x%04x size 0x%x rem 0x%lx"
+    fprintf(stderr, "%7d:%-7s:f %u idx 0x%04hx size 0x%x rem 0x%lx"
             " operands 0x%lx 0x%lx\n",
             i, opstr, wq_fence(wqe), wq_index(wqe),
             atm->size, atm->rem_addr, operands[0], operands[1]);
@@ -1574,7 +1574,7 @@ static void wq_print(union zhpe_hw_wq_entry *wqe, uint i)
     switch (wq_opcode(wqe)) {
 
     case ZHPE_HW_OPCODE_NOP:
-        fprintf(stderr, "%7d:%-7s:f %u idx 0x%04x\n",
+        fprintf(stderr, "%7d:%-7s:f %u idx 0x%04hx\n",
                 i, "NOP", wq_fence(wqe), wq_index(wqe));
         break;
 
@@ -1611,7 +1611,7 @@ static void wq_print(union zhpe_hw_wq_entry *wqe, uint i)
         break;
 
     default:
-        fprintf(stderr, "%7d:OP 0x%02x:f %u idx %0x04x\n",
+        fprintf(stderr, "%7d:OP 0x%02hhx:f %u idx %0x04hx\n",
                 i, wq_opcode(wqe), wq_fence(wqe), wq_index(wqe));
         break;
     }
@@ -1649,8 +1649,8 @@ void zhpeq_print_tq_cq(struct zhpeq_tq *ztq, int cnt)
         cqe = (void *)&ztq->cq[i & qmask];
         /* Print the first 8 bytes of the result */
         d = cqe->entry.result.data;
-        fprintf(stderr, "%7d:v %u idx 0x%04x status 0x%02x"
-                " data %02x%02x%x02%02x%02x%02x%02x%02x\n",
+        fprintf(stderr, "%7d:v %u idx 0x%04hx status 0x%02hhx"
+                " data %02hhx%02hhx%x02hh%02hhx%02hhx%02hhx%02hhx%02hhx\n",
                 i, cqe->entry.hdr.valid, cqe->entry.hdr.index,
                 cqe->entry.hdr.status,
                 d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]);

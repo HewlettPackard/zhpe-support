@@ -139,6 +139,8 @@ static void cmd_insert256(struct zhpeq_tq *ztq, uint16_t reservation16)
         "vmovdqa   %%ymm0,   (%[d])\n"
         : "=m" (*dst) : [s] "r" (src), [d] "r" (dst) : "%ymm0", "%ymm1");
     ztq->cmd_queued++;
+    zhpe_stats_stamp_dbg(__func__, __LINE__,
+                         (uintptr_t)ztq, reservation16, ztq->cmd_queued, 0);
 }
 
 static void mem_insert256(struct zhpeq_tq *ztq, uint16_t reservation16)
@@ -608,6 +610,7 @@ int32_t zhpeq_tq_reserve_type(struct zhpeq_tq *ztq, uint64_t type_mask)
             ret |= (ZHPEQ_INSERT_CMD << 16);
         else
             ret |= (ZHPEQ_INSERT_MEM << 16);
+        zhpe_stats_stamp_dbg(__func__, __LINE__, (uintptr_t)ztq, ret, 0, 0);
     } else {
         for (i = 1; i < (ztq->tqinfo.cmdq.ent >> ZHPEQ_BITMAP_SHIFT); i++) {
             ret = ffs64(ztq->free_bitmap[i]);
@@ -616,6 +619,8 @@ int32_t zhpeq_tq_reserve_type(struct zhpeq_tq *ztq, uint64_t type_mask)
                 ztq->free_bitmap[i] &= ~((uint64_t)1 << ret);
                 ret += (i << ZHPEQ_BITMAP_SHIFT);
                 ret |= (ZHPEQ_INSERT_MEM << 16);
+                zhpe_stats_stamp_dbg(__func__, __LINE__,
+                                     (uintptr_t)ztq, ret, 0, 0);
                 goto done;
             }
         }
@@ -635,6 +640,8 @@ void zhpeq_tq_commit(struct zhpeq_tq *ztq)
         ztq->wq_tail_commit = ztq->wq_tail;
         qcmwrite64(ztq->wq_tail_commit & qmask,
                    ztq->qcm, ZHPE_XDM_QCM_CMD_QUEUE_TAIL_OFFSET);
+        zhpe_stats_stamp_dbg(__func__, __LINE__,
+                             (uintptr_t)ztq, ztq->wq_tail_commit, 0, 0);
     }
 }
 

@@ -402,7 +402,7 @@ void zhpe_stats_gdb_find(uint64_t val)
     }
 }
 
-static void stats_flush_all(void)
+void stats_flush_all(void)
 {
     struct zhpe_stats   *zstats;
 
@@ -1078,8 +1078,8 @@ static void stats_cmn_open(struct zhpe_stats *zstats, uint16_t uid)
                                           sizeof(struct zhpe_stats_record));
     zstats->tid = syscall(SYS_gettid);
 
-    xasprintf(&fname, "%s/%s.%d.%d", zhpe_stats_dir, zhpe_stats_unique,
-              zstats->tid, uid);
+    xasprintf(&fname, "%s/%s.%d.%d.%d", zhpe_stats_dir, zhpe_stats_unique,
+              getpid(), zstats->tid, uid);
     zstats->fd = open(fname, O_RDWR | O_CREAT | O_APPEND,
                       S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
     if (zstats->fd == -1) {
@@ -1096,8 +1096,8 @@ static void stats_cmn_open(struct zhpe_stats *zstats, uint16_t uid)
         break;
 
     case ZHPE_STATS_PROFILE_STAMP_DBG:
-        xasprintf(&fname, "%s/%s.%d.%d.func", zhpe_stats_dir, zhpe_stats_unique,
-                  getpid(), uid);
+        xasprintf(&fname, "%s/%s.%d.%d.%d.func", zhpe_stats_dir,
+                  zhpe_stats_unique, getpid(),zstats->tid, uid);
         zstats->func_file = fopen(fname, "w");
         if (!zstats->func_file) {
             err = -errno;

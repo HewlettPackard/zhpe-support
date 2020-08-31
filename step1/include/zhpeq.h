@@ -626,6 +626,8 @@ static inline bool zhpeq_is_asic(void)
 int zhpeq_get_zaddr(const char *node, const char *service,
                     bool source, struct sockaddr_zhpe *sz);
 
+int zhpeq_validate_gcid(const char *type, uint32_t gcid_in);
+
 int zhpeq_feature_enable(uint64_t features);
 
 /* Info/debugging */

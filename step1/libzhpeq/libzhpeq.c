@@ -1367,18 +1367,37 @@ done:
     return num;
 }
 
+static json_t *get_saved_json(void)
+{
+    json_t              *ret = atm_load_rlx(&saved_json);
+    json_error_t        err;
+    const char		*gcid_fname;
+
+    if (likely(ret))
+        return ret;
+
+    mutex_lock(&zaddr_mutex);
+    if (!saved_json) {
+        gcid_fname = getenv(ZHPEQ_HOSTS_ENV);
+        if (!gcid_fname)
+	    gcid_fname = ZHPEQ_HOSTS_FILE;
+        ret = json_load_file(gcid_fname, 0, &err);
+        if (ret)
+            atm_store_rlx(&saved_json, ret);
+    }
+    mutex_unlock(&zaddr_mutex);
+
+    return ret;
+}
+
 int zhpeq_get_zaddr(const char *node, const char *service,
                     bool source, struct sockaddr_zhpe *sz)
 {
     int			ret = -EINVAL;
-    char                *node_cp = NULL;
-    uint                index = 0;
-    const char		*gcid_fname;
     uint		gcid;
     ulong               ctxid;
-    const char		*name, *gcid_str, *slash;
-    json_t              *nodes, *kind, *comp, *gcids, *gcid_json;
-    json_error_t        err;
+    const char		*node_type, *gcid_str;
+    json_t              *all, *nodes, *kind, *comp, *gcids, *gcid_json;
 
     if (!sz)
         goto done;
@@ -1408,68 +1427,95 @@ int zhpeq_get_zaddr(const char *node, const char *service,
         gcid = str_to_uint(node, ZHPE_GCID_MASK, &ret);
         if (ret < 0)
             goto done;
+        ret = zhpeq_validate_gcid(NULL, gcid);
+        if (ret < 0)
+            goto done;
         zhpeu_install_gcid_in_uuid(sz->sz_uuid, gcid);
         goto done;
     }
 
-    mutex_lock(&zaddr_mutex);
-    if (!saved_json) {
-        gcid_fname = getenv(ZHPEQ_HOSTS_ENV);
-        if (!gcid_fname)
-	    gcid_fname = ZHPEQ_HOSTS_FILE;
-        saved_json = json_load_file(gcid_fname, 0, &err);
-	if (!saved_json) {
-            mutex_unlock(&zaddr_mutex);
-	    ret = -EINVAL;
-	    goto done;
-	}
+    all = get_saved_json();
+    if (unlikely(!all)) {
+        ret = -EINVAL;
+        goto done;
     }
-    mutex_unlock(&zaddr_mutex);
 
-    nodes = json_object_get(saved_json, "Nodes");
+    nodes = json_object_get(all, "Nodes");
     if (!nodes) {
         ret = -EINVAL;
         goto done;
     }
 
-    slash = strchr(node, '/');
-    if (slash) {  /* node string contains a GCID index */
-        /* make writable copy of node string */
-        node_cp = strdup(node);
-        if (!node_cp) {
-            ret = -ENOMEM;
-            goto done;
-        }
-        *(node_cp + (slash - node)) = '\0';
-        index = str_to_uint(slash + 1, -1ul, &ret);
+    ret = -ENOENT;
+    json_object_foreach(nodes, node_type, kind) {
+        comp = json_object_get(kind, node);
+        if (!comp)
+            continue;
+        if (!json_is_array(comp) || json_array_size(comp) != 5)
+            break;
+        // Revisit: should we care about the Enabled state?
+        gcids = json_array_get(comp, 4);
+        if (!json_is_array(gcids) || json_array_size(gcids) != 1)
+            break;
+        gcid_json = json_array_get(gcids, 0);
+        if (!json_is_string(gcid_json))
+            break;
+        gcid_str = json_string_value(gcid_json);
+        gcid = str_to_uint(gcid_str, ZHPE_GCID_MASK, &ret);
         if (ret < 0)
-            goto done;
-        node = node_cp;
+            break;
+        zhpeu_install_gcid_in_uuid(sz->sz_uuid, gcid);
+        break;
     }
 
+done:
+    return ret;
+}
+
+int zhpeq_validate_gcid(const char *type, uint32_t gcid_in)
+{
+    int			ret = -EINVAL;
+    const char		*node_type, *node_name, *gcid_str;
+    json_t              *all, *nodes, *kind, *comp, *gcids, *gcid_json;
+    ulong               gcid;
+    int                 rc;
+
+    all = get_saved_json();
+    if (unlikely(!all))
+        goto done;
+
+    nodes = json_object_get(all, "Nodes");
+    if (!nodes)
+        goto done;
+
     ret = -ENOENT;
-    json_object_foreach(nodes, name, kind) {
-        comp = json_object_get(kind, node);
-        if (json_is_array(comp) && json_array_size(comp) == 5) {
+    json_object_foreach(nodes, node_type, kind) {
+        if (type && strcmp(node_type, type))
+            continue;
+        json_object_foreach(kind, node_name, comp) {
+            if (!json_is_array(comp) || json_array_size(comp) != 5)
+                continue;
             // Revisit: should we care about the Enabled state?
             gcids = json_array_get(comp, 4);
-            if (json_is_array(gcids) && index < json_array_size(gcids)) {
-                gcid_json = json_array_get(gcids, index);
-                if (json_is_string(gcid_json)) {
-                    gcid_str = json_string_value(gcid_json);
-                    gcid = str_to_uint(gcid_str, ZHPE_GCID_MASK, &ret);
-                    if (ret < 0)
-                        goto done;
-                    zhpeu_install_gcid_in_uuid(sz->sz_uuid, gcid);
-                }
+            if (!json_is_array(gcids) || json_array_size(gcids) != 1)
+                continue;
+            gcid_json = json_array_get(gcids, 0);
+            if (!json_is_string(gcid_json))
+                continue;
+            gcid_str = json_string_value(gcid_json);
+            gcid = str_to_uint(gcid_str, ZHPE_GCID_MASK, &rc);
+            if (rc < 0) {
+                ret = rc;
+                goto done;
             }
-            break;
+            if (gcid_in == gcid) {
+                ret = 0;
+                goto done;
+            }
         }
     }
 
 done:
-    free(node_cp);
-
     return ret;
 }
 

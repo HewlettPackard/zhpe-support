@@ -24,8 +24,8 @@ target_link_libraries(libzhpeq_qalloc PUBLIC zhpeq zhpeq_util)
 add_executable(libzhpeq_qattr libzhpeq_qattr.c)
 target_link_libraries(libzhpeq_qattr PUBLIC zhpeq zhpeq_util)
 
-add_executable(libzhpeq_regtime libzhpeq_regtime.c)
-target_link_libraries(libzhpeq_regtime PUBLIC zhpeq zhpeq_util)
+add_executable(libzhpeq_regtest libzhpeq_regtest.c)
+target_link_libraries(libzhpeq_regtest PUBLIC zhpeq zhpeq_util)
 
 add_executable(libzhpeq_util_log libzhpeq_util_log.c)
 target_link_libraries(libzhpeq_util_log PUBLIC zhpeq_util)
@@ -50,7 +50,7 @@ install(
   libzhpeq_pcitime
   libzhpeq_qalloc
   libzhpeq_qattr
-  libzhpeq_regtime
+  libzhpeq_regtest
   libzhpeq_util_log
   nop
   xingpong

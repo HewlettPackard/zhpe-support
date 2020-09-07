@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2018 Hewlett Packard Enterprise Development LP.
+ * Copyright (C) 2017-2020 Hewlett Packard Enterprise Development LP.
  * All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -39,6 +39,9 @@
 #include <zhpe_stats.h>
 #include <zhpeq_util_fab.h>
 
+#define PROVIDER        "zhpe"
+#define EP_TYPE         FI_EP_RDM
+
 struct args {
     uint64_t            start_size;
     uint64_t            steps;
@@ -69,13 +72,13 @@ static int do_reg(const struct args *args)
         print_func_errn(__func__, __LINE__, "mmap", buf_size, false, ret);
         goto done;
     }
-    ret = fab_dom_setup(NULL, NULL, true, "zhpe", NULL, FI_EP_RDM, &fab_dom);
+    ret = fab_dom_setup(NULL, NULL, true, PROVIDER, NULL, EP_TYPE, &fab_dom);
     if (ret < 0)
         goto done;
 
     for (size = args->start_size, steps = 0; steps < args->steps;
          size <<= 1, steps++) {
-        zhpe_stats_stamp(0, size);
+        zhpe_stats_stamp(0, size, 0, 0, 0, 0, 0);
         /* Warmups, local+remote. */
         for (i = 0; i < 10; i++) {
             ret = fi_mr_reg(fab_dom.domain, buf, buf_size, lcl_acc | rem_acc,
@@ -129,6 +132,7 @@ static int do_reg(const struct args *args)
         }
         zhpe_stats_disable();
     }
+
  done:
     if (buf)
         munmap(buf, buf_size);
@@ -144,10 +148,11 @@ static void usage(bool help)
     print_usage(
         help,
         "Usage:%s <start-size> <steps> <iterations>\n"
-        "Register/free memory and collect Carbon statistics\n"
+        "Register/free memory and collect zhpe statistics\n"
         "sizes may be postfixed with [kmgtKMGT] to specify the"
         " base units.\n"
-        "Lower case is base 10; upper case is base 2.\n",
+        "Lower case is base 10; upper case is base 2.\n"
+        "(Note: must set ZHPE_STATS_DIR if using stats.)\n",
         appname);
 
     if (help) {
@@ -165,7 +170,7 @@ int main(int argc, char **argv)
 
     zhpeq_util_init(argv[0], LOG_INFO, false);
 
-    zhpe_stats_init("/tmp", "reg");
+    zhpe_stats_init("reg");
     zhpe_stats_test(0);
     zhpe_stats_open(1);
 
@@ -186,8 +191,8 @@ int main(int argc, char **argv)
         goto done;
 
     ret = 0;
- done:
 
+ done:
     zhpe_stats_stop_all();
     zhpe_stats_close();
     zhpe_stats_finalize();

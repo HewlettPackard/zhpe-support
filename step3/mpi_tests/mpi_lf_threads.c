@@ -66,18 +66,19 @@ static void usage(bool error) __attribute__ ((__noreturn__));
 
 static void usage(bool use_stdout)
 {
-    print_usage(use_stdout,
-                "Usage:%s [-esv][-d domain] <provider> <stripe_size>"
-                " <stripes> <loops>\n"
-                "All numbers may be postfixed with [kmgtKMGT] to specify the"
-                " base units.\n"
-                "Lower case is base 10; upper case is base 2.\n"
-                " -d : domain for libfabric provider\n"
-                " -e : use RMA_EVENTs\n"
-                " -s : use scalable ep for client\n"
-                " -x : exclude self (don't send to self)\n"
-                " -v : verbose mode\n",
-                appname);
+    zhpeu_print_usage(
+        use_stdout,
+        "Usage:%s [-esv][-d domain] <provider> <stripe_size>"
+        " <stripes> <loops>\n"
+        "All numbers may be postfixed with [kmgtKMGT] to specify the"
+        " base units.\n"
+        "Lower case is base 10; upper case is base 2.\n"
+        " -d : domain for libfabric provider\n"
+        " -e : use RMA_EVENTs\n"
+        " -s : use scalable ep for client\n"
+        " -x : exclude self (don't send to self)\n"
+        " -v : verbose mode\n",
+        zhpeu_appname);
 
     zhpel_mpi_exit(255);
 }
@@ -111,7 +112,7 @@ static void *cli_func(void *vcli_thr)
         n_srv--;
     per_node_size = args->stripe_size / n_srv;
     for (l = 0, rops = 0, wops = 0 ; l < args->loops; l++) {
-        lstripe = lf_eps->mem + cli_thr->rank * lf_eps->per_thr_size;
+        lstripe = (char *)lf_eps->mem + cli_thr->rank * lf_eps->per_thr_size;
         roff = ((lf_data->rank * lf_eps->n_eps +
                  cli_thr->rank) *
                 lf_eps->per_thr_size / n_srv);
@@ -129,10 +130,11 @@ static void *cli_func(void *vcli_thr)
             FI_ERRCHK(fi_cntr_wait, (wcnt, wops, -1));
         }
         if (args->verbose)
-            print_info("%s,%u:rank %ld thr %ld loop %ld, writes complete\n",
-                       __func__, __LINE__, lf_data->rank, cli_thr->rank, l + 1);
+            zhpeu_print_info("%s,%u:rank %ld thr %ld loop %ld, writes"
+                             " complete\n", __func__, __LINE__, lf_data->rank,
+                             cli_thr->rank, l + 1);
 
-        lstripe = lf_eps->mem + cli_thr->rank * lf_eps->per_thr_size;
+        lstripe = (char *)lf_eps->mem + cli_thr->rank * lf_eps->per_thr_size;
         roff = ((lf_data->rank * lf_eps->n_eps + cli_thr->rank) *
                 lf_eps->per_thr_size / n_srv);
         for (s = 0 ; s < args->stripes ; s++, roff += per_node_size) {
@@ -149,8 +151,9 @@ static void *cli_func(void *vcli_thr)
             FI_ERRCHK(fi_cntr_wait, (rcnt, rops, -1));
         }
         if (args->verbose)
-            print_info("%s,%u:rank %ld thr %ld loop %ld, reads complete\n",
-                       __func__, __LINE__, lf_data->rank, cli_thr->rank, l + 1);
+            zhpeu_print_info("%s,%u:rank %ld thr %ld loop %ld, reads"
+                             " complete\n", __func__, __LINE__, lf_data->rank,
+                             cli_thr->rank, l + 1);
     }
     atm_inc(&cli_done);
 
@@ -177,12 +180,12 @@ int main(int argc, char **argv)
     size_t              r;
     size_t              l;
 
-    zhpeq_util_init(argv[0], LOG_INFO, false);
+    zhpeu_util_init(argv[0], LOG_INFO, false);
 
     MPI_ERRCHK(MPI_Init_thread, (&argc, &argv, MPI_THREAD_FUNNELED, &provided));
     if (provided < MPI_THREAD_FUNNELED) {
-        fprintf (stderr, "%s:%s,%u:MPI_Init_thread returned provided %d\n",
-                 appname, __func__, __LINE__, provided);
+        zhpeu_print_err("%s,%u:MPI_Init_thread returned provided %d\n",
+                        __func__, __LINE__, provided);
         zhpel_mpi_exit(ret);
     }
     MPI_ERRCHK(MPI_Comm_size, (MPI_COMM_WORLD, &ival));
@@ -220,7 +223,8 @@ int main(int argc, char **argv)
             if (args.exclude_self)
                 usage(false);
             if (n_srv == 1) {
-                print_err("%s:-x requires more than one rank\n", __func__);
+                zhpeu_print_err("%s:-x requires more than one rank\n",
+                                __func__);
                 zhpel_mpi_exit(ret);
             }
             n_srv--;
@@ -256,8 +260,8 @@ int main(int argc, char **argv)
                           usage(false);
 
     if (args.stripe_size % n_srv) {
-        print_err("%s,%u:stripe_size %lu not divisible by servers %lu\n",
-                  __func__, __LINE__, args.stripe_size, n_srv);
+        zhpeu_print_err("%s,%u:stripe_size %lu not divisible by servers %lu\n",
+                        __func__, __LINE__, args.stripe_size, n_srv);
         zhpel_mpi_exit(ret);
     }
     cli_per_thr_size = args.stripe_size * args.stripes;
@@ -287,12 +291,12 @@ int main(int argc, char **argv)
             ops += ops_per_loop;
             FI_ERRCHK(fi_cntr_wait, (lf_data.svr.wcnts[0], ops, -1));
             if (args.verbose)
-                print_info("%s,%u:rank %ld loop %ld, writes complete\n",
-                           __func__, __LINE__, rank, l + 1);
+                zhpeu_print_info("%s,%u:rank %ld loop %ld, writes complete\n",
+                                 __func__, __LINE__, rank, l + 1);
             FI_ERRCHK(fi_cntr_wait, (lf_data.svr.rcnts[0], ops, -1));
             if (args.verbose)
-                print_info("%s,%u:rank %ld loop %ld, reads complete\n",
-                           __func__, __LINE__, rank, l + 1);
+                zhpeu_print_info("%s,%u:rank %ld loop %ld, reads complete\n",
+                                 __func__, __LINE__, rank, l + 1);
         }
     }
 

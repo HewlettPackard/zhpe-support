@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2019 Hewlett Packard Enterprise Development LP.
+ * Copyright (C) 2020 Hewlett Packard Enterprise Development LP.
  * All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -34,101 +34,90 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <internal.h>
+#include <zhpeq.h>
 
 #include <limits.h>
 
-static char buf[4];
-
-struct test {
-    void                *buf;
-    size_t              len;
-    uint32_t            match;
-    uint32_t            qaccess;
-    struct zhpeq_key_data *qk;
-};
-
-static struct test tests[] = {
-    { buf,     2, 0x0000, ZHPEQ_MR_PUT },
-    { buf,     2, 0x0001, ZHPEQ_MR_PUT },
-    { buf,     2, 0x0000, ZHPEQ_MR_PUT | ZHPEQ_MR_GET },
-    { buf,     1, 0x0000, ZHPEQ_MR_PUT },
-    { buf + 1, 1, 0x0000, ZHPEQ_MR_PUT },
-    { NULL },
-};
+static struct zhpeq_attr zhpeq_attr;
 
 static void usage(bool help) __attribute__ ((__noreturn__));
 
 static void usage(bool help)
 {
-    print_usage(help, "Usage:%s\n", appname);
+    print_usage(
+        help,
+        "Usage:%s <ops>\n"
+        "All sizes may be postfixed with [kmgtKMGT] to specify the"
+        " base units.\n"
+        "Lower case is base 10; upper case is base 2.\n",
+        appname);
 
     exit(255);
+}
+
+static void do_pci_rd(struct zhpeq_rq *zrq, size_t ops)
+{
+    size_t              i;
+    struct zhpeu_timing pci_rd;
+    uint64_t            start;
+
+    zhpeu_timing_reset(&pci_rd);
+    for (i = 0; i < ops; i++) {
+        start = get_cycles(NULL);
+        qcmread64(zrq->qcm, ZHPE_RDM_QCM_RCV_QUEUE_HEAD_OFFSET);
+        zhpeu_timing_update(&pci_rd, get_cycles(NULL) - start);
+    }
+    zhpeu_timing_print(&pci_rd, "pci_rd", 1);
 }
 
 int main(int argc, char **argv)
 {
     int                 ret = 1;
-    struct zhpeq_dom    *zdom = NULL;
+    struct zhpeq_rq     *zrq = NULL;
+    struct zhpeq_dom    *zqdom = NULL;
+    uint64_t            u64;
+    size_t              ops;
+    int                 qlen;
     int                 rc;
-    uint32_t            match;
-    uint                i;
-    uint                j;
-    struct zhpeq_attr   attr;
-    bool                zhpe;
 
     zhpeq_util_init(argv[0], LOG_DEBUG, false);
 
-    if (argc != 1)
+    rc = zhpeq_init(ZHPEQ_API_VERSION, &zhpeq_attr);
+    if (rc < 0) {
+        zhpeu_print_func_err(__func__, __LINE__, "zhpeq_init", "", rc);
+        goto done;
+    }
+
+    if (argc == 1)
+        usage(true);
+    else if (argc != 2)
         usage(false);
 
-    rc = zhpeq_init(ZHPEQ_API_VERSION);
-    if (rc < 0) {
-        print_func_err(__func__, __LINE__, "zhpeq_init", "", rc);
-        goto done;
-    }
+    if (parse_kb_uint64_t(__func__, __LINE__, "ops",
+                          argv[optind++], &u64, 0,
+                          1, SIZE_MAX, PARSE_KB | PARSE_KIB) < 0)
+        usage(false);
 
-    rc = zhpeq_query_attr(&attr);
-    if (rc < 0) {
-        print_func_err(__func__, __LINE__, "zhpeq_query_attr", "", rc);
-        goto done;
-    }
-    zhpe = (attr.backend == ZHPEQ_BACKEND_ZHPE);
+    ops = u64;
 
-    rc = zhpeq_domain_alloc(&zdom);
+    rc = zhpeq_domain_alloc(&zqdom);
     if (rc < 0) {
         print_func_err(__func__, __LINE__, "zhpeq_domain_alloc", "", rc);
         goto done;
     }
-    for (i = 0; tests[i].buf; i++) {
-        rc = zhpeq_mr_reg(zdom, tests[i].buf, tests[i].len,
-                          tests[i].qaccess, &tests[i].qk);
-        if (rc < 0) {
-            print_func_err(__func__, __LINE__, "zhpeq_mr_reg", "", rc);
-            goto done;
-        }
-        for (j = 0, match = 0; j < i; j++) {
-            if (tests[j].qk == tests[i].qk)
-                match |= (1U << j);
-        }
-        if ((zhpe && tests[i].match != match) || (!zhpe && match)) {
-            print_err("test %u 0x%04x != 0x%04x\n",
-                      i, match, tests[i].match);
-            goto done;
-        }
-    }
-    for (i = 0; tests[i].buf; i++) {
-        rc = zhpeq_mr_free(zdom, tests[i].qk);
-        if (rc < 0) {
-            print_func_err(__func__, __LINE__, "zhpeq_mr_free", "", rc);
-            goto done;
-        }
-    }
 
+    qlen = 63;
+    rc = zhpeq_rq_alloc(zqdom, qlen, 0, &zrq);
+    if (rc < 0) {
+        print_func_errn(__func__, __LINE__, "zhpeq_rq_alloc", qlen, false, rc);
+        goto done;
+    }
+    do_pci_rd(zrq, ops);
     ret = 0;
 
  done:
-    zhpeq_domain_free(zdom);
+    zhpeq_rq_free(zrq);
+    zhpeq_domain_free(zqdom);
 
     printf("%s:done, ret = %d\n", appname, ret);
 

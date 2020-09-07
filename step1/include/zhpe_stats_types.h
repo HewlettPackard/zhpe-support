@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019 Hewlett Packard Enterprise Development LP.
+ * Copyright (C) 2019-2020 Hewlett Packard Enterprise Development LP.
  * All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -39,35 +39,151 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <linux/perf_event.h>
 
 #include <zhpe_externc.h>
 
 _EXTERN_C_BEG
 
-struct zhpe_stats_ops {
-    void                (*open)(uint16_t uid);
-    void                (*close)(void);
-    void                (*enable)(void);
-    void                (*disable)(void);
-    struct zhpe_stats   *(*stop_counters)(void);
-    void                (*stop_all)(struct zhpe_stats *stats);
-    void                (*pause_all)(struct zhpe_stats *stats);
-    void                (*restart_all)(void);
-    void                (*start)(struct zhpe_stats *stats, uint32_t subid);
-    void                (*stop)(struct zhpe_stats *stats, uint32_t subid);
-    void                (*pause)(struct zhpe_stats * stats, uint32_t subid);
-    void                (*finalize)(void);
-    void                (*key_destructor)(void *vstats);
-    void                (*stamp)(struct zhpe_stats *stats, uint32_t subid,
-                                 uint32_t items, uint64_t *data);
+struct zhpe_stats_metadata {
+    uint32_t    profileid;
+    uint32_t    perf_typeid;
+    int         config_count;
+    uint64_t    config_list[6];
 };
 
 enum {
-    ZHPE_STATS_SUBID_SEND = 10,
-    ZHPE_STATS_SUBID_RECV = 20,
-    ZHPE_STATS_SUBID_RMA  = 30,
-    ZHPE_STATS_SUBID_ZHPQ = 40,
-    ZHPE_STATS_SUBID_MPI  = 50,
+    ZHPE_STATS_DISABLED                     = 0,
+    ZHPE_STATS_ENABLED                      = 1,
+};
+
+enum {
+/* cpu group */
+/* magic raw counters from John */
+    DISPATCH_RESOURCE_STALL_CYCLES0                       = 0xAF,
+    DISPATCH_RESOURCE_STALL_CYCLES1                       = 0xAE,
+    RAW_PERF_HW_RETIRED_INSTRUCTIONS                      = 0xC0,
+    RAW_PERF_HW_CPU_CYCLES                                = 0x76,
+    RAW_PERF_HW_RETIRED_BRANCH_INSTRUCTIONS               = 0xC2,
+    RAW_PERF_HW_RETIRED_CONDITIONAL_BRANCH_INSTRUCTIONS   = 0xD1,
+    RAW_PERF_HW_BRANCH_MISSES                             = 0xC3,
+
+/* DC cache group */
+/* raw counters from PPR for AMD Family 17h Model 31h B0 */
+    ALL_DC_ACCESSES                                 = 0x430729,
+    L2_CACHE_MISS_FROM_DC_MISS                      = 0x430864,
+    L2_CACHE_HIT_FROM_DC_MISS                       = 0x437064,
+    L2_CACHE_MISS_FROM_L2_HWPF1                     = 0x431F71,
+    L2_CACHE_MISS_FROM_L2_HWPF2                     = 0x431F72,
+    L2_CACHE_HIT_FROM_L2_HWPF                       = 0x431F70,
+
+/* IC cache group (for later) */
+    ALL_L2_CACHE_ACCESSES1                          = 0x43F960,
+    ALL_L2_CACHE_ACCESSES2                          = 0x431F70,
+    ALL_L2_CACHE_ACCESSES3                          = 0x431F71,
+    ALL_L2_CACHE_ACCESSES4                          = 0x431F72,
+
+/* other */
+    L2_CACHE_ACCESS_FROM_DC_MISS_INCLUDING_PREFETCH = 0x43C860,
+    L2_CACHE_ACCESS_FROM_IC_MISS_INCLUDING_PREFETCH = 0x431060,
+    L1_DTLB_MISSES                                  = 0x43FF45,
+    L2_DTLB_MISSES_AND_PAGE_WALK                    = 0x43FF45,
+
+    L2_CACHE_ACCESS_FROM_L2_HWPF1                   = 0x431F70,
+    L2_CACHE_ACCESS_FROM_L2_HWPF2                   = 0x431F71,
+    L2_CACHE_ACCESS_FROM_L2_HWPF3                   = 0x431F72,
+
+    ALL_L2_CACHE_MISSES1                            = 0x430964,
+    ALL_L2_CACHE_MISSES2                            = 0x431F71,
+    ALL_L2_CACHE_MISSES3                            = 0x431F72,
+
+    L2_CACHE_HIT_FROM_IC_MISS                       = 0x430664,
+    L2_CACHE_MISS_FROM_IC_MISS                      = 0x430164,
+
+    ALL_L2_CACHE_HITS1                              = 0x43F664,
+    ALL_L2_CACHE_HITS2                              = 0x431F70,
+};
+
+/* op ids: keep in sync with processing scripts */
+enum {
+    ZHPE_STATS_OP_START             = 1,
+    ZHPE_STATS_OP_STOP              = 2,
+    ZHPE_STATS_OP_STOP_ALL          = 3,
+    ZHPE_STATS_OP_PAUSE_ALL         = 4,
+    ZHPE_STATS_OP_RESTART_ALL       = 5,
+    ZHPE_STATS_OP_STAMP             = 8,
+    ZHPE_STATS_OP_OPEN              = 9,
+    ZHPE_STATS_OP_CLOSE             = 10,
+};
+
+
+/* for measuring overheads */
+enum {
+    ZHPE_STATS_SUBID_STARTSTOP      = 1,
+    ZHPE_STATS_SUBID_S_STAMP_S      = 2,
+    ZHPE_STATS_SUBID_S_SS_S         = 3,
+    ZHPE_STATS_SUBID_S_NOP_S        = 4,
+    ZHPE_STATS_SUBID_S_AINC_S       = 5,
+    ZHPE_STATS_SUBID_SS_NOP_SS      = 6,
+    ZHPE_STATS_SUBID_SS_AINC_SS     = 7,
+    ZHPE_STATS_SUBID_SS_SS_SS       = 8,
+    ZHPE_STATS_SUBID_SSS_SS_SSS     = 9,
+    ZHPE_STATS_SUBID_S_DCA_S        = 10,
+};
+
+enum {
+    ZHPE_STATS_PROFILE_CACHE        = 100,
+    ZHPE_STATS_PROFILE_CACHE2       = 101,
+    ZHPE_STATS_PROFILE_CARBON       = 102,
+    ZHPE_STATS_PROFILE_CPU          = 103,
+    ZHPE_STATS_PROFILE_CPU2         = 104,
+    ZHPE_STATS_PROFILE_CPU_JUST1    = 105,
+    ZHPE_STATS_PROFILE_DISABLED     = 106,
+    ZHPE_STATS_PROFILE_HW           = 107,
+    ZHPE_STATS_PROFILE_HW_JUST1     = 108,
+    ZHPE_STATS_PROFILE_RDTSCP       = 109,
+    ZHPE_STATS_PROFILE_STAMP_DBG    = 110,
+};
+
+/* for looking up hpe_sim offsets */
+enum {
+    COHERENCY_CASTOUT_DATA_L1   =0,
+    COHERENCY_CASTOUT_INST_L1   =1,
+    CAPACITY_CASTOUT_DATA_L1    =2,
+    CAPACITY_CASTOUT_INST_L1    =3,
+    LINE_MISS_DATA_L1           =4,
+    LINE_HIT_DATA_L1            =5,
+    LINE_MISS_INST_L1           =6,
+    LINE_HIT_INST_L1            =7,
+    UNCACHED_READ_INST_L1       =8,
+    UNCACHED_READ_DATA_L1       =9,
+    UNCACHED_WRITE_DATA_L1      =10,
+    LINE_CASTOUT_DIRTY_DATA_L1  =11,
+    COHERENCY_CASTOUT_DATA_L2   =12,
+    CAPACITY_CASTOUT_DATA_L2    =13,
+    LINE_MISS_DATA_L2           =14,
+    LINE_HIT_DATA_L2            =15,
+    LINE_CASTOUT_DIRTY_DATA_L2  =16,
+    LINE_MISS_WRITE_THROUGH_L2  =17,
+};
+
+enum {
+    EXEC_INST_TOTAL         =0,
+    CPL0_EXEC_INST_TOTAL    =1,
+    CPL1_EXEC_INST_TOTAL    =2,
+    CPL2_EXEC_INST_TOTAL    =3,
+    CPL3_EXEC_INST_TOTAL    =4,
+};
+
+/* Ultimately these should be moved to other repos. */
+enum {
+    ZHPE_STATS_SUBID_SEND        = 10,
+    ZHPE_STATS_SUBID_RECV        = 20,
+    ZHPE_STATS_SUBID_RMA         = 30,
+    ZHPE_STATS_SUBID_ZHPQ        = 40,
+    ZHPE_STATS_SUBID_MPI         = 50,
+    ZHPE_STATS_SUBID_ATM         = 60,
+    ZHPE_STATS_SUBID_DBG         = 1000,
 };
 
 _EXTERN_C_END

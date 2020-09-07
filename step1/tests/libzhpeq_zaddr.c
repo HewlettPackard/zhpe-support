@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2018 Hewlett Packard Enterprise Development LP.
+ * Copyright (C) 2017-2020 Hewlett Packard Enterprise Development LP.
  * All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -37,15 +37,63 @@
 #include <zhpeq.h>
 #include <zhpeq_util.h>
 
+static struct zhpeq_attr zhpeq_attr;
+
+struct test {
+    const char          *node;
+    const char          *service;
+    uint32_t            gcid_match;
+    uint32_t            queue_match;
+    int                 rc_match;
+};
+
+static struct test tests[] = {
+    { "node1",      NULL, 0x1010, -1u, 0 },
+    { "memory31/4", NULL, 0x3025, -1u, 0 },
+    { "node42",     "66", 0x3019,  66, 0 },
+    { "switch24/1", "10", 0x2008,  10, 0 },
+    { "0x0010",     NULL, 0x0010, -1u, 0 },
+    { "foobar",     NULL, 0x0000, -1u, -ENOENT },
+    { NULL,         "0",  0x0000, -1u, -EINVAL },
+    { NULL,         NULL },
+};
+
 int main(int argc, char **argv)
 {
-    int                 rc;
+    int                  rc;
+    uint                 i;
+    struct sockaddr_zhpe sz;
+    uint32_t             gcid;
+    uint32_t            queue;
+    char                *str;
 
     zhpeq_util_init(argv[0], LOG_INFO, false);
 
-    rc = zhpeq_init(ZHPEQ_API_VERSION);
+    rc = zhpeq_init(ZHPEQ_API_VERSION, &zhpeq_attr);
     if (rc < 0)
         print_func_err(__func__, __LINE__, "zhpeq_init", "", rc);
 
+    for (i = 0; tests[i].node || tests[i].service; i++) {
+        rc = zhpeq_get_zaddr(tests[i].node, tests[i].service, false, &sz);
+        gcid = zhpeu_uuid_to_gcid(sz.sz_uuid);
+        queue = ntohl(sz.sz_queue);
+        if (rc != tests[i].rc_match)
+            print_func_err(__func__, __LINE__, "zhpeq_get_zaddr", "", rc);
+        else if (tests[i].rc_match < 0)
+            printf("test %u returned expected error\n", i);
+        else if (gcid != tests[i].gcid_match)
+            print_err("test %u gcid match 0x%x != 0x%x\n",
+                      i, gcid, tests[i].gcid_match);
+        else if (queue != tests[i].queue_match)
+            print_err("test %u queue match %u != %u\n",
+                      i, queue, tests[i].queue_match);
+        else {
+            str = _zhpeu_sockaddr_str(&sz);
+            if (str) {
+                printf("%s = %s\n", tests[i].node, str);
+                free(str);
+            }
+        }
+    }
     return 0;
 }

@@ -52,10 +52,6 @@ struct cli_wire_msg {
     bool                once_mode;
 };
 
-struct svr_wire_msg {
-    uint16_t            port;
-};
-
 struct mem_wire_msg {
     uint64_t            remote_key;
     uint64_t            remote_addr;
@@ -84,7 +80,6 @@ struct stuff {
     uint64_t            tot;
     uint64_t            remote_key;
     uint64_t            remote_addr;
-    bool                allocated;
 };
 
 static void stuff_free(struct stuff *stuff)
@@ -99,9 +94,6 @@ static void stuff_free(struct stuff *stuff)
     free(stuff->ctx);
 
     FD_CLOSE(stuff->sock_fd);
-
-    if (stuff->allocated)
-        free(stuff);
 }
 
 static int do_mem_setup(struct stuff *conn)
@@ -161,12 +153,12 @@ static ssize_t do_progress(struct fab_conn *fab_conn,
      * FIXME: Should rx be necessary for one-sided?
      */
     rc = fab_completions(fab_conn->tx_cq, 0, NULL, NULL);
-    if (ret >= 0) {
+    if (rc >= 0) {
         if (tx_cmp)
             *tx_cmp += rc;
         else
             assert(!rc);
-    } else
+    } else if (ret >= 0)
         ret = rc;
 
     rc = fab_completions(fab_conn->rx_cq, 0, NULL, NULL);
@@ -189,7 +181,7 @@ static int do_server_burst(struct stuff *conn)
     uint64_t            i;
 
     /* Do a send-receive for the final handshake. */
-    ret = fi_recv(fab_conn->ep, NULL, 0, NULL, 0, &ctx);
+    ret = fi_recv(fab_conn->ep, NULL, 0, NULL, FI_ADDR_UNSPEC, &ctx);
     if (ret < 0) {
         print_func_fi_err(__func__, __LINE__, "fi_recv", "", ret);
         goto done;
@@ -201,8 +193,8 @@ static int do_server_burst(struct stuff *conn)
     }
 
     fab_print_info(fab_conn);
- done:
 
+ done:
     return ret;
 }
 
@@ -308,7 +300,7 @@ static int do_client_burst(struct stuff *conn)
         goto done;
 
     /* Do a send-receive for the final handshake. */
-    ret = fi_send(fab_conn->ep, NULL, 0, NULL, 0, &conn->ctx[0]);
+    ret = fi_send(fab_conn->ep, NULL, 0, NULL, conn->dest_av, &conn->ctx[0]);
     if (ret < 0) {
         print_func_fi_err(__func__, __LINE__, "fi_send", "", ret);
         goto done;
@@ -345,7 +337,6 @@ static int do_server_one(const struct args *oargs, int conn_fd)
     union sockaddr_in46 addr;
     size_t              addr_len;
     struct cli_wire_msg cli_msg;
-    struct svr_wire_msg svr_msg;
     char                *s;
 
     fab_dom_init(fab_dom);
@@ -369,8 +360,8 @@ static int do_server_one(const struct args *oargs, int conn_fd)
     args->ep_type = cli_msg.ep_type;
     args->once_mode = !!cli_msg.once_mode;
 
-    ret = fab_dom_setup(NULL, NULL, true, args->provider, args->domain,
-                        args->ep_type, fab_dom);
+    ret = fab_dom_setup(NULL, NULL, true,
+                        args->provider, args->domain, args->ep_type, fab_dom);
     if (ret < 0)
         goto done;
 
@@ -395,8 +386,7 @@ static int do_server_one(const struct args *oargs, int conn_fd)
             print_func_fi_err(__func__, __LINE__, "fi_getname", "", ret);
             goto done;
         }
-        svr_msg.port = addr.sin_port;
-        ret = sock_send_blob(conn.sock_fd, &svr_msg, sizeof(svr_msg));
+        ret = sock_send_blob(conn.sock_fd, &addr, sizeof(addr));
         if (ret < 0)
             goto done;
 
@@ -474,7 +464,7 @@ static int do_server(const struct args *args)
         ret = do_server_one(args, conn_fd);
     }
 
-done:
+ done:
     if (listener_fd != -1)
         close(listener_fd);
     if (resp)
@@ -495,9 +485,8 @@ static int do_client(const struct args *args)
     struct fab_dom      *fab_dom = &conn.fab_dom;
     struct fab_conn     *fab_conn = &conn.fab_conn;
     struct fab_conn     *fab_listener = &conn.fab_listener;
-    union sockaddr_in46 *sockaddr;
+    union sockaddr_in46 addr;
     struct cli_wire_msg cli_msg;
-    struct svr_wire_msg svr_msg;
 
     fab_dom_init(fab_dom);
     fab_conn_init(fab_dom, fab_conn);
@@ -523,7 +512,7 @@ static int do_client(const struct args *args)
     if (ret < 0)
         goto done;
 
-    ret = fab_dom_setup(args->service, args->node, false,
+    ret = fab_dom_setup(NULL, NULL, true,
                         args->provider, args->domain, args->ep_type, fab_dom);
     if (ret < 0)
         goto done;
@@ -536,20 +525,16 @@ static int do_client(const struct args *args)
         if (ret < 0)
             goto done;
     } else {
-        /* Read port. */
-        ret = sock_recv_fixed_blob(conn.sock_fd, &svr_msg, sizeof(svr_msg));
+        ret = sock_recv_fixed_blob(conn.sock_fd, &addr, sizeof(addr));
         if (ret < 0)
             goto done;
 
-        sockaddr = fab_conn_info(fab_conn)->dest_addr;
-        switch (sockaddr->addr4.sin_family) {
-        case AF_INET:
-            sockaddr->addr4.sin_port = svr_msg.port;
-            break;
-        case AF_INET6:
-            sockaddr->addr6.sin6_port = svr_msg.port;
-            break;
+        fab_conn_info(fab_conn)->dest_addr = sockaddr_dup(&addr);
+        if (!fab_conn_info(fab_conn)->dest_addr) {
+            ret = -FI_ENOMEM;
+            goto done;
         }
+
         /* Connect at the libfabric level. */
         ret = fab_connect(timeout, 0, 0, fab_conn);
         if (ret < 0)
@@ -627,6 +612,7 @@ int main(int argc, char **argv)
         case 'd':
             if (args.domain)
                 usage(false);
+            args.domain = optarg;
             break;
 
         case 'o':
@@ -686,7 +672,7 @@ int main(int argc, char **argv)
         usage(false);
 
     ret = 0;
- done:
 
+ done:
     return ret;
 }

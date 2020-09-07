@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019 Hewlett Packard Enterprise Development LP.
+ * Copyright (C) 2019-2020 Hewlett Packard Enterprise Development LP.
  * All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -37,129 +37,243 @@
 #ifndef _ZHPE_STATS_H_
 #define _ZHPE_STATS_H_
 
-#include <stdbool.h>
-#include <stdint.h>
-
+#include <zhpeq_util.h>
 #include <zhpe_stats_types.h>
 
 _EXTERN_C_BEG
 
+struct zhpe_stats_record {
+    uint32_t    op_flag;
+    uint32_t    subid;
+    uint64_t    val0;
+    uint64_t    val1;
+    uint64_t    val2;
+    uint64_t    val3;
+    uint64_t    val4;
+    uint64_t    val5;
+    uint64_t    val6;
+} CACHE_ALIGNED;
+
+struct zhpe_stats;
+
+struct zhpe_stats_ops {
+    void   (*close)(struct zhpe_stats *zstats);
+    void   (*enable)(struct zhpe_stats *zstats);
+    void   (*disable)(struct zhpe_stats *zstats);
+    void   (*pause_all)(struct zhpe_stats *zstats);
+    void   (*restart_all)(struct zhpe_stats *zstats);
+    void   (*stop_all)(struct zhpe_stats *zstats);
+    void   (*start)(struct zhpe_stats *zstats, uint32_t subid);
+    void   (*stop)(struct zhpe_stats *zstats, uint32_t subid);
+    void   (*stamp)(struct zhpe_stats *zstats, uint32_t subid,
+                    uint64_t d1, uint64_t d2, uint64_t d3, uint64_t d4,
+                    uint64_t d5, uint64_t d6);
+    void   (*stamp_dbg)(struct zhpe_stats *zstats, uint32_t subid,
+                        uint64_t d1, uint64_t d2, uint64_t d3, uint64_t d4,
+                        uint64_t d5, uint64_t d6);
+    void   (*stamp_dbg_func)(struct zhpe_stats *zstats, const char *func);
+    void   (*recordme)(struct zhpe_stats *zstats, uint32_t subid,
+                       uint32_t op_flag);
+    struct zhpe_stats_record *(*nextslot)(struct zhpe_stats *zstats);
+    void   (*setvals)(struct zhpe_stats *zstats, struct zhpe_stats_record *rec);
+};
+
+struct zhpe_stats {
+    struct zhpe_stats           *next;
+    struct zhpe_stats_record    *buffer;
+    uint64_t                    *sim_buf;
+    struct zhpe_stats_ops       *zhpe_stats_ops;
+    struct perf_event_mmap_page **zhpe_stats_mmap_list;
+    uint64_t                    *zhpe_stats_config_list;
+    uint32_t                    slots_mask;
+    int                         fd;
+    FILE                        *func_file;
+    uint16_t                    uid;
+    size_t                      head;
+    size_t                      flushed;
+    size_t                      head_gdb;
+    size_t                      tail_gdb;
+    pid_t                       tid;
+    uint8_t                     enabled;
+};
+
+extern __thread struct zhpe_stats *zhpe_stats;
+
 #ifdef HAVE_ZHPE_STATS
 
-extern struct zhpe_stats_ops *zhpe_stats_ops;
-bool zhpe_stats_init(const char *stats_dir, const char *stats_unique);
+void zhpe_stats_finalize();
+bool zhpe_stats_init(const char *stats_unique);
+void zhpe_stats_open(uint16_t uid);
 void zhpe_stats_test(uint16_t uid);
-
-static inline void zhpe_stats_finalize(void)
-{
-    zhpe_stats_ops->finalize();
-}
-
-static inline void zhpe_stats_open(uint16_t uid)
-{
-    zhpe_stats_ops->open(uid);
-}
-
-static inline void zhpe_stats_close(void)
-{
-    zhpe_stats_ops->close();
-}
-
-static inline void zhpe_stats_stop_all(void)
-{
-    struct zhpe_stats   *stats;
-
-    if ((stats = zhpe_stats_ops->stop_counters()))
-        zhpe_stats_ops->stop_all(stats);
-}
-
-static inline void zhpe_stats_pause_all(void)
-{
-    struct zhpe_stats   *stats;
-
-    if ((stats = zhpe_stats_ops->stop_counters()))
-        zhpe_stats_ops->pause_all(stats);
-}
-
-static inline void zhpe_stats_restart_all(void)
-{
-    zhpe_stats_ops->restart_all();
-}
-
-static inline void zhpe_stats_start(uint32_t subid)
-{
-    struct zhpe_stats   *stats;
-
-    if ((stats = zhpe_stats_ops->stop_counters()))
-        zhpe_stats_ops->start(stats, subid);
-}
-
-static inline void zhpe_stats_stop(uint32_t subid)
-{
-    struct zhpe_stats   *stats;
-
-    if ((stats = zhpe_stats_ops->stop_counters()))
-        zhpe_stats_ops->stop(stats, subid);
-}
-
-static inline void zhpe_stats_pause(uint32_t subid)
-{
-    struct zhpe_stats   *stats;
-
-    if ((stats = zhpe_stats_ops->stop_counters()))
-        zhpe_stats_ops->pause(stats, subid);
-}
-
-static inline void zhpe_stats_enable(void)
-{
-    zhpe_stats_ops->enable();
-}
-
-static inline void zhpe_stats_disable(void)
-{
-    zhpe_stats_ops->disable();
-}
-
-#define zhpe_stats_stamp(_subid, ...)                                   \
-do {                                                                    \
-    struct zhpe_stats   *stats;                                         \
-                                                                        \
-    if ((stats = zhpe_stats_ops->stop_counters())) {                    \
-        uint64_t        data[] = { __VA_ARGS__ };                       \
-                                                                        \
-        zhpe_stats_ops->stamp(stats, _subid,                            \
-                             sizeof(data) / sizeof(uint64_t), data);    \
-    }                                                                   \
-} while(0)
 
 #define zhpe_stats_subid(_name, _id)            \
     ((ZHPE_STATS_SUBID_##_name * 1000) + _id)
 
 #else
 
-static inline bool zhpe_stats_init(const char *stats_dir,
-                                   const char *stats_unique)
+#ifndef __LIBZHPE_STATS_C__
+static inline void zhpe_stats_finalize(void)
+{
+}
+
+static inline bool zhpe_stats_init(const char *stats_unique)
 {
     return false;
 }
 
-#define zhpe_stats_test(uid)            do {} while (0)
-#define zhpe_stats_finalize()           do {} while (0)
-#define zhpe_stats_open(uid)            do {} while (0)
-#define zhpe_stats_close()              do {} while (0)
-#define zhpe_stats_stop_all()           do {} while (0)
-#define zhpe_stats_pause_all()          do {} while (0)
-#define zhpe_stats_restart_all()        do {} while (0)
-#define zhpe_stats_start(subid)         do {} while (0)
-#define zhpe_stats_stop(subid)          do {} while (0)
-#define zhpe_stats_pause(subid)         do {} while (0)
-#define zhpe_stats_enable()             do {} while (0)
-#define zhpe_stats_disable()            do {} while (0)
-#define zhpe_stats_stamp(_subid, ...)   do {} while (0)
-#define zhpe_stats_subid(_name, _id)
+static inline void zhpe_stats_open(uint16_t uid)
+{
+}
+
+static inline void zhpe_stats_test(uint16_t uid)
+{
+}
+#endif
+
+#define zhpe_stats_subid(_name, _id) 0
 
 #endif
 
+
+#ifdef HAVE_ZHPE_STATS
+static inline void zhpe_stats_close(void)
+{
+    struct zhpe_stats *zstats = zhpe_stats;
+    zstats->zhpe_stats_ops->close(zstats);
+}
+
+static inline void zhpe_stats_pause_all(void)
+{
+    struct zhpe_stats *zstats = zhpe_stats;
+    zstats->zhpe_stats_ops->pause_all(zstats);
+}
+
+static inline void zhpe_stats_restart_all(void)
+{
+    struct zhpe_stats *zstats = zhpe_stats;
+    zstats->zhpe_stats_ops->restart_all(zstats);
+}
+
+static inline void zhpe_stats_stop_all(void)
+{
+    struct zhpe_stats *zstats = zhpe_stats;
+    zstats->zhpe_stats_ops->stop_all(zstats);
+}
+
+static inline void zhpe_stats_start(uint32_t subid)
+{
+    struct zhpe_stats *zstats = zhpe_stats;
+    zstats->zhpe_stats_ops->start(zstats, subid);
+}
+
+static inline void zhpe_stats_stop(uint32_t subid)
+{
+    struct zhpe_stats *zstats = zhpe_stats;
+    zstats->zhpe_stats_ops->stop(zstats, subid);
+}
+
+static inline void zhpe_stats_enable(void)
+{
+    struct zhpe_stats *zstats = zhpe_stats;
+    zstats->zhpe_stats_ops->enable(zstats);
+}
+
+static inline void zhpe_stats_disable(void)
+{
+    struct zhpe_stats *zstats = zhpe_stats;
+    zstats->zhpe_stats_ops->disable(zstats);
+}
+
+static inline void zhpe_stats_stamp(uint32_t subid,
+                                    uint64_t d1, uint64_t d2, uint64_t d3,
+                                    uint64_t d4, uint64_t d5, uint64_t d6)
+{
+    struct zhpe_stats *zstats = zhpe_stats;
+    zstats->zhpe_stats_ops->stamp(zstats, subid, d1, d2, d3, d4, d5, d6);
+}
+
+static inline void zhpe_stats_stamp_dbg(const char *func, uint line,
+                                        uint64_t d3,
+                                        uint64_t d4, uint64_t d5, uint64_t d6)
+{
+    struct zhpe_stats *zstats = zhpe_stats;
+    zstats->zhpe_stats_ops->stamp_dbg(zstats, zhpe_stats_subid(DBG, 0),
+                                      (uintptr_t)func, line, d3, d4, d5, d6);
+}
+
+#define zhpe_stats_stamp_dbg(_func, _line, _d3, _d4, _d5, _d6)          \
+{                                                                       \
+    struct zhpe_stats   *zstats = zhpe_stats;                           \
+    static bool         __print_done = false;                           \
+    const char          *__func = (_func);                              \
+                                                                        \
+    if (unlikely(!__print_done)) {                                      \
+        zstats->zhpe_stats_ops->stamp_dbg_func(zstats, __func);         \
+        __print_done = true;                                            \
+    }                                                                   \
+    zhpe_stats_stamp_dbg(__func, (_line), (_d3), (_d4), (_d5), (_d6));  \
+}
+
+static inline void zhpe_stats_stamp_dbgc(uint64_t d1, uint64_t d2, uint64_t d3,
+                                         uint64_t d4, uint64_t d5, uint64_t d6)
+{
+    struct zhpe_stats *zstats = zhpe_stats;
+    zstats->zhpe_stats_ops->stamp_dbg(zstats, zhpe_stats_subid(DBG, 1),
+                                      d1, d2, d3, d4, d5, d6);
+}
+
+#else // HAVE_ZHPE_STATS
+
+static inline void zhpe_stats_close(void)
+{
+}
+
+static inline void zhpe_stats_pause_all(void)
+{
+}
+
+static inline void zhpe_stats_restart_all(void)
+{
+}
+
+static inline void zhpe_stats_stop_all(void)
+{
+}
+
+static inline void zhpe_stats_start(uint32_t subid)
+{
+}
+
+static inline void zhpe_stats_stop(uint32_t subid)
+{
+}
+
+static inline void zhpe_stats_enable(void)
+{
+}
+
+static inline void zhpe_stats_disable(void)
+{
+}
+
+static inline void zhpe_stats_stamp(uint32_t subid,
+                                    uint64_t d1, uint64_t d2, uint64_t d3,
+                                    uint64_t d4, uint64_t d5, uint64_t d6)
+{
+}
+
+static inline void zhpe_stats_stamp_dbg(const char *func, uint line,
+                                        uint64_t d3,
+                                        uint64_t d4, uint64_t d5, uint64_t d6)
+{
+}
+
+static inline void zhpe_stats_stamp_dbgc(uint64_t d1, uint64_t d2, uint64_t d3,
+                                         uint64_t d4, uint64_t d5, uint64_t d6)
+{
+}
+
+#endif // HAVE_ZHPE_STATS
 _EXTERN_C_END
 
 #endif /* _ZHPE_STATS_H_ */

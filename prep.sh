@@ -10,36 +10,27 @@ echo PREP $@
 usage () {
     cat <<EOF >&2
 Usage:
-$APPNAME -z [-o <opts>] [-d|l|s <path>] <insdir>
+$APPNAME -z [-o <opts>] [-d|s <path>] <libdir>
 Do CMake configuration.
 <insdir>    : installation directory
  -d <path>  : driver source directory
- -l <path>  : path to likwid install 
  -o <opts>  : add C compiler options (defines or optimization)
  -s <path>  : path to simulator headers 
- -z         : enable zhpe_stats (-l and -z probably not compatible)
+ -z         : enable zhpe_stats
 EOF
     exit 1
 }
 
 COPT=""
 DRVR=../zhpe-driver
-LIBF=""
-LIKW=""
 SIMH=""
 VERBOSE=""
 ZSTA=""
 
-while getopts 'd:f:l:o:s:z' OPT; do
+while getopts 'd:o:s:z' OPT; do
     case $OPT in
     d)
 	DRVR="$OPTARG"
-	;;
-    f)
-	LIBF="$OPTARG"
-	;;
-    l)
-	LIKW="$OPTARG"
 	;;
     o)
 	COPT="$OPTARG"
@@ -62,16 +53,11 @@ shift $((( OPTIND - 1 )))
 DRVR=$(cd $DRVR ; pwd)
 
 if ! echo $COPT | grep -qe "[[:space:]]*-O"; then
-    COPT+=" -O2"
+    COPT+=" -O3"
 fi
 
-INSD=$1
-[[ "$INSD" == /* ]] || INSD=$PWD/$INSD
-
-if [[ -n "$LIBF" ]]; then
-    echo $APPNAME: -f option is obsolete, libfabric assumed to in '<insdir>' \
-	 1>&2
-fi
+LIBD=$1
+[[ "$LIBD" == /* ]] || LIBD=$PWD/$LIBD
 
 (
     cd $APPDIR
@@ -86,8 +72,8 @@ fi
 	cd $D
 	cmake \
 	     -D COPT="$COPT" \
-	     -D INSD="$INSD" \
-	     -D LIKW="$LIKW" \
+	     -D INSD="$LIBD" \
+	     -D LIBD="$LIBD" \
 	     -D SIMH="$SIMH" \
 	     -D ZSTA="$ZSTA" \
 	     ../../$D
@@ -99,30 +85,10 @@ fi
 	cd $D
 	cmake \
 	     -D COPT="$COPT" \
-	     -D INSD="$INSD" \
-	     -D LIKW="$LIKW" \
+	     -D INSD="$LIBD" \
+	     -D LIBD="$LIBD" \
 	     -D SIMH="$SIMH" \
 	     -D ZSTA="$ZSTA" \
 	     ../../$D
-    )
-    (
-	D=step3
-	mkdir $D
-	cd $D
-	cat <<EOF >prep3.sh
-#!/bin/bash
-set -e
-cd $APPDIR/$B/step3
-[[ ! -e prep3.done ]] || exit 0
-	cmake \
-	     -D COPT="$COPT" \
-	     -D INSD="$INSD" \
-	     -D LIKW="$LIKW" \
-	     -D SIMH="$SIMH" \
-	     -D ZSTA="$ZSTA" \
-	     ../../$D
-touch prep3.done
-EOF
-	chmod a+x prep3.sh
     )
 )

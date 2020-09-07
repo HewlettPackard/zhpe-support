@@ -6,6 +6,6 @@ add_library(
 target_link_libraries(
   zhpeq_backend
   PRIVATE zhpeq_util_fab zhpeq_util
-  PUBLIC uuid Threads::Threads )
+  PUBLIC numa uuid Threads::Threads)
 
 install(TARGETS zhpeq_backend DESTINATION lib)

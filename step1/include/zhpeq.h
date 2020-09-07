@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2018 Hewlett Packard Enterprise Development LP.
+ * Copyright (C) 2017-2020 Hewlett Packard Enterprise Development LP.
  * All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -41,6 +41,11 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
+
+#include <sys/epoll.h>
+
+#include <zhpeq_util.h>
 
 #include <zhpe_uapi.h>
 
@@ -48,64 +53,72 @@ _EXTERN_C_BEG
 
 #define ZHPEQ_API_VERSION       (1)
 
-#define ZHPEQ_MR_GET            ZHPE_MR_GET
-#define ZHPEQ_MR_PUT            ZHPE_MR_PUT
-#define ZHPEQ_MR_SEND           ZHPE_MR_SEND
-#define ZHPEQ_MR_RECV           ZHPE_MR_RECV
-#define ZHPEQ_MR_GET_REMOTE     ZHPE_MR_GET_REMOTE
-#define ZHPEQ_MR_PUT_REMOTE     ZHPE_MR_PUT_REMOTE
+#define __IMPORT(_x)            ZHPEQ_##_x = ZHPE_##_x
 
-#define ZHPEQ_MR_KEY_ZERO_OFF   ZHPE_MR_FLAG0
-#define ZHPEQ_MR_FLAG1          ZHPE_MR_FLAG1
-#define ZHPEQ_MR_FLAG2          ZHPE_MR_FLAG2
-#define ZHPEQ_MR_FLAG3          ZHPE_MR_FLAG3
+enum {
+    __IMPORT(MR_GET),
+    __IMPORT(MR_PUT),
+    __IMPORT(MR_GET_REMOTE),
+    __IMPORT(MR_PUT_REMOTE),
+    __IMPORT(MR_SEND),
+    __IMPORT(MR_RECV),
+    __IMPORT(MR_FLAG0),
+    __IMPORT(MR_FLAG1),
+    __IMPORT(MR_FLAG2),
+    __IMPORT(MR_REQ_CPU),
+    __IMPORT(MR_REQ_CPU_CACHE),
+    __IMPORT(MR_REQ_CPU_WB),
+    __IMPORT(MR_REQ_CPU_WC),
+    __IMPORT(MR_REQ_CPU_WT),
+    __IMPORT(MR_REQ_CPU_UC),
+    __IMPORT(FEATURE_MR_OVERLAP_CHECKING)
+};
+
+#undef __IMPORT
 
 enum zhpeq_atomic_size {
-    ZHPEQ_ATOMIC_SIZE32         = ZHPE_HW_ATOMIC_SIZE_32,
-    ZHPEQ_ATOMIC_SIZE64         = ZHPE_HW_ATOMIC_SIZE_64,
+    ZHPEQ_ATOMIC_SIZE_NONE      = ZHPE_HW_ATOMIC_RETURN,
+    ZHPEQ_ATOMIC_SIZE32         = (ZHPE_HW_ATOMIC_SIZE_32 |
+                                   ZHPE_HW_ATOMIC_RETURN),
+    ZHPEQ_ATOMIC_SIZE64         = (ZHPE_HW_ATOMIC_SIZE_64 |
+                                   ZHPE_HW_ATOMIC_RETURN),
 };
+
+#define __IMPORT(_x)            ZHPEQ_ATOMIC_##_x = ZHPE_HW_OPCODE_ATM_##_x
 
 enum zhpeq_atomic_op {
-    ZHPEQ_ATOMIC_SWAP           = ZHPE_HW_OPCODE_ATM_SWAP,
-    ZHPEQ_ATOMIC_ADD            = ZHPE_HW_OPCODE_ATM_ADD,
-    ZHPEQ_ATOMIC_AND            = ZHPE_HW_OPCODE_ATM_AND,
-    ZHPEQ_ATOMIC_OR             = ZHPE_HW_OPCODE_ATM_OR,
-    ZHPEQ_ATOMIC_XOR            = ZHPE_HW_OPCODE_ATM_XOR,
-    ZHPEQ_ATOMIC_SMIN           = ZHPE_HW_OPCODE_ATM_SMIN,
-    ZHPEQ_ATOMIC_SMAX           = ZHPE_HW_OPCODE_ATM_SMAX,
-    ZHPEQ_ATOMIC_UMIN           = ZHPE_HW_OPCODE_ATM_UMIN,
-    ZHPEQ_ATOMIC_UMAX           = ZHPE_HW_OPCODE_ATM_UMAX,
-    ZHPEQ_ATOMIC_CAS            = ZHPE_HW_OPCODE_ATM_CAS,
+    ZHPEQ_ATOMIC_NONE           = ZHPE_HW_OPCODE_NOP,
+    __IMPORT(SWAP),
+    __IMPORT(ADD),
+    __IMPORT(AND),
+    __IMPORT(OR),
+    __IMPORT(XOR),
+    __IMPORT(SMIN),
+    __IMPORT(SMAX),
+    __IMPORT(UMIN),
+    __IMPORT(UMAX),
+    __IMPORT(CAS),
 };
 
-union zhpeq_atomic {
-    union zhpe_atomic   z;
-};
+#undef __IMPORT
 
-#define ZHPEQ_CQ_STATUS_SUCCESS ZHPE_HW_CQ_STATUS_SUCCESS
-#define ZHPEQ_CQ_STATUS_CMD_TRUNCATED \
-    ZHPE_HW_CQ_STATUS_TRUNCATED
-#define ZHPEQ_CQ_STATUS_BAD_CMD ZHPE_HW_CQ_STATUS_BAD_CMD
-#define ZHPEQ_CQ_STATUS_LOCAL_UNRECOVERABLE \
-    ZHPE_HW_CQ_STATUS_LOCAL_UNRECOVERABLE
-#define ZHPEQ_CQ_STATUS_FABRIC_UNRECOVERABLE \
-    ZHPE_HW_CQ_STATUS_FABRIC_UNRECOVERABLE
-#define ZHPEQ_CQ_STATUS_FABRIC_NO_RESOURCES \
-    ZHPE_HW_CQ_STATUS_FABRIC_NO_RESOURCES
-#define ZHPEQ_CQ_STATUS_FABRIC_ACCESS \
-    ZHPE_HW_CQ_STATUS_FABRIC_ACCESS
+#define	ZHPEQ_HOSTS_FILE	"/etc/hosts.zhpeq"
+#define	ZHPEQ_HOSTS_ENV         "ZHPEQ_HOSTS"
 
 enum zhpeq_backend {
-    ZHPEQ_BACKEND_ZHPE          = ZHPE_BACKEND_ZHPE,
-    ZHPEQ_BACKEND_LIBFABRIC     = ZHPE_BACKEND_LIBFABRIC,
-    ZHPEQ_BACKEND_MAX           = ZHPE_BACKEND_MAX,
+    ZHPEQ_BACKEND_NONE,
+    ZHPEQ_BACKEND_ZHPE,
+    ZHPEQ_BACKEND_LIBFABRIC,
+    ZHPEQ_BACKEND_MAX,
 };
 
 enum {
-    ZHPEQ_PRI_MAX               = 1,
-    ZHPEQ_TC_MAX                = 15,
-    ZHPEQ_IMM_MAX               = ZHPE_IMM_MAX,
-    ZHPEQ_KEY_BLOB_MAX          = 32,
+    ZHPEQ_PRIO_LO               = ZHPE_PRIO_LO,
+    ZHPEQ_PRIO_HI               = ZHPE_PRIO_HI,
+    ZHPEQ_MAX_PRIO              = ZHPE_MAX_PRIO,
+    ZHPEQ_MAX_TC                = ZHPE_MAX_TC,
+    ZHPEQ_MAX_IMM               = ZHPE_MAX_IMM,
+    ZHPEQ_MAX_KEY_BLOB          = 32,
 };
 
 struct zhpeq_attr {
@@ -115,142 +128,524 @@ struct zhpeq_attr {
 
 struct zhpeq_key_data {
     struct zhpe_key_data z;
-    union {
-        uint64_t        laddr;
-        uint64_t        rsp_zaddr;
-    };
+    struct zhpeq_dom    *zqdom;
+    void                *cache_entry;
+    int64_t             *active_uptr;
+#ifdef NOT_YET
+    /* ZZZ: registration thread. */
+    void                (*ready)(struct zhpeq_key_data *qkdata,
+                                 void *ready_data);
+    void                *ready_data;
+#endif
 };
 
-struct zhpeq_cq_entry {
-    struct zhpe_cq_entry z;
+/* Public portions of structures. */
+struct zhpeq_mmap_desc {
+    struct zhpeq_key_data *qkdata;
+    void                *addr;
 };
 
-/* Forward references to shut the compiler up. */
-struct zhpeq;
-struct zhpeq_dom;
+struct zhpeq_dom {
+    void                *dummy;
+};
 
-static inline int zhpeq_rem_key_access(struct zhpeq_key_data *qkdata,
+struct zhpeq_rq_epoll {
+    void                *dummy;
+};
+
+#define ZHPEQ_BITMAP_BITS       (64U)
+#define ZHPEQ_BITMAP_SHIFT      (6U)
+
+struct zhpeq_tq;
+
+typedef void (*zhpeq_tq_entry_insert_fn)(struct zhpeq_tq *ztq,
+                                         uint16_t reservation16);
+
+extern zhpeq_tq_entry_insert_fn zhpeq_insert_fn[];
+
+enum {
+    ZHPEQ_INSERT_CMD    = 0,
+    ZHPEQ_INSERT_MEM,
+    ZHPEQ_INSERT_NONE,
+    ZHPEQ_INSERT_LEN,
+    ZHPEQ_INSERT_SHIFT  = 16,
+};
+
+struct zhpeq_tq {
+    struct zhpeq_dom    *zqdom;
+    struct zhpe_xqinfo  tqinfo;
+    void                *qcm;
+    union zhpe_hw_wq_entry *cmd;
+    union zhpe_hw_wq_entry *wq;
+    union zhpe_hw_cq_entry *cq;
+    uint64_t            *free_bitmap;
+    void                **ctx;
+    union zhpe_hw_wq_entry *mem;
+    uint32_t            wq_tail;
+    uint32_t            wq_tail_commit;
+    uint32_t            cq_head;
+    uint32_t            cmd_queued;
+};
+
+#define ZHPEQ_TQ_RESERVATION_MASK ((1U << ZHPEQ_INSERT_SHIFT) - 1)
+
+struct zhpeq_rq {
+    struct zhpeq_dom    *zqdom;
+    struct zhpe_rqinfo  rqinfo;
+    volatile void       *qcm;
+    union zhpe_hw_rdm_entry *rq;
+    int64_t             epoll_threshold_cycles;
+    uint64_t            rx_last_time;
+    uint32_t            rx_last_head;
+    uint32_t            head;
+    uint32_t            head_commit;
+};
+
+struct zhpeq_rx_oos {
+    struct zhpeq_rx_oos *next;
+    uint64_t            valid_bits;
+    uint32_t            base_off;
+    struct zhpe_rdm_entry rqe[64] CACHE_ALIGNED;
+};
+
+struct zhpeq_rx_seq {
+    struct zhpeq_rx_oos *rx_oos_list;
+    struct zhpeq_rx_oos *(*alloc)(struct zhpeq_rx_seq *zseq);
+    void                (*free)(struct zhpeq_rx_seq *zseq,
+                                struct zhpeq_rx_oos *rx_oos);
+    uint64_t            rx_oos_cnt;
+    uint32_t            rx_oos_base_seq;
+    uint32_t            rx_oos_max;
+    uint32_t            seq;
+};
+
+static inline int zhpeq_rem_key_access(const struct zhpeq_key_data *qkdata,
                                        uint64_t start, uint64_t len,
                                        uint32_t qaccess, uint64_t *zaddr)
 {
-    struct zhpe_key_data *kdata = &qkdata->z;
+    const struct zhpe_key_data *kdata = &qkdata->z;
 
-    if (!qkdata)
-        return -EINVAL;
-    if (kdata->access & ZHPEQ_MR_KEY_ZERO_OFF)
-        start += kdata->vaddr;
-    if ((qaccess & kdata->access) != qaccess ||
-        start < kdata->vaddr || start + len > kdata->vaddr + kdata->len)
+    if (unlikely((qaccess & kdata->access) != qaccess || start < kdata->vaddr ||
+                 start + len > kdata->vaddr + kdata->len))
         return -EINVAL;
     *zaddr = (start - kdata->vaddr) + kdata->zaddr;
 
     return 0;
 }
 
-static inline int zhpeq_lcl_key_access(struct zhpeq_key_data *qkdata,
-                                       void *buf, uint64_t len,
-                                       uint32_t qaccess, uint64_t *zaddr)
+static inline int zhpeq_lcl_key_access(const struct zhpeq_key_data *qkdata,
+                                       const void *buf, uint64_t len,
+                                       uint32_t qaccess)
 {
     uintptr_t           start = (uintptr_t)buf;
-    struct zhpe_key_data *kdata = &qkdata->z;
+    const struct zhpe_key_data *kdata = &qkdata->z;
 
-    if (!qkdata)
+    if (unlikely((qaccess & kdata->access) != qaccess || start < kdata->vaddr ||
+                 start + len > kdata->vaddr + kdata->len))
         return -EINVAL;
-    if ((qaccess & kdata->access) != qaccess ||
-        start < kdata->vaddr || start + len > kdata->vaddr + kdata->len)
-        return -EINVAL;
-    *zaddr = (start - kdata->vaddr) + qkdata->laddr;
 
     return 0;
 }
 
-int zhpeq_init(int api_version);
+int zhpeq_init(int api_version, struct zhpeq_attr *attr);
+
+int zhpeq_present(int api_version);
 
 int zhpeq_query_attr(struct zhpeq_attr *attr);
 
-int zhpeq_domain_alloc(struct zhpeq_dom **zdom_out);
+int zhpeq_domain_alloc(struct zhpeq_dom **zqdom_out);
 
-int zhpeq_domain_free(struct zhpeq_dom *zdom);
+int zhpeq_domain_free(struct zhpeq_dom *zqdom);
 
-int zhpeq_alloc(struct zhpeq_dom *zdom, int cmd_qlen, int cmp_qlen,
-                int traffic_class, int priority, int slice_mask,
-                struct zhpeq **zq_out);
+int zhpeq_domain_insert_addr(struct zhpeq_dom *zqdom, void *sa,
+                             void **addr_cookie);
 
-int zhpeq_free(struct zhpeq *zq);
+int zhpeq_domain_remove_addr(struct zhpeq_dom *zqdom, void *addr_cookie);
 
-int zhpeq_backend_exchange(struct zhpeq *zq, int sock_fd,
-                           void *sa, size_t *sa_len);
+int zhpeq_tq_alloc(struct zhpeq_dom *zqdom, int cmd_qlen, int cmp_qlen,
+                   int traffic_class, int priority, int slice_mask,
+                   struct zhpeq_tq **ztq_out);
 
-int zhpeq_backend_open(struct zhpeq *zq, void *sa);
+int zhpeq_tq_free(struct zhpeq_tq *ztq);
 
-int zhpeq_backend_close(struct zhpeq *zq, int open_idx);
+static inline uint64_t ioread64(const volatile void *addr)
+{
+    return le64toh(*(const volatile uint64_t *)addr);
+}
 
-ssize_t zhpeq_cq_read(struct zhpeq *zq, struct zhpeq_cq_entry *entries,
-                      size_t n_entries);
+static inline void iowrite64(uint64_t value, volatile void *addr)
+{
+    *(volatile uint64_t *)addr = htole64(value);
+}
 
-int zhpeq_mr_reg(struct zhpeq_dom *zdom, const void *buf, size_t len,
+static inline uint64_t qcmread64(const volatile void *qcm, size_t off)
+{
+    return ioread64((char *)qcm + off);
+}
+
+static inline void qcmwrite64(uint64_t value, volatile void *qcm, size_t off)
+{
+    iowrite64(value, (char *)qcm + off);
+}
+
+#define ZHPEQ_TQ_RESERVE_CMD_OK         (~(uint64_t)0)
+#define ZHPEQ_TQ_RESERVE_MEM_ONLY                                       \
+    (~(uint64_t)((1UL << ZHPE_XDM_QCM_CMD_BUF_COUNT) - 1))
+
+int32_t zhpeq_tq_reserve_type(struct zhpeq_tq *ztq, uint64_t type_mask);
+
+static inline int32_t zhpeq_tq_reserve(struct zhpeq_tq *ztq)
+{
+    /*
+     * Fence operations only work on memory queue ops, so call
+     * zhpeq_tq_reserve_type(ztq, ZHPEQ_TQ_RESERVE_MEM_ONLY) when using hardware
+     * fence.
+     */
+    return zhpeq_tq_reserve_type(ztq, ZHPEQ_TQ_RESERVE_CMD_OK);
+}
+
+static inline void zhpeq_tq_unreserve(struct zhpeq_tq *ztq, uint16_t index)
+{
+    barrier();
+    ztq->free_bitmap[index >> ZHPEQ_BITMAP_SHIFT] |=
+        ((uint64_t)1 << (index & (ZHPEQ_BITMAP_BITS - 1)));
+}
+
+void zhpeq_tq_commit(struct zhpeq_tq *ztq);
+
+static inline void zhpeq_tq_insert(struct zhpeq_tq *ztq, int32_t reservation)
+{
+    zhpeq_insert_fn[reservation >> ZHPEQ_INSERT_SHIFT](ztq, reservation);
+}
+
+static inline void zhpeq_tq_set_context(struct zhpeq_tq *ztq,
+                                        int32_t reservation, void *context)
+{
+    ztq->ctx[(uint16_t)reservation] = context;
+}
+
+static inline union zhpe_hw_wq_entry *zhpeq_tq_get_wqe(struct zhpeq_tq *ztq,
+                                                       int32_t reservation)
+{
+    return &ztq->mem[(uint16_t)reservation];
+}
+
+static inline void zhpeq_tq_nop(union zhpe_hw_wq_entry *wqe,
+                                uint16_t op_flags)
+{
+    wqe->hdr.opcode = ZHPE_HW_OPCODE_NOP | op_flags;
+}
+
+static inline void zhpeq_tq_sync(union zhpe_hw_wq_entry *wqe,
+                                 uint16_t op_flags)
+{
+    wqe->hdr.opcode = ZHPE_HW_OPCODE_SYNC | ZHPE_HW_OPCODE_FENCE | op_flags;
+}
+
+static inline void zhpeq_tq_rw(union zhpe_hw_wq_entry *wqe,
+                               uint16_t opcode, uint64_t rd_addr, size_t len,
+                               uint64_t wr_addr)
+{
+    wqe->hdr.opcode = opcode;
+    wqe->dma.len = len;
+    wqe->dma.rd_addr = rd_addr;
+    wqe->dma.wr_addr = wr_addr;
+}
+
+static inline void zhpeq_tq_put(union zhpe_hw_wq_entry *wqe,
+                                uint16_t op_flags, uint64_t lcl_addr,
+                                size_t len, uint64_t rem_addr)
+{
+    zhpeq_tq_rw(wqe, (ZHPE_HW_OPCODE_PUT | op_flags), lcl_addr, len, rem_addr);
+}
+
+static inline void *zhpeq_tq_puti(union zhpe_hw_wq_entry *wqe,
+                                  uint16_t op_flags, size_t len,
+                                  uint64_t rem_addr)
+{
+    wqe->hdr.opcode = ZHPE_HW_OPCODE_PUTIMM | op_flags;
+    wqe->imm.len = len;
+    wqe->imm.rem_addr = rem_addr;
+
+    return wqe->imm.data;
+}
+
+static inline void zhpeq_tq_get(union zhpe_hw_wq_entry *wqe,
+                                uint16_t op_flags, uint64_t lcl_addr,
+                                size_t len, uint64_t rem_addr)
+{
+    zhpeq_tq_rw(wqe, (ZHPE_HW_OPCODE_GET | op_flags), rem_addr, len, lcl_addr);
+}
+
+static inline void zhpeq_tq_geti(union zhpe_hw_wq_entry *wqe,
+                                 uint16_t op_flags, size_t len,
+                                 uint64_t rem_addr)
+{
+    wqe->hdr.opcode = ZHPE_HW_OPCODE_GETIMM | op_flags;
+    wqe->imm.len = len;
+    wqe->imm.rem_addr = rem_addr;
+}
+
+static inline void *
+zhpeq_tq_enqa(union zhpe_hw_wq_entry *wqe, uint16_t op_flags,
+              uint32_t dgcid, uint32_t rspctxid)
+{
+    wqe->hdr.opcode = ZHPE_HW_OPCODE_ENQA | op_flags;
+    wqe->enqa.dgcid = dgcid;
+    wqe->enqa.rspctxid = rspctxid;
+
+    return &wqe->enqa.payload;
+}
+
+static inline struct zhpe_hw_wq_atomic *
+zhpeq_tq_atomic(union zhpe_hw_wq_entry *wqe,
+                uint16_t op_flags, enum zhpeq_atomic_size datasize,
+                enum zhpeq_atomic_op op, uint64_t rem_addr)
+{
+    wqe->hdr.opcode = op | op_flags;
+    wqe->atm.rem_addr = rem_addr;
+    wqe->atm.size = datasize;
+
+    return &wqe->atm;
+}
+
+int zhpeq_tq_restart(struct zhpeq_tq *ztq);
+
+static inline void *zhpeq_q_entry(void *entries, uint32_t qindex,
+                                  uint32_t qmask)
+{
+    return VPTR(entries, ZHPE_HW_ENTRY_LEN * (qindex & qmask));
+}
+
+static inline struct zhpe_cq_entry *zhpeq_tq_cq_entry(struct zhpeq_tq *ztq)
+{
+    uint32_t            qmask = ztq->tqinfo.cmplq.ent - 1;
+    uint32_t            qindex = ztq->cq_head;
+    struct zhpe_cq_entry *cqe = zhpeq_q_entry(ztq->cq, qindex, qmask);
+
+    /* likely() to optimize the success case. */
+    if (likely(zhpe_cqe_valid(cqe, qindex, qmask)))
+        return cqe;
+
+    return NULL;
+}
+
+static inline void *zhpeq_tq_cq_context(struct zhpeq_tq *ztq,
+                                        struct zhpe_cq_entry *cqe)
+{
+    return ztq->ctx[cqe->hdr.index];
+}
+
+static inline void zhpeq_tq_cq_entry_done(struct zhpeq_tq *ztq,
+                                          struct zhpe_cq_entry *cqe)
+{
+    /*
+     * Simple rule: do not access the cqe or the backup copy of the
+     * XDM command after this call.
+     */
+    zhpeq_tq_unreserve(ztq, cqe->hdr.index);
+    ztq->cq_head++;
+}
+
+int zhpeq_rq_free(struct zhpeq_rq *zrq);
+
+int zhpeq_rq_alloc(struct zhpeq_dom *zqdom, int rx_qlen, int slice_mask,
+                   struct zhpeq_rq **zrq_out);
+
+int zhpeq_rq_alloc_specific(struct zhpeq_dom *zqdom, int rx_qlen,
+                            int qspecific, struct zhpeq_rq **zrq_out);
+
+static inline void __zhpeq_rq_head_update(struct zhpeq_rq *zrq, uint32_t qhead,
+                                          bool check)
+{
+    uint32_t            qmask = zrq->rqinfo.cmplq.ent - 1;
+
+    if (check && zrq->head_commit == qhead)
+        return;
+    zrq->head_commit = qhead;
+    qcmwrite64(qhead & qmask, zrq->qcm, ZHPE_RDM_QCM_RCV_QUEUE_HEAD_OFFSET);
+}
+
+static inline void zhpeq_rq_head_update(struct zhpeq_rq *zrq,
+                                        uint32_t threshold)
+{
+    if (!threshold)
+        threshold = zrq->rqinfo.cmplq.ent / 4;
+    if (unlikely(zrq->head - zrq->head_commit > threshold)) {
+        /*
+         * Update qcm head: try to manage unnecessary interrupts by
+         * keeping head 1 behind.
+         */
+        __zhpeq_rq_head_update(zrq, zrq->head - 1, false);
+    }
+}
+
+static inline struct zhpe_rdm_entry *zhpeq_rq_entry(struct zhpeq_rq *zrq)
+{
+    uint32_t            qmask = zrq->rqinfo.cmplq.ent - 1;
+    uint32_t            qindex = zrq->head;
+    struct zhpe_rdm_entry *rqe = zhpeq_q_entry(zrq->rq, qindex, qmask);
+
+    /* May not actually be likely, but we want to optimize success. */
+    if (likely(zhpe_rqe_valid(rqe, qindex, qmask)))
+        return rqe;
+
+    return NULL;
+}
+
+static inline void zhpeq_rq_entry_done(struct zhpeq_rq *zrq,
+                                       struct zhpe_rdm_entry *rqe)
+{
+    uint32_t            new;
+
+    /* Simple rule: do not access the rqe after this call. */
+    barrier();
+    /*
+     * I'm not concerned about order because there should be locking for that,
+     * but I am about read/write tearing.
+     */
+    new = zrq->head + 1;
+    atm_store_rlx(&zrq->head, new);
+}
+
+int zhpeq_rq_epoll_alloc(struct zhpeq_rq_epoll **zepoll_out);
+
+int zhpeq_rq_epoll_free(struct zhpeq_rq_epoll *zepoll);
+
+int zhpeq_rq_epoll_add(struct zhpeq_rq_epoll *zepoll, struct zhpeq_rq *zrq,
+                       void (*epoll_handler)(struct zhpeq_rq *zrq,
+                                             void *epoll_handler_data),
+                       void *epoll_handler_data, uint32_t epoll_threshold_us,
+                       bool disabled);
+
+int zhpeq_rq_epoll_del(struct zhpeq_rq *zrq);
+
+int zhpeq_rq_epoll(struct zhpeq_rq_epoll *zepoll,
+                   int timeout_ms, const sigset_t *sigmask, bool entr_ok);
+
+int zhpeq_rq_epoll_signal(struct zhpeq_rq_epoll *zepoll);
+
+bool zhpeq_rq_epoll_enable(struct zhpeq_rq *zrq);
+
+static inline bool zhpeq_rq_epoll_check(struct zhpeq_rq *zrq, uint64_t now)
+{
+    uint32_t            qhead;
+
+    /*
+     * Racy, lock-free, lightweight check to see of see should try to enable
+     * epoll. Not perfect, doesn't have to be. It is assumed that zrq->head
+     * may be updated in another thread, but rx_last_xxx will only be done in
+     * this thread.
+     *
+     * Usage:
+     * now = get_cycles_approx();
+     * epoll_enabled = false;
+     * if (unlikely(zhpeq_rq_epoll_check(zrq, now))) {
+     *     lock(); // Locking needed if there are other threads.
+     *     epoll_enabled = zhpeq_rq_epoll_enable(zrq);
+     *     unlock();
+     * }
+     * If epoll_enabled is true at this point, it should be safe to rely on
+     * epoll, if not, then continue using zhpeq_rq_entry(). Note that
+     * spurious epoll_events are possible, especially after
+     * zhpeq_rq_epoll_enable() is called.
+     */
+    qhead = atm_load_rlx(&zrq->head);
+    if (likely(qhead != zrq->rx_last_head)) {
+        zrq->rx_last_head = qhead;
+        zrq->rx_last_time = now;
+
+        return false;
+    }
+
+    return (wrap64sub(now, zrq->rx_last_time) > zrq->epoll_threshold_cycles);
+}
+
+int zhpeq_rq_get_addr(struct zhpeq_rq *zrq, void *sa, size_t *sa_len);
+
+int zhpeq_rq_xchg_addr(struct zhpeq_rq *zrq, int sock_fd,
+                       void *sa, size_t *sa_len);
+
+int zhpeq_rx_oos_insert(struct zhpeq_rx_seq *zseq, struct zhpe_rdm_entry *rqe,
+                        uint32_t seen);
+
+bool zhpeq_rx_oos_spill(struct zhpeq_rx_seq *zseq, uint32_t msgs,
+                        void (*handler)(void *handler_data,
+                                        struct zhpe_rdm_entry *rqe),
+                        void *handler_data);
+
+#ifdef NDEBUG
+
+static inline
+void zhpeq_rx_oos_log(const char *func, uint line,
+                      uint64_t v0, uint64_t v1, uint64_t v2, uint64_t v3,
+                      uint64_t v4)
+{
+}
+
+#else
+
+void zhpeq_rx_oos_log(const char *func, uint line,
+                      uint64_t v0, uint64_t v1, uint64_t v2, uint64_t v3,
+                      uint64_t v4);
+
+#endif
+
+int zhpeq_mr_reg(struct zhpeq_dom *zqdom, const void *buf, size_t len,
                  uint32_t access, struct zhpeq_key_data **qkdata_out);
 
-int zhpeq_mr_free(struct zhpeq_dom *zdom, struct zhpeq_key_data *qkdata);
+int zhpeq_qkdata_free(struct zhpeq_key_data *qkdata);
 
-int zhpeq_zmmu_export(struct zhpeq_dom *zdom,
-                      const struct zhpeq_key_data *qkdata,
-                      void *blob, size_t *blob_len);
+int zhpeq_qkdata_export(const struct zhpeq_key_data *qkdata, uint32_t qaccmask,
+                        void *blob, size_t *blob_len);
 
-int zhpeq_zmmu_fam_import(struct zhpeq_dom *zdom, int open_idx,
-                          bool cpu_visible, struct zhpeq_key_data **qkdata_out);
+int zhpeq_qkdata_import(struct zhpeq_dom *zqdom, void *addr_cookie,
+                        const void *blob, size_t blob_len,
+                        struct zhpeq_key_data **qkdata_out);
 
-int zhpeq_zmmu_import(struct zhpeq_dom *zdom, int open_idx,
-                      const void *blob, size_t blob_len, bool cpu_visible,
-                      struct zhpeq_key_data **qkdata_out);
+int zhpeq_fam_qkdata(struct zhpeq_dom *zqdom, void *addr_cookie,
+                     struct zhpeq_key_data **qkdata_out, size_t *n_qkdata);
 
-int zhpeq_zmmu_free(struct zhpeq_dom *zdom, struct zhpeq_key_data *qkdata);
+int zhpeq_zmmu_reg(struct zhpeq_key_data *qkdata);
 
-int64_t zhpeq_reserve(struct zhpeq *zq, uint32_t n_entries);
+int zhpeq_mmap(const struct zhpeq_key_data *qkdata,
+               uint32_t cache_mode, void *addr, size_t length, int prot,
+               int flags, off_t offset, struct zhpeq_mmap_desc **zmdesc);
 
-int zhpeq_commit(struct zhpeq *zq, uint32_t qindex, uint32_t n_entries);
+int zhpeq_mmap_unmap(struct zhpeq_mmap_desc *zmdesc);
 
-int zhpeq_signal(struct zhpeq *zq);
+int zhpeq_mmap_commit(struct zhpeq_mmap_desc *zmdesc,
+                      const void *addr, size_t length, bool fence,
+                      bool invalidate, bool wait);
 
-int zhpeq_check_stopped(struct zhpeq *zq);
+static inline bool zhpeq_is_asic(void)
+{
+    return true;
+}
 
-int zhpeq_restart(struct zhpeq *zq, uint32_t head_idx, uint32_t tail_idx);
+int zhpeq_get_zaddr(const char *node, const char *service,
+                    bool source, struct sockaddr_zhpe *sz);
 
-int zhpeq_put(struct zhpeq *zq, uint32_t qindex, bool fence,
-              uint64_t local_addr, size_t len, uint64_t remote_addr,
-              void *context);
+int zhpeq_validate_gcid(const char *type, uint32_t gcid_in);
 
-int zhpeq_puti(struct zhpeq *zq, uint32_t qindex, bool fence,
-               const void *buf, size_t len, uint64_t remote_addr,
-               void *context);
+int zhpeq_feature_enable(uint64_t features);
 
-int zhpeq_get(struct zhpeq *zq, uint32_t qindex, bool fence,
-              uint64_t local_addr, size_t len, uint64_t remote_addr,
-              void *context);
+/* Info/debugging */
 
-int zhpeq_geti(struct zhpeq *zq, uint32_t qindex, bool fence,
-               size_t len, uint64_t remote_addr, void *context);
+void zhpeq_print_tq_info(struct zhpeq_tq *ztq);
 
-int zhpeq_nop(struct zhpeq *zq, uint32_t qindex, bool fence,
-              void *context);
-
-int zhpeq_atomic(struct zhpeq *zq, uint32_t qindex, bool fence, bool retval,
-                 enum zhpeq_atomic_size datasize, enum zhpeq_atomic_op op,
-                 uint64_t remote_addr, const union zhpeq_atomic *operands,
-                 void *context);
-
-void zhpeq_print_info(struct zhpeq *zq);
-
-struct zhpeq_dom *zhpeq_dom(struct zhpeq *zq);
-
-void zhpeq_print_qkdata(const char *func, uint line, struct zhpeq_dom *zdom,
+void zhpeq_print_qkdata(const char *func, uint line,
                         const struct zhpeq_key_data *qkdata);
 
-void zhpeq_print_qcm(const char *func, uint line, const struct zhpeq *zq);
+void zhpeq_print_tq_qcm(const char *func, uint line,
+                        const struct zhpeq_tq *ztq);
 
-bool zhpeq_is_asic(void);
+void zhpeq_print_tq_wq(struct zhpeq_tq *ztq, int cnt);
 
-int zhpeq_getaddr(struct zhpeq *zq, void *sa, size_t *sa_len);
+void zhpeq_print_tq_cq(struct zhpeq_tq *ztq, int cnt);
+
+void zhpeq_print_rq_qcm(const char *func, uint line,
+                        const struct zhpeq_rq *zrq);
 
 _EXTERN_C_END
 

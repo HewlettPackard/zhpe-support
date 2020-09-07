@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2018 Hewlett Packard Enterprise Development LP.
+ * Copyright (C) 2017-2020 Hewlett Packard Enterprise Development LP.
  * All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -44,55 +44,67 @@
 
 #include <assert.h>
 #include <endian.h>
+#include <inttypes.h>
 
 #include <uuid/uuid.h>
 
 _EXTERN_C_BEG
 
-#define DEV_NAME        "/dev/"DRIVER_NAME
+#define DEV_PATH        "/dev/"DRIVER_NAME
+#define PLATFORM_PATH   "/sys/module/"DRIVER_NAME"/parameters/platform"
+
+struct key_data_packed;
+struct zhpeq_domi;
+struct zhpeq_rqi;
+struct zhpeq_tqi;
 
 struct backend_ops {
     int                 (*lib_init)(struct zhpeq_attr *attr);
-    int                 (*domain)(struct zhpeq_dom *zdom);
-    int                 (*domain_free)(struct zhpeq_dom *zdom);
-    int                 (*qalloc)(struct zhpeq *zq, int cmd_qlen, int cmp_qlen,
-                                  int traffic_class, int priority,
-                                  int slice_mask);
-    int                 (*qalloc_post)(struct zhpeq *zq);
-    int                 (*qfree_pre)(struct zhpeq *zq);
-    int                 (*qfree)(struct zhpeq *zq);
-    int                 (*exchange)(struct zhpeq *zq, int sock_fd,
-                                    void *sa, size_t *sa_len);
-    int                 (*open)(struct zhpeq *zq, void *sa);
-    int                 (*close)(struct zhpeq *zq, int open_idx);
-    int                 (*wq_signal)(struct zhpeq *zq);
-    ssize_t             (*cq_poll)(struct zhpeq *zq, size_t len);
-    int                 (*mr_reg)(struct zhpeq_dom *zdom,
+    int                 (*domain)(struct zhpeq_domi *zqdomi);
+    int                 (*domain_free)(struct zhpeq_domi *zqdomi);
+    int                 (*tqalloc)(struct zhpeq_tqi *tqi,
+                                   int cmd_qlen, int cmp_qlen,
+                                   int traffic_class, int priority,
+                                   int slice_mask);
+    int                 (*tqalloc_post)(struct zhpeq_tqi *tqi);
+    int                 (*tqfree_pre)(struct zhpeq_tqi *tqi);
+    int                 (*tqfree)(struct zhpeq_tqi *tqi);
+    int                 (*open)(struct zhpeq_tqi *tqi, void *sa);
+    int                 (*close)(struct zhpeq_tqi *tqi, void *open_cookie);
+    int                 (*wq_signal)(struct zhpeq_tqi *ztq);
+    ssize_t             (*cq_poll)(struct zhpeq_tqi *tqi, size_t len);
+    int                 (*mr_reg)(struct zhpeq_domi *zqdomi,
                                   const void *buf, size_t len, uint32_t access,
-                                  struct zhpeq_key_data **kdata_out);
-    int                 (*mr_free)(struct zhpeq_dom *zdom,
-                                   struct zhpeq_key_data *kdata);
-    int                 (*zmmu_free)(struct zhpeq_dom *zdom,
-                                     struct zhpeq_key_data *kdata);
-    int                 (*zmmu_import)(struct zhpeq_dom *zdom, int open_idx,
-                                       const void *blob, size_t blob_len,
-                                       bool cpu_visible,
-                                       struct zhpeq_key_data **kdata_out);
-    int                 (*zmmu_fam_import)(struct zhpeq_dom *zdom, int open_idx,
-                                           bool cpu_visible,
-                                           struct zhpeq_key_data **kdata_out);
-    int                 (*zmmu_export)(struct zhpeq_dom *zdom,
-                                       const struct zhpeq_key_data *kdata,
-                                       void *blob, size_t *blob_len);
-    void                (*print_info)(struct zhpeq *zq);
-    int                 (*getaddr)(struct zhpeq *zq, void *sa, size_t *sa_len);
-    char                *(*qkdata_id_str)(struct zhpeq_dom *zdom,
-                                          const struct zhpeq_key_data *qkdata);
+                                  struct zhpeq_key_data **qkdata_out);
+    int                 (*mr_free)(struct zhpeq_key_data *qkdata);
+    int                 (*qkdata_export)(const struct zhpeq_key_data *qkdata,
+                                         struct key_data_packed *blob);
+    int                 (*zmmu_reg)(struct zhpeq_key_data *qkdata);
+    int                 (*zmmu_free)(struct zhpeq_key_data *qkdata);
+    int                 (*fam_qkdata)(struct zhpeq_dom *zqdom,
+                                      void *open_cookie,
+                                      struct zhpeq_key_data **qkdata_out,
+                                      size_t *n_qkdata_out);
+    int                 (*mmap)(const struct zhpeq_key_data *qkdata,
+                                uint32_t cache_mode, void *addr,
+                                size_t length, int prot, int flags,
+                                off_t offset,
+                                struct zhpeq_mmap_desc **zmdesc_out);
+    int                 (*mmap_unmap)(struct zhpeq_mmap_desc *zmdesc);
+    int                 (*mmap_commit)(struct zhpeq_mmap_desc *zmdesc,
+                                       const void *addr, size_t length,
+                                       bool fence, bool invalidate, bool wait);
+    void                (*print_tq_info)(struct zhpeq_tq *ztq);
+    int                 (*tq_get_addr)(struct zhpeq_tq *ztq, void *sa,
+                                    size_t *sa_len);
+    char                *(*qkdata_id_str)(const struct zhpeq_key_data *qkdata);
 };
 
+extern void             (*zhpeq_mcommit)(void);
 extern uuid_t           zhpeq_uuid;
 
-void zhpeq_register_backend(enum zhpe_backend backend, struct backend_ops *ops);
+void zhpeq_register_backend(enum zhpeq_backend backend,
+                            struct backend_ops *ops);
 void zhpeq_backend_libfabric_init(int fd);
 void zhpeq_backend_zhpe_init(int fd);
 
@@ -108,38 +120,57 @@ struct zhpeq_ht {
     uint32_t            tail;
 } INT64_ALIGNED;
 
-struct zhpeq_dom {
+struct zhpeq_domi {
+    struct zhpeq_dom    zqdom;
     void                *backend_data;
 };
 
-struct zhpeq {
-    struct zhpeq_dom    *zdom;
-    struct zhpe_xqinfo  xqinfo;
-    volatile void       *qcm;
-    union zhpe_hw_wq_entry *wq;
-    union zhpe_hw_cq_entry *cq;
-    void                **context;
+struct zhpeq_rq_epolli {
+    struct zhpeq_rq_epoll zepoll;
     void                *backend_data;
-    int                 fd;
-    struct zhpeq_ht     head_tail CACHE_ALIGNED;
-    struct free_index   context_free;
-    uint32_t            tail_commit CACHE_ALIGNED;
+    pthread_mutex_t     mutex;
+    int32_t             ref;
 };
 
-static inline uint8_t cq_valid(uint32_t idx, uint32_t qmask)
+static inline void zhpeq_rq_epolli_get(struct zhpeq_rq_epolli *epolli)
 {
-    return ((idx & (qmask + 1)) ? 0 : ZHPE_HW_CQ_VALID);
+    uint32_t            old MAYBE_UNUSED;
+
+    old = atm_inc(&epolli->ref);
+    assert(old >= 1);
 }
 
-static inline uint64_t ioread64(const volatile void *addr)
+void __zhpeq_rq_epolli_free(struct zhpeq_rq_epolli *epolli);
+
+static inline void zhpeq_rq_epolli_put(struct zhpeq_rq_epolli *epolli)
 {
-    return le64toh(*(const volatile uint64_t *)addr);
+    uint32_t            old;
+
+    old = atm_dec(&epolli->ref);
+    assert(old >= 1);
+    if (old == 1)
+        __zhpeq_rq_epolli_free(epolli);
 }
 
-static inline void iowrite64(uint64_t value, volatile void *addr)
-{
-    *(volatile uint64_t *)addr = htole64(value);
-}
+struct zhpeq_tqi {
+    struct zhpeq_tq     ztq;
+    void                *backend_data;
+    int                 dev_fd;
+};
+
+struct zhpeq_rqi {
+    struct zhpeq_rq     zrq;
+    struct zhpeq_rq_epolli *epolli;
+    void                (*epoll_handler)(struct zhpeq_rq *zrq,
+                                         void *epoll_handler_data);
+    void                *epoll_handler_data;
+    int                 dev_fd;
+};
+
+#define ZHPEQ_MR_VALID_MASK \
+    (ZHPE_MR_GET | ZHPE_MR_PUT | ZHPE_MR_SEND | ZHPE_MR_RECV | \
+     ZHPE_MR_GET_REMOTE | ZHPE_MR_PUT_REMOTE | \
+     ZHPE_MR_FLAG0 | ZHPE_MR_FLAG1 | ZHPE_MR_FLAG2)
 
 struct key_data_packed {
     uint64_t            vaddr;
@@ -150,14 +181,14 @@ struct key_data_packed {
 
 static inline void pack_kdata(const struct zhpeq_key_data *qkdata,
                               struct key_data_packed *pdata,
-                              uint64_t zaddr)
+                              uint64_t zaddr, uint32_t qaccmask)
 {
     const struct zhpe_key_data *kdata = &qkdata->z;
 
     pdata->vaddr = be64toh(kdata->vaddr);
     pdata->zaddr = be64toh(zaddr);
     pdata->len = be64toh(kdata->len);
-    pdata->access = kdata->access;
+    pdata->access = kdata->access & qaccmask;
 }
 
 static inline void unpack_kdata(const struct key_data_packed *pdata,
@@ -171,8 +202,11 @@ static inline void unpack_kdata(const struct key_data_packed *pdata,
     kdata->access = pdata->access;
 }
 
-#define ZHPEQ_MR_V1             (1U)
-#define ZHPEQ_MR_REMOTE         ((uint32_t)1 << 31)
+#define ZHPEQ_MR_VREMOTE        ((uint32_t)1 << 31)
+#define ZHPEQ_MR_VREG           ((uint32_t)1 << 30)
+#define ZHPEQ_MR_V1             ((uint32_t)1U)
+#define ZHPEQ_MR_VMASK          ((uint32_t)0xFFFF)
+#define ZHPEQ_MR_V1REMOTE       (ZHPEQ_MR_V1 | ZHPEQ_MR_VREMOTE)
 
 struct zhpeq_mr_desc_common_hdr {
     uint32_t            magic;
@@ -182,13 +216,18 @@ struct zhpeq_mr_desc_common_hdr {
 struct zhpeq_mr_desc_v1 {
     struct zhpeq_mr_desc_common_hdr hdr;
     struct zhpeq_key_data qkdata;
-    uint32_t            access_plus;
-    int                 uuid_idx;
+    uint64_t            rsp_zaddr;
+    void                *addr_cookie;
 };
 
 union zhpeq_mr_desc {
     struct zhpeq_mr_desc_common_hdr hdr;
     struct zhpeq_mr_desc_v1 v1;
+};
+
+struct zhpeq_mmap_desc_private {
+    struct zhpeq_mmap_desc pub;
+    struct zhpeq_mr_desc_v1 *desc;
 };
 
 /* FIXME: probably works for now, but ditch bit fields. */
@@ -206,6 +245,24 @@ union rdm_rcv_tail {
     struct zhpe_rdm_rcv_queue_tail_toggle bits;
     uint64_t            u64;
 };
+
+union rdm_active {
+    struct zhpe_rdm_active bits;
+    uint64_t            u64;
+};
+
+static inline bool zrq_check_idle(struct zhpeq_rq *zrq)
+{
+    uint32_t            qmask = zrq->rqinfo.cmplq.ent - 1;
+    uint32_t            qhead = (zrq->head_commit & qmask);
+    uint32_t            qtail;
+
+    /* Return true if queue is idle. */
+    qtail = (qcmread64(zrq->qcm,
+                       ZHPE_RDM_QCM_RCV_QUEUE_TAIL_TOGGLE_OFFSET) & qmask);
+
+    return (qhead == qtail);
+}
 
 _EXTERN_C_END
 

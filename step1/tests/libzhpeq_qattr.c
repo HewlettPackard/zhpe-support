@@ -37,7 +37,20 @@
 #include <zhpeq.h>
 #include <zhpeq_util.h>
 
+static struct zhpeq_attr zhpeq_attr;
+
+
 static void usage(bool help) __attribute__ ((__noreturn__));
+
+static void print_attr(const char *lbl, struct zhpeq_attr *attr)
+{
+    print_info("%s:max_tx_queues : %u\n", lbl, attr->z.max_tx_queues);
+    print_info("%s:max_rx_queues : %u\n", lbl, attr->z.max_rx_queues);
+    print_info("%s:max_tx_qlen   : %u\n", lbl, attr->z.max_tx_qlen);
+    print_info("%s:max_rx_qlen   : %u\n", lbl, attr->z.max_rx_qlen);
+    print_info("%s:max_dma_len   : %" PRIu64 "\n", lbl, attr->z.max_dma_len);
+    print_info("%s:num_slices    : %u\n", lbl, attr->z.num_slices);
+}
 
 static void usage(bool help)
 {
@@ -57,22 +70,24 @@ int main(int argc, char **argv)
     if (argc > 1)
         usage(false);
 
-    rc = zhpeq_init(ZHPEQ_API_VERSION);
+    rc = zhpeq_init(ZHPEQ_API_VERSION, &zhpeq_attr);
     if (rc < 0) {
         print_func_err(__func__, __LINE__, "zhpeq_init", "", rc);
         goto done;
     }
 
+    /* Leaving the old interface for now. */
     rc = zhpeq_query_attr(&attr);
     if (rc < 0) {
         print_func_err(__func__, __LINE__, "zhpeq_query_attr", "", rc);
         goto done;
     }
-    printf("%s:max_tx_queues : %u\n", appname, attr.z.max_tx_queues);
-    printf("%s:max_rx_queues : %u\n", appname, attr.z.max_rx_queues);
-    printf("%s:max_tx_qlen   : %u\n", appname, attr.z.max_tx_qlen);
-    printf("%s:max_rx_qlen   : %u\n", appname, attr.z.max_rx_qlen);
-    printf("%s:max_dma_len   : %Lu\n", appname, (ullong)attr.z.max_dma_len);
+    print_attr("query", &attr);
+    if (memcmp(&zhpeq_attr, &attr, sizeof(zhpeq_attr))) {
+        print_err("%s,%u:attrs differ\n", __func__, __LINE__);
+        print_attr("init ", &zhpeq_attr);
+        goto done;
+    }
 
  done:
     return ret;

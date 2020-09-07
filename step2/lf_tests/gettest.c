@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2018 Hewlett Packard Enterprise Development LP.
+ * Copyright (C) 2017-2019 Hewlett Packard Enterprise Development LP.
  * All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -36,8 +36,6 @@
 
 #include <zhpeq_util_fab.h>
 
-#include <sys/queue.h>
-
 #define BACKLOG         (10)
 #ifdef DEBUG
 #define TIMEOUT         (-1)
@@ -61,21 +59,9 @@ struct cli_wire_msg {
     uint8_t             ep_type;
 };
 
-struct svr_wire_msg {
-    uint16_t            port;
-};
-
 struct mem_wire_msg {
     uint64_t            remote_key;
     uint64_t            remote_addr;
-};
-
-struct rx_queue {
-    STAILQ_ENTRY(rx_queue) list;
-    union {
-        void            *buf;
-        uint64_t        idx;
-    };
 };
 
 enum {
@@ -84,8 +70,6 @@ enum {
     TX_RUNNING,
     TX_LAST,
 };
-
-STAILQ_HEAD(rx_queue_head, rx_queue);
 
 struct args {
     const char          *provider;
@@ -113,9 +97,6 @@ struct stuff {
     struct fi_context2  *ctx;
     void                *tx_addr;
     void                *rx_addr;
-    uint64_t            *ring_timestamps;
-    struct rx_queue     *rx_rcv;
-    void                *rx_data;
     size_t              ring_entry_aligned;
     size_t              ring_ops;
     size_t              ring_warmup;
@@ -123,7 +104,6 @@ struct stuff {
     size_t              tx_avail;
     uint64_t            remote_key;
     uint64_t            remote_addr;
-    bool                allocated;
 };
 
 static inline size_t next_roff(struct stuff *conn, size_t cur)
@@ -155,14 +135,9 @@ static void stuff_free(struct stuff *stuff)
     fab_conn_free(&stuff->fab_listener);
     fab_dom_free(&stuff->fab_dom);
 
-    free(stuff->rx_rcv);
-    free(stuff->ring_timestamps);
     free(stuff->ctx);
 
     FD_CLOSE(stuff->sock_fd);
-
-    if (stuff->allocated)
-        free(stuff);
 }
 
 static int do_mem_setup(struct stuff *conn)
@@ -195,21 +170,12 @@ static int do_mem_setup(struct stuff *conn)
     if (ret < 0)
         goto done;
     conn->tx_addr = fab_conn->mrmem.mem;
-    conn->rx_addr = conn->tx_addr + off;
+    conn->rx_addr = (char *)conn->tx_addr + off;
 
     req = sizeof(*conn->ctx) * conn->tx_avail;
     ret = -posix_memalign((void **)&conn->ctx, page_size, req);
     if (ret < 0) {
         conn->ctx = NULL;
-        print_func_errn(__func__, __LINE__, "posix_memalign", true,
-                        req, ret);
-        goto done;
-    }
-
-    req = sizeof(*conn->ring_timestamps) * args->ring_entries;
-    ret = -posix_memalign((void **)&conn->ring_timestamps, page_size, req);
-    if (ret < 0) {
-        conn->ring_timestamps = NULL;
         print_func_errn(__func__, __LINE__, "posix_memalign", true,
                         req, ret);
         goto done;
@@ -252,12 +218,12 @@ static ssize_t do_progress(struct fab_conn *fab_conn,
      * FIXME: Should rx be necessary for one-sided?
      */
     rc = fab_completions(fab_conn->tx_cq, 0, NULL, NULL);
-    if (ret >= 0) {
+    if (rc >= 0) {
         if (tx_cmp)
             *tx_cmp += rc;
         else
             assert(!rc);
-    } else
+    } else if (ret >= 0)
         ret = rc;
 
     rc = fab_completions(fab_conn->rx_cq, 0, NULL, NULL);
@@ -279,7 +245,7 @@ static int do_server_source(struct stuff *conn)
     size_t              rx_avail;
 
     /* Do a send-receive for the final handshake. */
-    ret = fi_recv(fab_conn->ep, NULL, 0, NULL, 0, &conn->ctx[0]);
+    ret = fi_recv(fab_conn->ep, NULL, 0, NULL, FI_ADDR_UNSPEC, &conn->ctx[0]);
     if (ret < 0) {
         print_func_fi_err(__func__, __LINE__, "fi_recv", "", ret);
         goto done;
@@ -293,7 +259,6 @@ static int do_server_source(struct stuff *conn)
     fab_print_info(fab_conn);
 
  done:
-
     return ret;
 }
 
@@ -315,26 +280,31 @@ static int do_client_get(struct stuff *conn)
     size_t              warmup_count;
     uint64_t            now;
     uint64_t            tx_count;
-    void                *tx_addr;
     void                *rx_addr;
+    uint64_t            rem_addr;
 
     start = get_cycles(NULL);
     for (tx_count = warmup_count = 0; tx_flag_out != TX_LAST;
          (tx_count++, tx_avail--, tx_off = next_roff(conn, tx_off),
           tx_ctx = next_ctx(conn, tx_ctx))) {
 
-        now = get_cycles(NULL);
-        /* Check for tx slots. */
-        while (!tx_avail) {
-            ret = do_progress(fab_conn, &tx_avail, NULL);
-            if (ret < 0)
-                goto done;
+        /*
+         * Fix possible issues with out-of-order completion by exhausting
+         * tx_avail and then waiting for all outstanding I/Os to complete.
+         */
+        if (!tx_avail) {
+            while (tx_avail != conn->tx_avail) {
+                now = get_cycles(NULL);
+                ret = do_progress(fab_conn, &tx_avail, NULL);
+                lat_comp += get_cycles(NULL) - now;
+                if (ret < 0)
+                    goto done;
+            }
         }
-        lat_comp += get_cycles(NULL) - now;
 
         /* Compute delta based on cycles/ops. */
         if (args->seconds_mode)
-            delta = now - start;
+            delta = get_cycles(NULL) - start;
         else
             delta = tx_count;
 
@@ -366,13 +336,12 @@ static int do_client_get(struct stuff *conn)
         }
 
         /* Write buffer to same offset in server.*/
-        rx_addr = conn->tx_addr + tx_off;
-        tx_addr = (void *)conn->remote_addr + tx_off;
+        rx_addr = (char *)conn->tx_addr + tx_off;
+        rem_addr = conn->remote_addr + tx_off;
         now = get_cycles(NULL);
         ret = fi_read(fab_conn->ep, rx_addr, args->ring_entry_len,
                       fi_mr_desc(fab_conn->mrmem.mr), conn->dest_av,
-                      (uintptr_t)tx_addr, conn->remote_key,
-                      &conn->ctx[tx_ctx]);
+                      rem_addr, conn->remote_key, &conn->ctx[tx_ctx]);
         lat_write += get_cycles(NULL) - now;
         if (ret < 0) {
             print_func_fi_err(__func__, __LINE__, "fi_read", "", ret);
@@ -382,16 +351,18 @@ static int do_client_get(struct stuff *conn)
     while (tx_avail != conn->tx_avail) {
         now = get_cycles(NULL);
         ret = do_progress(fab_conn, &tx_avail, NULL);
+        lat_comp += get_cycles(NULL) - now;
         if (ret < 0)
             goto done;
-        tx_avail += ret;
     }
     lat_total1 = get_cycles(NULL) - lat_total1;
 
     /* Do a send-receive for the final handshake. */
-    ret = fi_send(fab_conn->ep, NULL, 0, NULL, 0, &conn->ctx[0]);
-    if (ret < 0)
+    ret = fi_send(fab_conn->ep, NULL, 0, NULL, conn->dest_av, &conn->ctx[0]);
+    if (ret < 0) {
+        print_func_fi_err(__func__, __LINE__, "fi_send", "", ret);
         goto done;
+    }
     for (tx_avail = 0; !tx_avail;) {
             ret = do_progress(fab_conn, &tx_avail, NULL);
             if (ret < 0)
@@ -427,7 +398,6 @@ static int do_server_one(const struct args *oargs, int conn_fd)
     union sockaddr_in46 addr;
     size_t              addr_len;
     struct cli_wire_msg cli_msg;
-    struct svr_wire_msg svr_msg;
     char                *s;
 
     fab_dom_init(fab_dom);
@@ -454,8 +424,8 @@ static int do_server_one(const struct args *oargs, int conn_fd)
     args->once_mode = !!cli_msg.once_mode;
     args->ep_type = cli_msg.ep_type;
 
-    ret = fab_dom_setup(NULL, NULL, true, args->provider, args->domain,
-                        args->ep_type, fab_dom);
+    ret = fab_dom_setup(NULL, NULL, true,
+                        args->provider, args->domain, args->ep_type, fab_dom);
     if (ret < 0)
         goto done;
 
@@ -480,8 +450,7 @@ static int do_server_one(const struct args *oargs, int conn_fd)
             print_func_fi_err(__func__, __LINE__, "fi_getname", "", ret);
             goto done;
         }
-        svr_msg.port = addr.sin_port;
-        ret = sock_send_blob(conn.sock_fd, &svr_msg, sizeof(svr_msg));
+        ret = sock_send_blob(conn.sock_fd, &addr, sizeof(addr));
         if (ret < 0)
             goto done;
 
@@ -580,9 +549,8 @@ static int do_client(const struct args *args)
     struct fab_dom      *fab_dom = &conn.fab_dom;
     struct fab_conn     *fab_conn = &conn.fab_conn;
     struct fab_conn     *fab_listener = &conn.fab_listener;
-    union sockaddr_in46 *sockaddr;
+    union sockaddr_in46 addr;
     struct cli_wire_msg cli_msg;
-    struct svr_wire_msg svr_msg;
 
     fab_dom_init(fab_dom);
     fab_conn_init(fab_dom, fab_conn);
@@ -611,7 +579,7 @@ static int do_client(const struct args *args)
     if (ret < 0)
         goto done;
 
-    ret = fab_dom_setup(args->service, args->node, false,
+    ret = fab_dom_setup(NULL, NULL, true,
                         args->provider, args->domain, args->ep_type, fab_dom);
     if (ret < 0)
         goto done;
@@ -624,20 +592,16 @@ static int do_client(const struct args *args)
         if (ret < 0)
             goto done;
     } else {
-        /* Read port. */
-        ret = sock_recv_fixed_blob(conn.sock_fd, &svr_msg, sizeof(svr_msg));
+        ret = sock_recv_fixed_blob(conn.sock_fd, &addr, sizeof(addr));
         if (ret < 0)
             goto done;
 
-        sockaddr = fab_conn_info(fab_conn)->dest_addr;
-        switch (sockaddr->addr4.sin_family) {
-        case AF_INET:
-            sockaddr->addr4.sin_port = svr_msg.port;
-            break;
-        case AF_INET6:
-            sockaddr->addr6.sin6_port = svr_msg.port;
-            break;
+        fab_conn_info(fab_conn)->dest_addr = sockaddr_dup(&addr);
+        if (!fab_conn_info(fab_conn)->dest_addr) {
+            ret = -FI_ENOMEM;
+            goto done;
         }
+
         /* Connect at the libfabric level. */
         ret = fab_connect(timeout, 0, 0, fab_conn);
         if (ret < 0)
@@ -803,8 +767,9 @@ int main(int argc, char **argv)
         args.service = argv[optind++];
         args.node = argv[optind++];
         if (parse_kb_uint64_t(__func__, __LINE__, "entry_len",
-                              argv[optind++], &args.ring_entry_len, 0, 1,
-                              SIZE_MAX, PARSE_KB | PARSE_KIB) < 0 ||
+                              argv[optind++], &args.ring_entry_len, 0,
+                              sizeof(uint8_t), SIZE_MAX,
+                              PARSE_KB | PARSE_KIB) < 0 ||
             parse_kb_uint64_t(__func__, __LINE__, "ring_entries",
                               argv[optind++], &args.ring_entries, 0, 1,
                               SIZE_MAX, PARSE_KB | PARSE_KIB) < 0 ||
@@ -820,7 +785,7 @@ int main(int argc, char **argv)
         usage(false);
 
     ret = 0;
- done:
 
+ done:
     return ret;
 }

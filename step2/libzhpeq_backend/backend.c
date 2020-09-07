@@ -41,11 +41,11 @@ static void __attribute__((constructor)) backend_lib_init(void)
     int                 fd = -1;
     int                 err;
 
-    fd = open(DEV_NAME, O_RDWR);
+    fd = open(DEV_PATH, O_RDWR);
     if (fd == -1) {
         err = errno;
         print_dbg("%s,%u:open(%s) returned error %d:%s\n",
-                  __func__, __LINE__, DEV_NAME, err, strerror(err));
+                  __func__, __LINE__, DEV_PATH, err, strerror(err));
     }
 
     zhpeq_backend_libfabric_init(fd);

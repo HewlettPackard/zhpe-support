@@ -10,8 +10,6 @@ install all: step1 step2
 
 libzhpeq: step1
 
-mpi_tests: step3
-
 .PHONY: distclean step1 step2 step3
 
 distclean:
@@ -24,6 +22,5 @@ step2:
 	make -C $(BUILD)/$@ VERBOSE=$(VERBOSE) install
 
 step3:
-	$(BUILD)/$@/prep3.sh
 	make -C $(BUILD)/$@ VERBOSE=$(VERBOSE) install
 

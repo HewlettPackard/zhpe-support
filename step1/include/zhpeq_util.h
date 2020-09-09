@@ -90,7 +90,7 @@ _EXTERN_C_BEG
     __auto_type         __ret = (_a);                           \
     __auto_type         __b = (_b);                             \
     /* Force compilation error if different types. */           \
-    __auto_type         __p MAYBE_UNUSED = &__b;                \
+    const typeof(__ret) *__p MAYBE_UNUSED = &__b;               \
                                                                 \
     if (__b > __ret)                                            \
         __ret = __b;                                            \
@@ -105,7 +105,7 @@ _EXTERN_C_BEG
     __auto_type         __ret = (_a);                           \
     __auto_type         __b = (_b);                             \
     /* Force compilation error if different types. */           \
-    __auto_type         __p MAYBE_UNUSED = &__b;                \
+    const typeof(__ret)   *__p MAYBE_UNUSED = &__b;             \
                                                                 \
     if (__b < __ret)                                            \
         __ret = __b;                                            \
@@ -118,7 +118,7 @@ _EXTERN_C_BEG
     __auto_type         __a = (_a);                             \
     __auto_type         __b = (_b);                             \
     /* Force compilation error if different types. */           \
-    __auto_type         __p MAYBE_UNUSED = &__b;                \
+    const typeof(__a)   *__p MAYBE_UNUSED = &__b;               \
                                                                 \
      ((__a) < (__b) ? -1 : ((__a) > (__b) ? 1 : 0));            \
 })
@@ -455,7 +455,7 @@ char *zhpeu_sockaddr_str(const void *addr);
     __auto_type         __e = (_expected);                      \
     __auto_type         __s = (_saw);                           \
     /* Force compilation error if different types. */           \
-    __auto_type         __p MAYBE_UNUSED = &__s;                \
+    const typeof(__e)   *__p MAYBE_UNUSED = &__s;               \
                                                                 \
     __ret = (__e == __s);                                       \
     if (unlikely(!__ret)) {                                     \

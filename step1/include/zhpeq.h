@@ -268,6 +268,14 @@ int zhpeq_tq_alloc(struct zhpeq_dom *zqdom, int cmd_qlen, int cmp_qlen,
 
 int zhpeq_tq_free(struct zhpeq_tq *ztq);
 
+static inline uint32_t zhpeq_tq_rspctxid(struct zhpeq_tq *ztq)
+{
+    if (unlikely(!ztq))
+        return 0;
+
+    return (ztq->tqinfo.queue * ZHPE_MAX_SLICES + ztq->tqinfo.slice);
+}
+
 static inline uint64_t ioread64(const volatile void *addr)
 {
     return le64toh(*(const volatile uint64_t *)addr);

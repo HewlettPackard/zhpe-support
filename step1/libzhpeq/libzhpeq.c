@@ -60,7 +60,7 @@ static_assert(__x86_64__, "x86-64");
 static pthread_mutex_t  zaddr_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static pthread_mutex_t  init_mutex  = PTHREAD_MUTEX_INITIALIZER;
-static int              init_status = 1;
+static int              init_status = 2;
 static struct zhpeq_attr b_attr;
 
 static void insert_none(struct zhpeq_tq *ztq, uint16_t reservation16)
@@ -272,7 +272,7 @@ int zhpeq_init(int api_version, struct zhpeq_attr *attr)
         mutex_lock(&init_mutex);
         if (init_status > 0) {
             ret = zhpe_lib_init(&b_attr);
-            atm_store_rlx(&init_status, (ret <= 0 ? ret : 0));
+            atm_store_rlx(&init_status, (ret < 0 ? ret : 0));
         } else
             ret = init_status;
         mutex_unlock(&init_mutex);
@@ -292,8 +292,12 @@ int zhpeq_present(int api_version)
         goto done;
 
     ret = atm_load_rlx(&init_status);
-    if (ret > 0)
+    if (ret > 1) {
+        mutex_lock(&init_mutex);
         ret = zhpe_present();
+        atm_store_rlx(&init_status, (ret < 0 ? ret : 1));
+        mutex_unlock(&init_mutex);
+    }
 
  done:
     return ret;

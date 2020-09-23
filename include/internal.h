@@ -51,6 +51,7 @@
 _EXTERN_C_BEG
 
 #define DEV_PATH        "/dev/"DRIVER_NAME
+#define GCID_PATH       "/sys/module/"DRIVER_NAME"/parameters/genz_gcid"
 #define PLATFORM_PATH   "/sys/module/"DRIVER_NAME"/parameters/platform"
 
 struct key_data_packed;

@@ -66,8 +66,8 @@ static int              dev_fd = -1;
 static pthread_mutex_t  dev_mutex = PTHREAD_MUTEX_INITIALIZER;
 static void             *dev_uuid_tree;
 static void             *dev_mr_tree;
+static bool             dev_present;
 static uint64_t         big_rsp_zaddr;
-static bool             no_thp;
 
 #define BIG_ZMMU_LEN    (((uint64_t)1) << 47)
 #define BIG_ZMMU_REQ_FLAGS \
@@ -186,11 +186,14 @@ static int zhpe_lib_init(struct zhpeq_attr *attr)
     union zhpe_op       op;
     union zhpe_req      *req = &op.req;
     union zhpe_rsp      *rsp = &op.rsp;
-    FILE                *file = NULL;
-    char                platform[10];
+    FILE                *platform_file = NULL;
+    char                platform[16];
     int                 fd;
 
-    /* zhpeq_init() guarantees to call this only once and is locked. */
+    /*
+     * zhpeq_init() will lock the init_mutex when calling this and
+     * zhpe_present(). Furthermore, this will be called only once.
+     */
 
     if ((fd = open(DEV_PATH, O_RDWR)) == -1) {
         ret = -errno;
@@ -198,7 +201,8 @@ static int zhpe_lib_init(struct zhpeq_attr *attr)
             zhpeu_print_func_err(__func__, __LINE__, "open", DEV_PATH, ret);
         goto done;
     }
-    atm_store_rlx(&dev_fd, fd);
+    dev_fd = fd;
+    dev_present = true;
 
     req->hdr.opcode = ZHPE_OP_INIT;
     ret = driver_cmd(&op, sizeof(req->init), sizeof(rsp->init), 0);
@@ -230,13 +234,13 @@ static int zhpe_lib_init(struct zhpeq_attr *attr)
 
     memcpy(zhpeq_uuid, rsp->init.uuid, sizeof(zhpeq_uuid));
 
-    file = fopen(PLATFORM_PATH, "r");
-    if (!file) {
+    platform_file = fopen(PLATFORM_PATH, "r");
+    if (!platform_file) {
         ret = -errno;
         zhpeu_print_func_err(__func__, __LINE__, "fopen", PLATFORM_PATH, ret);
         goto done;
     }
-    if (!fgets(platform, sizeof(platform), file)) {
+    if (!fgets(platform, sizeof(platform), platform_file)) {
         ret = -EIO;
         zhpeu_print_func_err(__func__, __LINE__, "fgets", PLATFORM_PATH, ret);
         goto done;
@@ -251,12 +255,10 @@ static int zhpe_lib_init(struct zhpeq_attr *attr)
         ret = -ENOSYS;
         goto done;
     }
-    if (getenv("ZHPEQ_NOTHP"))
-        no_thp = true;
 
  done:
-    if (file)
-        fclose(file);
+    if (platform_file)
+        fclose(platform_file);
 
     return ret;
 }
@@ -265,13 +267,49 @@ static int zhpe_present(void)
 {
     int                 ret = 0;
     int                 fd = -1;
+    FILE                *gcid_file = NULL;
+    char                gcid_str[16];
+    uint64_t            gcid;
+    char                *cp;
+    size_t              len;
 
-    if (atm_load_rlx(&dev_fd) == -1) {
-        if ((fd = open(DEV_PATH, O_RDWR)) == -1)
+    /*
+     * zhpeq_present() will lock the init_mutex while calling this and
+     * zhpe_lib_init(). This may be called more than one time.
+     */
+    if (!dev_present) {
+        if ((fd = open(DEV_PATH, O_RDWR)) == -1) {
             ret = -errno;
-        else
-            close(fd);
+            goto done;
+        }
+        /* Grab the GCID now in case someone wants to lookup localhost. */
+        gcid_file = fopen(GCID_PATH, "r");
+        if (!gcid_file) {
+            ret = -errno;
+            zhpeu_print_func_err(__func__, __LINE__, "fopen", GCID_PATH, ret);
+            goto done;
+        }
+        if (!(cp = fgets(gcid_str, sizeof(gcid_str), gcid_file))) {
+            ret = -EIO;
+            zhpeu_print_func_err(__func__, __LINE__, "fgets", GCID_PATH, ret);
+            goto done;
+        }
+        len = strlen(cp);
+        if (len && cp[len - 1] == '\n')
+            cp[len - 1] = 0;
+        ret = _zhpeu_parse_kb_uint64_t(GCID_PATH, cp, &gcid, 0,
+                                       0, ZHPE_GCID_MASK, 0);
+        if (ret < 0)
+            goto done;
+        zhpeu_install_gcid_in_uuid(zhpeq_uuid, gcid);
+        dev_present = true;
     }
+
+ done:
+    if (fd != -1)
+        close(fd);
+    if (gcid_file)
+        fclose(gcid_file);
 
     return ret;
 }

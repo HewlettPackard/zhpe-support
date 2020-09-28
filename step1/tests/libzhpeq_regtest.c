@@ -51,7 +51,7 @@ struct range {
 
 struct qkdata_list_entry {
     CIRCLEQ_ENTRY(qkdata_list_entry) lentry;
-    const struct zhpeq_key_data *qkdata;
+    struct zhpeq_key_data *qkdata;
 };
 
 static CIRCLEQ_HEAD(, qkdata_list_entry) qkdata_list =
@@ -116,7 +116,7 @@ static int compare_range_qkdata(const struct range *a,
     return arithcmp(a->end - a->start, b->z.len);
 }
 
-static void qklist_insert(const struct zhpeq_key_data *qkdata)
+static void qklist_insert(struct zhpeq_key_data *qkdata)
 {
     struct qkdata_list_entry *cur;
     struct qkdata_list_entry *new;
@@ -133,9 +133,9 @@ static void qklist_insert(const struct zhpeq_key_data *qkdata)
     CIRCLEQ_INSERT_TAIL(&qkdata_list, new, lentry);
 }
 
-static bool qklist_find(struct range *range, bool delete,
-                        struct zhpeq_key_data **qkdata)
+static struct zhpeq_key_data *qklist_find(struct range *range, bool delete)
 {
+    struct zhpeq_key_data *ret = NULL;
     struct qkdata_list_entry *cur;
     int                 rc;
 
@@ -145,16 +145,17 @@ static bool qklist_find(struct range *range, bool delete,
             continue;
         if (rc < 0)
             break;
-        *qkdata = (void *)cur->qkdata;
+        ret = cur->qkdata;
         if (delete) {
             CIRCLEQ_REMOVE(&qkdata_list, cur, lentry);
             free(cur);
         }
-        return true;
+        goto done;
     }
     warning("0x%lx-0x%lx not found\n", range->start, range->end);
 
-    return false;
+ done:
+    return ret;
 }
 
 static void qklist_work(bool (*worker)(void *worker_data,
@@ -162,11 +163,11 @@ static void qklist_work(bool (*worker)(void *worker_data,
                         void *worker_data)
 {
     struct qkdata_list_entry *cur;
-    struct qkdata_list_entry *nxt;
+    struct qkdata_list_entry *next;
 
-    for (cur = CIRCLEQ_FIRST(&qkdata_list); cur != (const void *)&qkdata_list;
-         cur = nxt) {
-        nxt = CIRCLEQ_NEXT(cur, lentry);
+    for (cur = CIRCLEQ_FIRST(&qkdata_list); cur != (void *)&qkdata_list;
+         cur = next) {
+        next = CIRCLEQ_NEXT(cur, lentry);
         if (worker(worker_data, cur))
             break;
     }
@@ -186,28 +187,56 @@ struct activate_data {
     bool                activate;
 };
 
+static void qkdata_print(const struct zhpeq_key_data *qkdata,
+                         uint64_t buf, int fixup)
+{
+    int64_t             active;
+
+    active = atm_load(qkdata->active_uptr) + fixup;
+    printf("qkdata %p 0x%" PRIx64 "-0x%" PRIx64 " active %" PRIi64"\n",
+           qkdata, qkdata->z.vaddr - buf,
+           qkdata->z.vaddr + qkdata->z.len - buf, active);
+}
+
+static void qklist_print(void *buf)
+{
+    struct qkdata_list_entry *cur;
+
+    CIRCLEQ_FOREACH(cur, &qkdata_list, lentry)
+        qkdata_print(cur->qkdata, (uintptr_t)buf, 0);
+}
+
 static bool activate_worker(void *vadata, struct qkdata_list_entry *cur)
 {
     struct activate_data *adata = vadata;
-    const struct zhpeq_key_data *qkdata = cur->qkdata;
-    int64_t             active;
+    struct zhpeq_key_data *qkdata = cur->qkdata;
+    int                 fixup = (adata->activate ? 2 : -2);
 
     if (compare_range_qkdata(adata->range, qkdata))
         return false;
 
-    if (adata->activate)
-        active = atm_add(qkdata->active_uptr, 2) + 2;
-    else
-        active = atm_sub(qkdata->active_uptr, 2) - 2;
-    zhpeu_print_info("qkdata 0x%p active %" PRIi64"\n", qkdata, active);
+    qkdata_print(qkdata, 0, fixup);
 
     return true;
 }
 
+static int qkdata_free(struct zhpeq_key_data *qkdata)
+{
+    int                 ret;
+    ret = zhpeq_qkdata_free(qkdata);
+    if (ret < 0)
+        zhpeu_print_func_err(__func__, __LINE__,
+                             "zhpeq_qkdata_free", "", ret);
+
+    return ret;
+}
+
 static bool free_worker(void *dummy, struct qkdata_list_entry *cur)
 {
+    qkdata_free(cur->qkdata);
     CIRCLEQ_REMOVE(&qkdata_list, cur, lentry);
     free(cur);
+
     return false;
 }
 
@@ -239,7 +268,9 @@ static void usage(bool help)
         "    a <start> <end> : activate overlapping registrations\n"
         "    d <start> <end> : deactivate overlapping registrations\n"
         "    u <start> <end> : unmap memory range\n"
-        "    b               : breakpoint hook\n",
+        "    b               : breakpoint hook\n"
+        "    p               : print registered memory\n"
+        "    F               : free all registrations\n",
         zhpeu_appname);
 
     exit(255);
@@ -262,7 +293,6 @@ int main(int argc, char **argv)
     uint64_t            size;
     struct zhpeq_key_data *qkdata;
     struct activate_data adata;
-    int64_t             active;
     int                 rc;
     int                 opt;
     size_t              len;
@@ -355,13 +385,14 @@ int main(int argc, char **argv)
             len = strlen(line);
             if (line[len - 1] == '\n')
                 line[len - 1] = ' ';
-            zhpeu_print_info("%s\n", line);
+            printf("%s\n", line);
         }
         if (strlen(cmd) != 1) {
             warning("invalid command\n");
             continue;
         }
-        if (cmd[0] != 'b' && !parse_range(&parseptr, buf, size, &range)) {
+        if (cmd[0] != 'b' && cmd[0] != 'p' && cmd[0] != 'F' &&
+            !parse_range(&parseptr, buf, size, &range)) {
             warning("invalid command\n");
             continue;
         }
@@ -377,21 +408,17 @@ int main(int argc, char **argv)
                 goto done;
             }
             qklist_insert(qkdata);
-            zhpeu_print_info("qkdata 0x%p\n", qkdata);
+            qkdata_print(qkdata, 0, 0);
             break;
 
         case 'f':
-            if (!qklist_find(&range, true, &qkdata))
+            if (!(qkdata = qklist_find(&range, true)))
                 break;
-            active = atm_load(qkdata->active_uptr);
-            zhpeu_print_info("qkdata 0x%p active %" PRIi64"\n",
-                             qkdata, active);
-            rc = zhpeq_qkdata_free(qkdata);
-            if (rc < 0) {
-                zhpeu_print_func_err(__func__, __LINE__,
-                                     "zhpeq_qkdata_free", "", rc);
-                goto done;
-            }
+            qkdata_free(qkdata);
+            break;
+
+        case 'F':
+            qklist_free();
             break;
 
         case 'a':
@@ -416,6 +443,10 @@ int main(int argc, char **argv)
 
         case 'b':
             gdb_hook();
+            break;
+
+        case 'p':
+            qklist_print(buf);
             break;
 
         default:

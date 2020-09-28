@@ -38,11 +38,11 @@ for D in $TD/*.data; do
 	    $1 != "8" { next; }
 	    $2 == "1000000" {
 		for (i = 6; i <= 9; i++)
-		    $i = sprintf("0x%x", $i);
+		    $i = sprintf("0x%x", $i + 0);
 	    }
 	    $2 == "1000001" {
 		for (i = 4; i <= 9; i++)
-		    $i = sprintf("0x%x", $i);
+		    $i = sprintf("0x%x", $i + 0);
 	    }
 	    { print $0; }' > $F.out ) &
 	   if (( ++I >= 16 )); then

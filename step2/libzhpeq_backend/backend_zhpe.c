@@ -50,22 +50,40 @@ struct dev_uuid_tree_entry {
     bool                fam;
 };
 
+struct range {
+    uint64_t            start;
+    uint64_t            end;
+    CIRCLEQ_ENTRY(range) list;
+    int32_t             ref;
+#ifndef NDEBUG
+    int32_t             index;
+#endif
+    char                extra[0];
+};
+
+CIRCLEQ_HEAD(range_head, range);
+
+struct range_list {
+    size_t              extra;
+    void                *root;
+    struct range_head   head;
+};
+
 struct dev_mr_tree_entry {
     struct zhpeq_key_data qkdata;
     int64_t             active;
     int32_t             ref;
 };
 
-struct dev_mr_mlock_entry {
-    struct dev_mr_mlock_entry *next;
-    uint64_t            start;
-    uint64_t            end;
-};
-
 static int              dev_fd = -1;
 static pthread_mutex_t  dev_mutex = PTHREAD_MUTEX_INITIALIZER;
 static void             *dev_uuid_tree;
 static void             *dev_mr_tree;
+static struct range_list mlock_list = {
+    .extra              = 0,
+    .root               = NULL,
+    .head               = CIRCLEQ_HEAD_INITIALIZER(mlock_list.head),
+};
 static bool             dev_present;
 static uint64_t         big_rsp_zaddr;
 
@@ -346,6 +364,7 @@ static int zhpe_domain_free(struct zhpeq_domi *zqdomi)
         if (domain_open > 0 ||
             (!dev_uuid_tree && !dev_mr_tree && !big_rsp_zaddr))
             ret = 0;
+        assert(!ret);
     }
     mutex_unlock(&dev_mutex);
 
@@ -497,12 +516,6 @@ static int zhpe_domain_remove_addr(struct zhpeq_domi *domi, void *addr_cookie)
         if (memcmp(uue->uuid, zhpeq_uuid, sizeof(zhpeq_uuid)))
             ret = zhpeu_update_error(ret, __do_uuid_free(uue->uuid));
         free(uue);
-    }
-
-    if (!dev_mr_tree && big_rsp_zaddr) {
-        rc = __do_mr_free(0, BIG_ZMMU_LEN, BIG_ZMMU_RSP_FLAGS, big_rsp_zaddr);
-        ret = zhpeu_update_error(ret, rc);
-        big_rsp_zaddr = 0;
     }
 
     mutex_unlock(&dev_mutex);
@@ -895,11 +908,6 @@ static int compare_qkdata(const void *newk, const void *treek)
         return ret;
     ret = arithcmp(page_up(nqk->z.vaddr + nqk->z.len),
                    page_up(tqk->z.vaddr + tqk->z.len));
-    if (ret)
-        return ret;
-    /* Mask off user flags in comparison. */
-    ret = arithcmp(nqk->z.access & ZHPE_MR_USER_MASK,
-                   tqk->z.access & ZHPE_MR_USER_MASK);
 
     return ret;
 }
@@ -942,6 +950,417 @@ static int __do_mr_free(uint64_t vaddr, size_t len, uint32_t access,
     return __driver_cmd(&op, sizeof(req->mr_free), sizeof(rsp->mr_free), 0);
 }
 
+static inline int range_contains(struct range *r1, struct range *r2)
+{
+    /* Does r1 contain r2? */
+    return (r1->start <= r2->start && r1->end >= r2->end);
+}
+
+static int range_tree_compare(const void *new, const void *tree)
+{
+    const struct range  *nr = new;
+    const struct range  *tr = tree;
+
+    return arithcmp(nr->start, tr->start);
+}
+
+static int range_list_compare(const struct range_list *rlist,
+                              const struct range *nr,
+                              const struct range *tr)
+{
+    int                 ret;
+    const struct range  *prev;
+
+    /*
+     * This routine will find an entry that contains the start of the
+     * new entry or the tree entry that starts immediately afterwards.
+     */
+    ret = arithcmp(nr->start, tr->start);
+    if (!ret)
+        return ret;
+    /* Does the new entry start before the tree entry? */
+    if (ret < 0) {
+        /* Yes, is there a previous entry? */
+        if (tr == CIRCLEQ_FIRST(&mlock_list.head))
+            /* No: insert the new entry in front of the tree entry. */
+            return 0;
+        /* Does the new entry start after the previous entry? */
+        prev = CIRCLEQ_PREV(tr, list);
+        if (arithcmp(nr->start, prev->end) >= 0)
+            /* Yes: insert the new entry in front of the tree entry. */
+            return 0;
+        return ret;
+    }
+    /* Does the new entry start inside the tree entry? */
+    if (nr->start < tr->end)
+        /* Yes. */
+        return 0;
+
+    return ret;
+}
+
+static int mlock_list_compare(const void *new, const void *tree)
+{
+    return range_list_compare(&mlock_list, new, tree);
+}
+
+#ifdef NDEBUG
+
+static inline void range_list_check(struct range_list *rlist)
+{
+}
+
+#else
+
+static int32_t          range_list_check_index;
+
+static void range_list_check_walk(const void *nodep, const VISIT which,
+                                  const int depth)
+{
+    struct range        *cur;
+
+    switch (which) {
+
+    case leaf:
+    case postorder:
+        cur = *(struct range **)nodep;
+        assert_always(!cur->index);
+        cur->index = ++range_list_check_index;
+        break;
+
+    default:
+        break;
+
+    }
+}
+
+static void range_list_check(struct range_list *rlist)
+{
+    struct range        *cur;
+    struct range        *next;
+    int32_t             i;
+
+    range_list_check_index = 0;
+    CIRCLEQ_FOREACH(cur, &rlist->head, list)
+        cur->index = 0;
+    twalk(rlist->root, range_list_check_walk);
+    i = 0;
+    for (cur = CIRCLEQ_FIRST(&rlist->head);
+         cur != (void *)&mlock_list.head; cur = next) {
+        next = CIRCLEQ_NEXT(cur, list);
+        assert_always(cur->ref > 0);
+        assert_always(cur->index == ++i);
+        assert_always(cur->start < cur->end);
+        assert_always(next == (void *)&mlock_list.head ||
+                      cur->end <= next->start);
+    }
+    assert_always(range_list_check_index == i);
+}
+
+void zhpeq_range_list_dump(struct range_list *rlist)
+{
+    struct range        *cur;
+    struct range        *next;
+    int                 i;
+    bool                okay;
+
+    range_list_check_index = 0;
+    CIRCLEQ_FOREACH(cur, &rlist->head, list)
+        cur->index = 0;
+    twalk(rlist->root, range_list_check_walk);
+    for (cur = CIRCLEQ_FIRST(&rlist->head), i = 0;
+         cur != (void *)&mlock_list.head; cur = next) {
+        next = CIRCLEQ_NEXT(cur, list);
+        okay = (cur->ref > 0 && cur->index == ++i && cur->start < cur->end &&
+                (next == (void *)&mlock_list.head || cur->end <= next->start));
+        fprintf(stderr,
+                "%s 0x%016" PRIx64 "-0x%016" PRIx64 "/%d/%d\n",
+                (okay ? " " : "*"), cur->start, cur->end, cur->ref, cur->index);
+    }
+}
+
+static void range_tree_dump_walk(const void *nodep, const VISIT which,
+                                 const int depth)
+{
+    struct range        *cur;
+
+    switch (which) {
+
+    case leaf:
+    case postorder:
+        cur = *(struct range **)nodep;
+        assert_always(!cur->index);
+        cur->index = ++range_list_check_index;
+        fprintf(stderr,
+                "%s 0x%016" PRIx64 "-0x%016" PRIx64 "/%d/%d\n",
+                " ", cur->start, cur->end, cur->ref, cur->index);
+        break;
+
+    default:
+        break;
+
+    }
+}
+
+void zhpeq_range_tree_dump(struct range_list *rlist)
+{
+    struct range        *cur;
+
+    range_list_check_index = 0;
+    CIRCLEQ_FOREACH(cur, &rlist->head, list)
+        cur->index = 0;
+    twalk(rlist->root, range_tree_dump_walk);
+}
+
+#endif
+
+static inline uint64_t mib2_down(uint64_t val)
+{
+    return mask2_down(val, MiB * 2);
+}
+
+static inline uint64_t mib2_up(uint64_t val)
+{
+    return mask2_up(val, MiB * 2);
+}
+
+static inline uint64_t mib2_off(uint64_t val)
+{
+    return mask2_off(val, MiB * 2);
+}
+
+static inline uint64_t mib2_down_check(struct range *rentry, uint64_t val)
+{
+    uint64_t            down = mib2_down(val);
+    uint64_t            up = down + MiB * 2;
+
+    if (down >= rentry->start && up <= rentry->end)
+        return down;
+
+    return val;
+}
+
+static inline uint64_t mib2_up_check(struct range *rentry, uint64_t val)
+{
+    uint64_t            down = mib2_down(val);
+    uint64_t            up = down + MiB * 2;
+
+    if (down >= rentry->start && up <= rentry->end)
+        return up;
+
+    return val;
+}
+
+static struct range *range_new_entry(struct range_list *rlist,
+                                     struct range *inlist,
+                                     bool after, uint64_t start, uint64_t end,
+                                     int32_t ref)
+{
+    struct range        *new = xmalloc(sizeof(*new) + rlist->extra);
+    void                **tval;
+
+    new->start = start;
+    new->end = end;
+    new->ref = ref;
+    memset(new->extra, 0, rlist->extra);
+    if (inlist && inlist != (void *)&mlock_list.head) {
+        if (after)
+            CIRCLEQ_INSERT_AFTER(&rlist->head, inlist, new, list);
+        else
+            CIRCLEQ_INSERT_BEFORE(&rlist->head, inlist, new, list);
+    } else {
+        if (after)
+            CIRCLEQ_INSERT_TAIL(&rlist->head, new, list);
+        else
+            CIRCLEQ_INSERT_HEAD(&rlist->head, new, list);
+    }
+    tval = tsearch(new, &rlist->root, range_tree_compare);
+    assert_always(tval && *tval == (void *)new);
+
+    return new;
+}
+
+static int munlock_put_entry(struct range_list *rlist, struct range *inlist,
+                             bool shotdown)
+{
+    int                 ret = 0;
+
+    inlist->ref--;
+    assert_always(inlist->ref >= 0);
+    if (inlist->ref)
+        goto done;
+
+    (void)tdelete(inlist, &mlock_list.root, range_tree_compare);
+    CIRCLEQ_REMOVE(&mlock_list.head, inlist, list);
+
+    if (munlock(TO_PTR(inlist->start), inlist->end - inlist->start) == -1 &&
+        (errno != ENOMEM || !shotdown)) {
+        ret = -errno;
+        zhpeu_print_func_err(__func__, __LINE__, "do_munlock", "", ret);
+    }
+    zhpe_stats_stamp_dbg(__func__, __LINE__, inlist->start, inlist->end,
+                         -ret, shotdown);
+    free(inlist);
+
+ done:
+    return ret;
+}
+
+static int do_munlock(uint64_t start, uint64_t end, bool shotdown)
+{
+    int                 ret = -ENOENT;
+    struct range        rem = {
+        /* Assumed to be page-aligned. */
+        .start          = start,
+        .end            = end,
+    };
+    struct range        *inlist;
+    struct range        *next;
+    void                **tval;
+
+    zhpe_stats_stamp_dbg(__func__, __LINE__, start, end, 0, 0);
+
+    /*
+     * Given this is only called from zhpe_mr_free() or zhpe_mr_reg() in
+     * an error case, it should be impossible for this not to find an
+     * existing mlock region and all the splitting should have been done
+     * in do_munlock().
+     */
+    tval = tfind(&rem, &mlock_list.root, mlock_list_compare);
+    if (!tval)
+        goto done;
+    inlist = *tval;
+    assert_always(inlist->start <= rem.start);
+    assert_always(rem.start < inlist->end);
+    rem.start = inlist->start;
+
+    for (inlist = *tval; inlist != (void *)&mlock_list.head; inlist = next) {
+        next = CIRCLEQ_NEXT(inlist, list);
+        if (rem.start >= rem.end)
+            goto done;
+        assert_always(rem.start == inlist->start);
+        rem.start = inlist->end;
+        ret = munlock_put_entry(&mlock_list, inlist, shotdown);
+        if (ret < 0)
+            goto done;
+    }
+
+ done:
+    range_list_check(&mlock_list);
+
+    return ret;
+}
+
+static struct range *mlock_new_entry(struct range_list *rlist,
+                                     struct range *inlist,
+                                     bool after, uint64_t start, uint64_t end,
+                                     int32_t ref, int *error)
+{
+    *error = 0;
+    zhpe_stats_stamp_dbg(__func__, __LINE__, start, end, 0, 0);
+    if (mlock(TO_PTR(start), end - start) == -1) {
+        *error = -errno;
+        zhpeu_print_func_err(__func__, __LINE__, "do_mlock", "", *error);
+        return NULL;
+    }
+
+    return range_new_entry(rlist, inlist, after, start, end, ref);
+}
+
+static int do_mlock(uint64_t start, uint64_t end)
+{
+    int                 ret = 0;
+    struct range        rem = {
+        /* Assumed to be page-aligned. */
+        .start          = start,
+        .end            = end,
+    };
+    struct range        *inlist;
+    void                **tval;
+    uint64_t            tmp;
+
+    zhpe_stats_stamp_dbg(__func__, __LINE__, start, end, 0, 0);
+
+    /*
+     * The primary data structure is an ordered, non-overlapping, list and
+     * the tree is used to avoid a linear search.
+     *
+     * The edges of new ranges will splinter existing ranges to enable
+     * fine-grained traffic of overlaps, but we have to be very careful
+     * about preserving possible Transparent Huge Pages or the OS will
+     * bite us in the end.
+     */
+    tval = tfind(&rem, &mlock_list.root, mlock_list_compare);
+    inlist = (tval ? *tval : NULL);
+    if (inlist) {
+        /*
+         * Found a starting place; does the new range start inside it?
+         * The for loop below expects rem.start <= list->start, so
+         * we need to split the starting entry to create the proper
+         * condiitons.
+         */
+        rem.start = mib2_down_check(inlist, rem.start);
+        if (rem.start > inlist->start) {
+            /* Yes, split tree entry. */
+            assert_always(rem.start < inlist->end);
+            tmp = inlist->end;
+            inlist->end = rem.start;
+            inlist = range_new_entry(&mlock_list, inlist, true,
+                                     rem.start, tmp, inlist->ref);
+            /* rem.start at beginning of entry, the loop will does the rest. */
+        }
+        for (; inlist != (void *)&mlock_list.head;
+             inlist = CIRCLEQ_NEXT(inlist, list)) {
+            if (rem.start == rem.end)
+                goto done;
+            assert_always(rem.start <= inlist->start);
+            /* Is the new range at the beginning of the list entry? */
+            if (rem.start == inlist->start) {
+                /* Yes, does the range cover entire entry? */
+                rem.end = mib2_up_check(inlist, rem.end);
+                if (rem.end >= inlist->end) {
+                    /* Yes, bump ref count and continue to next list entry. */
+                    inlist->ref++;
+                    rem.start = inlist->end;
+                    continue;
+                }
+                /* No, split existing entry. */
+                inlist->start = rem.end;
+                (void)range_new_entry(&mlock_list, inlist, false,
+                                      rem.start, rem.end, inlist->ref + 1);
+                /* We're done. */
+                goto done;
+            }
+            /*
+             * The new range starts before the list entry; create a  new
+             * entry in the gap, which requires an actual mlock.
+             * Does the entry fit in the gap?
+             */
+            tmp = min(rem.end, inlist->start);
+            inlist = mlock_new_entry(&mlock_list, inlist, false,
+                                     rem.start, tmp, 1, &ret);
+            if (!inlist) {
+                /* The only reason we can fail is that mlock() failed. */
+                (void)do_munlock(start, rem.start, false);
+                goto done;
+            }
+            rem.start = tmp;
+        }
+    }
+    if (rem.start != rem.end &&
+        !mlock_new_entry(&mlock_list, inlist, true,
+                         rem.start, rem.end, 1, &ret)) {
+        /* The only reason we can fail is that mlock() failed. */
+        (void)do_munlock(start, rem.start, false);
+        goto done;
+    }
+
+ done:
+    range_list_check(&mlock_list);
+
+    return ret;
+}
+
 static int zhpe_mr_reg(struct zhpeq_domi *zqdomi,
                        const void *buf, size_t len,
                        uint32_t access, struct zhpeq_key_data **qkdata_out)
@@ -958,21 +1377,16 @@ static int zhpe_mr_reg(struct zhpeq_domi *zqdomi,
     desc = xmalloc(sizeof(*desc));
     qkdata = &desc->qkdata;
 
-    /* Zero access is expected to work. */
-    if (!access)
-        access = ZHPEQ_MR_PUT;
-
     desc->hdr.magic = ZHPE_MAGIC;
     desc->hdr.version = ZHPEQ_MR_V1 | ZHPEQ_MR_VREG;
     desc->addr_cookie = NULL;
     qkdata->z.vaddr = (uintptr_t)buf;
     qkdata->z.len = len;
-    qkdata->z.access = access;
     qkdata->zqdom = &zqdomi->zqdom;
     qkdata->cache_entry = NULL;
     desc->rsp_zaddr = 0;
 
-    zhpe_stats_stamp_dbg(__func__, __LINE__, (uintptr_t)buf, len, access, 0);
+    zhpe_stats_stamp_dbg(__func__, __LINE__, (uintptr_t)buf, len, 0, 0);
 
     mutex_lock(&dev_mutex);
     if (unlikely(!big_rsp_zaddr)) {
@@ -997,28 +1411,25 @@ static int zhpe_mr_reg(struct zhpeq_domi *zqdomi,
     mre = xmalloc(sizeof(*mre));
     mre->qkdata.z.vaddr = start;
     mre->qkdata.z.len = pglen;
-    mre->qkdata.z.access = access;
     mre->active = 0;
     mre->ref = 1;
 
-    /*
-     * mlock() the region to keep the VA -> PA translations stable.
-     *
-     * We're never going to munlock(): there are some really nasty
-     * edges in Transparent Huge Page handling that pop up on occasion
-     * and working around them is proving to be a major pain.
-     * munlock() will be done for munmap(), so we won't break that.
-     * Will preventing page cleaning for HPC apps prove worse? Let's
-     * find out.
-     */
-    if (mlock(TO_PTR(mre->qkdata.z.vaddr), mre->qkdata.z.len) == -1) {
-        ret = -errno;
-        zhpeu_print_func_err(__func__, __LINE__, "mlock", "", ret);
-        goto done;
+    /* mlock() the region to keep the VA -> PA translations stable. */
+    ret = do_mlock(mre->qkdata.z.vaddr,
+                    mre->qkdata.z.vaddr + mre->qkdata.z.len);
+    /* Register the memory; try for RW, but accept RD. */
+    if (likely(ret >= 0)) {
+        mre->qkdata.z.access = ZHPEQ_ACCESS_RW;
+        ret = __do_mr_reg(mre->qkdata.z.vaddr, mre->qkdata.z.len,
+                          mre->qkdata.z.access, &mre->active,
+                          &mre->qkdata.z.zaddr);
+        if (ret == -EFAULT) {
+            mre->qkdata.z.access = ZHPEQ_ACCESS_RD;
+            ret = __do_mr_reg(mre->qkdata.z.vaddr, mre->qkdata.z.len,
+                              mre->qkdata.z.access, &mre->active,
+                              &mre->qkdata.z.zaddr);
+        }
     }
-    ret = __do_mr_reg(mre->qkdata.z.vaddr, mre->qkdata.z.len,
-                      mre->qkdata.z.access, &mre->active, &mre->qkdata.z.zaddr);
-
     if (unlikely(ret < 0)) {
         (void)tdelete(qkdata, &dev_mr_tree, compare_qkdata);
         free(mre);
@@ -1028,18 +1439,24 @@ static int zhpe_mr_reg(struct zhpeq_domi *zqdomi,
 
  done:
     mutex_unlock(&dev_mutex);
-    if (likely(ret >= 0)) {
+    if (likely(ret >= 0 &&
+               ((mre->qkdata.z.access & access & ZHPEQ_ACCESS_RW) ==
+                (access & ZHPEQ_ACCESS_RW)))) {
         qkdata->active_uptr = &mre->active;
+        qkdata->z.access = mre->qkdata.z.access;
         qkdata->z.zaddr = (mre->qkdata.z.zaddr +
                            qkdata->z.vaddr - mre->qkdata.z.vaddr);
         zhpe_stats_stamp_dbg(__func__, __LINE__,
                              (uintptr_t)qkdata, (uintptr_t)qkdata->active_uptr,
                              atm_load_rlx(qkdata->active_uptr), 0);
-        zhpe_stats_stamp_dbgc(qkdata->z.vaddr, qkdata->z.len,
-                              mre->qkdata.z.vaddr, mre->qkdata.z.len, 0, 0);
+        zhpe_stats_stamp_dbgc(qkdata->z.vaddr, qkdata->z.len, qkdata->z.access,
+                              mre->qkdata.z.vaddr, mre->qkdata.z.len, 0);
         *qkdata_out = qkdata;
-    } else
+    } else {
         free(desc);
+        if (!ret)
+            ret = -EINVAL;
+    }
 
     return ret;
 }
@@ -1067,9 +1484,14 @@ static int zhpe_mr_free(struct zhpeq_mr_desc_v1 *desc)
     (void)tdelete(&mre->qkdata, &dev_mr_tree, compare_qkdata);
     ret = __do_mr_free(mre->qkdata.z.vaddr, mre->qkdata.z.len,
                        mre->qkdata.z.access, mre->qkdata.z.zaddr);
+    if (likely(ret >= 0))
+        ret = do_munlock(mre->qkdata.z.vaddr,
+                         mre->qkdata.z.vaddr + mre->qkdata.z.len,
+                         !!(atm_load(&mre->active) & 1));
     free(mre);
 
     if (!dev_mr_tree && big_rsp_zaddr) {
+        assert_always(!mlock_list.root && CIRCLEQ_EMPTY(&mlock_list.head));
         rc = __do_mr_free(0, BIG_ZMMU_LEN, BIG_ZMMU_RSP_FLAGS, big_rsp_zaddr);
         ret = zhpeu_update_error(ret, rc);
         big_rsp_zaddr = 0;

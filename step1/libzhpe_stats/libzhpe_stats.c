@@ -1076,10 +1076,11 @@ static void stats_cmn_open(struct zhpe_stats *zstats, uint16_t uid)
     zstats->slots_mask = zhpe_stats_buf_count - 1;
     zstats->buffer = xmalloc_cachealigned(zhpe_stats_buf_count *
                                           sizeof(struct zhpe_stats_record));
+    zstats->pid = getpid();
     zstats->tid = syscall(SYS_gettid);
 
     xasprintf(&fname, "%s/%s.%d.%d.%d", zhpe_stats_dir, zhpe_stats_unique,
-              getpid(), zstats->tid, uid);
+              zstats->pid, zstats->tid, uid);
     zstats->fd = open(fname, O_RDWR | O_CREAT | O_APPEND,
                       S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
     if (zstats->fd == -1) {
@@ -1097,18 +1098,18 @@ static void stats_cmn_open(struct zhpe_stats *zstats, uint16_t uid)
 
     case ZHPE_STATS_PROFILE_STAMP_DBG:
         xasprintf(&fname, "%s/%s.%d.%d.%d.func", zhpe_stats_dir,
-                  zhpe_stats_unique, getpid(),zstats->tid, uid);
+                  zhpe_stats_unique, zstats->pid, zstats->tid, uid);
         zstats->func_file = fopen(fname, "w");
         if (!zstats->func_file) {
             err = -errno;
             print_func_err(__func__, __LINE__, "fopen", fname, err);
             abort();
         }
+        free(fname);
         /* Write a byte to force buffer allocation and rewind. */
         if (fprintf(zstats->func_file, "\n") < 0)
             abort();
         rewind(zstats->func_file);
-        free(fname);
         break;
 
     case ZHPE_STATS_PROFILE_CPU_JUST1:

@@ -66,16 +66,8 @@ static int              dev_fd = -1;
 static pthread_mutex_t  dev_mutex = PTHREAD_MUTEX_INITIALIZER;
 static void             *dev_uuid_tree;
 static void             *dev_mr_tree;
+static bool             dev_present;
 static uint64_t         big_rsp_zaddr;
-static bool             no_thp;
-
-/*
- * Using glibc tsearch() trees to avoid the need for additional libraries
- * that aren't a part of CentOS+EPEL+SCL repos, but it has some limitations and
- * I need to walk the tree to look for overlap and I need to save the
- * information globally.
- */
-struct dev_mr_mlock_entry *dev_mr_tree_mlock_list;
 
 #define BIG_ZMMU_LEN    (((uint64_t)1) << 47)
 #define BIG_ZMMU_REQ_FLAGS \
@@ -194,11 +186,14 @@ static int zhpe_lib_init(struct zhpeq_attr *attr)
     union zhpe_op       op;
     union zhpe_req      *req = &op.req;
     union zhpe_rsp      *rsp = &op.rsp;
-    FILE                *file = NULL;
-    char                platform[10];
+    FILE                *platform_file = NULL;
+    char                platform[16];
     int                 fd;
 
-    /* zhpeq_init() guarantees to call this only once and is locked. */
+    /*
+     * zhpeq_init() will lock the init_mutex when calling this and
+     * zhpe_present(). Furthermore, this will be called only once.
+     */
 
     if ((fd = open(DEV_PATH, O_RDWR)) == -1) {
         ret = -errno;
@@ -206,7 +201,8 @@ static int zhpe_lib_init(struct zhpeq_attr *attr)
             zhpeu_print_func_err(__func__, __LINE__, "open", DEV_PATH, ret);
         goto done;
     }
-    atm_store_rlx(&dev_fd, fd);
+    dev_fd = fd;
+    dev_present = true;
 
     req->hdr.opcode = ZHPE_OP_INIT;
     ret = driver_cmd(&op, sizeof(req->init), sizeof(rsp->init), 0);
@@ -238,13 +234,13 @@ static int zhpe_lib_init(struct zhpeq_attr *attr)
 
     memcpy(zhpeq_uuid, rsp->init.uuid, sizeof(zhpeq_uuid));
 
-    file = fopen(PLATFORM_PATH, "r");
-    if (!file) {
+    platform_file = fopen(PLATFORM_PATH, "r");
+    if (!platform_file) {
         ret = -errno;
         zhpeu_print_func_err(__func__, __LINE__, "fopen", PLATFORM_PATH, ret);
         goto done;
     }
-    if (!fgets(platform, sizeof(platform), file)) {
+    if (!fgets(platform, sizeof(platform), platform_file)) {
         ret = -EIO;
         zhpeu_print_func_err(__func__, __LINE__, "fgets", PLATFORM_PATH, ret);
         goto done;
@@ -259,12 +255,10 @@ static int zhpe_lib_init(struct zhpeq_attr *attr)
         ret = -ENOSYS;
         goto done;
     }
-    if (getenv("ZHPEQ_NOTHP"))
-        no_thp = true;
 
  done:
-    if (file)
-        fclose(file);
+    if (platform_file)
+        fclose(platform_file);
 
     return ret;
 }
@@ -273,13 +267,49 @@ static int zhpe_present(void)
 {
     int                 ret = 0;
     int                 fd = -1;
+    FILE                *gcid_file = NULL;
+    char                gcid_str[16];
+    uint64_t            gcid;
+    char                *cp;
+    size_t              len;
 
-    if (atm_load_rlx(&dev_fd) == -1) {
-        if ((fd = open(DEV_PATH, O_RDWR)) == -1)
+    /*
+     * zhpeq_present() will lock the init_mutex while calling this and
+     * zhpe_lib_init(). This may be called more than one time.
+     */
+    if (!dev_present) {
+        if ((fd = open(DEV_PATH, O_RDWR)) == -1) {
             ret = -errno;
-        else
-            close(fd);
+            goto done;
+        }
+        /* Grab the GCID now in case someone wants to lookup localhost. */
+        gcid_file = fopen(GCID_PATH, "r");
+        if (!gcid_file) {
+            ret = -errno;
+            zhpeu_print_func_err(__func__, __LINE__, "fopen", GCID_PATH, ret);
+            goto done;
+        }
+        if (!(cp = fgets(gcid_str, sizeof(gcid_str), gcid_file))) {
+            ret = -EIO;
+            zhpeu_print_func_err(__func__, __LINE__, "fgets", GCID_PATH, ret);
+            goto done;
+        }
+        len = strlen(cp);
+        if (len && cp[len - 1] == '\n')
+            cp[len - 1] = 0;
+        ret = _zhpeu_parse_kb_uint64_t(GCID_PATH, cp, &gcid, 0,
+                                       0, ZHPE_GCID_MASK, 0);
+        if (ret < 0)
+            goto done;
+        zhpeu_install_gcid_in_uuid(zhpeq_uuid, gcid);
+        dev_present = true;
     }
+
+ done:
+    if (fd != -1)
+        close(fd);
+    if (gcid_file)
+        fclose(gcid_file);
 
     return ret;
 }
@@ -912,102 +942,6 @@ static int __do_mr_free(uint64_t vaddr, size_t len, uint32_t access,
     return __driver_cmd(&op, sizeof(req->mr_free), sizeof(rsp->mr_free), 0);
 }
 
-static void mr_tree_mlock_handler(const void *nodep, const VISIT which,
-                                  const int depth)
-{
-    struct dev_mr_tree_entry *mre;
-    struct dev_mr_mlock_entry **lckprev;
-    struct dev_mr_mlock_entry *lckcur;
-    struct dev_mr_mlock_entry *lcknew;
-    uint64_t            mend;
-
-    switch (which) {
-
-    case leaf:
-    case postorder:
-        mre = *(struct dev_mr_tree_entry **)nodep;
-        mend = mre->qkdata.z.vaddr + mre->qkdata.z.len;
-        for (lckprev = &dev_mr_tree_mlock_list; *lckprev;
-             lckprev = (*lckprev ? &(*lckprev)->next : lckprev)) {
-
-            lckcur = *lckprev;
-            /* Any overlap between mlock range being reset and entry? */
-            if (lckcur->start >= mend || lckcur->end <= mre->qkdata.z.vaddr)
-                /* No. */
-                continue;
-            /* mlock range contained within entry? */
-            if (lckcur->start >= mre->qkdata.z.vaddr && lckcur->end <= mend) {
-                /* Yes, delete mlock range. */
-                *lckprev = lckcur->next;
-                free(lckcur);
-                continue;
-            }
-            /* Determine nature of overlap.  */
-            if (lckcur->start < mre->qkdata.z.vaddr) {
-                /* mlock range begins before entry. */
-                if (lckcur->end > mend) {
-                    /* Entry splits mlock range. */
-                    lcknew = xmalloc(sizeof(*lcknew));
-                    lcknew->next = lckcur->next;
-                    lckcur->next = lcknew;
-                    lckprev = &lcknew->next;
-                    lcknew->end = lckcur->end;
-                    lcknew->start = mend;
-                    lckcur->end = mre->qkdata.z.vaddr;
-                    continue;
-                } else
-                    /* mlock range ends within entry. */
-                    lckcur->end = mre->qkdata.z.vaddr;
-            } else
-                /* mlock range starts inside the entry and continues after. */
-                lckcur->start = mend;
-        }
-        break;
-
-    default:
-        break;
-
-    }
-}
-
-static int do_munlock(uint64_t start, uint64_t len)
-{
-    int                 ret = 0;
-    int                 rc;
-    struct dev_mr_mlock_entry *lck;
-
-    dev_mr_tree_mlock_list = lck = xmalloc(sizeof(*lck));
-    lck->next = NULL;
-    lck->start = start;
-    lck->end = start + len;
-    twalk(dev_mr_tree, mr_tree_mlock_handler);
-
-    while ((lck = dev_mr_tree_mlock_list)) {
-        dev_mr_tree_mlock_list = lck->next;
-        if (munlock(TO_PTR(lck->start), lck->end - lck->start) == -1) {
-            rc = -errno;
-            /* ENOMEM can be valid if memory is unmapped first. */
-            if (rc != -ENOMEM) {
-                ret = zhpeu_update_error(ret, rc);
-                zhpeu_print_func_err(__func__, __LINE__, "munlock", "", rc);
-            }
-        }
-        if (no_thp &&
-            madvise(TO_PTR(lck->start), lck->end - lck->start,
-                    MADV_HUGEPAGE) == -1) {
-            rc = -errno;
-            /* ENOMEM can be valid if memory is unmapped first. */
-            if (rc != -ENOMEM) {
-                ret = zhpeu_update_error(ret, rc);
-                zhpeu_print_func_err(__func__, __LINE__, "madvise", "hp", rc);
-            }
-        }
-        free(lck);
-    }
-
-    return ret;
-}
-
 static int zhpe_mr_reg(struct zhpeq_domi *zqdomi,
                        const void *buf, size_t len,
                        uint32_t access, struct zhpeq_key_data **qkdata_out)
@@ -1038,6 +972,8 @@ static int zhpe_mr_reg(struct zhpeq_domi *zqdomi,
     qkdata->cache_entry = NULL;
     desc->rsp_zaddr = 0;
 
+    zhpe_stats_stamp_dbg(__func__, __LINE__, (uintptr_t)buf, len, access, 0);
+
     mutex_lock(&dev_mutex);
     if (unlikely(!big_rsp_zaddr)) {
         ret = __do_mr_reg(0, BIG_ZMMU_LEN, BIG_ZMMU_RSP_FLAGS, NULL,
@@ -1066,22 +1002,15 @@ static int zhpe_mr_reg(struct zhpeq_domi *zqdomi,
     mre->ref = 1;
 
     /*
-     * mbind() changed to mlock(); we needed to disable numa_balancing
-     * globally to deal with edge cases that mbind() couldn't handle and
-     * this was desirable for HPC workloads, anyway. However, under memory
-     * pressure, the system is invalidating mappings to the some registrations,
-     * and that cannot be permitted.
+     * mlock() the region to keep the VA -> PA translations stable.
      *
-     * Optionally disable Transparent Hugepages as well, if they are
-     * giving grief.
+     * We're never going to munlock(): there are some really nasty
+     * edges in Transparent Huge Page handling that pop up on occasion
+     * and working around them is proving to be a major pain.
+     * munlock() will be done for munmap(), so we won't break that.
+     * Will preventing page cleaning for HPC apps prove worse? Let's
+     * find out.
      */
-    if (no_thp &&
-        madvise(TO_PTR(mre->qkdata.z.vaddr), mre->qkdata.z.len,
-                MADV_NOHUGEPAGE) == -1) {
-        ret = -errno;
-        zhpeu_print_func_err(__func__, __LINE__, "madvise", "nothp", ret);
-        goto done;
-    }
     if (mlock(TO_PTR(mre->qkdata.z.vaddr), mre->qkdata.z.len) == -1) {
         ret = -errno;
         zhpeu_print_func_err(__func__, __LINE__, "mlock", "", ret);
@@ -1089,19 +1018,12 @@ static int zhpe_mr_reg(struct zhpeq_domi *zqdomi,
     }
     ret = __do_mr_reg(mre->qkdata.z.vaddr, mre->qkdata.z.len,
                       mre->qkdata.z.access, &mre->active, &mre->qkdata.z.zaddr);
-    /* Remove mlock on error. */
-    if (ret < 0)
-        do_munlock(mre->qkdata.z.vaddr, mre->qkdata.z.len);
 
     if (unlikely(ret < 0)) {
         (void)tdelete(qkdata, &dev_mr_tree, compare_qkdata);
         free(mre);
         goto done;
     }
-    zhpe_stats_stamp_dbg(__func__, __LINE__,
-                         (uintptr_t)&mre->active, mre->active,
-                         mre->qkdata.z.vaddr, mre->qkdata.z.len);
-
     *tval = mre;
 
  done:
@@ -1110,6 +1032,11 @@ static int zhpe_mr_reg(struct zhpeq_domi *zqdomi,
         qkdata->active_uptr = &mre->active;
         qkdata->z.zaddr = (mre->qkdata.z.zaddr +
                            qkdata->z.vaddr - mre->qkdata.z.vaddr);
+        zhpe_stats_stamp_dbg(__func__, __LINE__,
+                             (uintptr_t)qkdata, (uintptr_t)qkdata->active_uptr,
+                             atm_load_rlx(qkdata->active_uptr), 0);
+        zhpe_stats_stamp_dbgc(qkdata->z.vaddr, qkdata->z.len,
+                              mre->qkdata.z.vaddr, mre->qkdata.z.len, 0, 0);
         *qkdata_out = qkdata;
     } else
         free(desc);
@@ -1120,13 +1047,18 @@ static int zhpe_mr_reg(struct zhpeq_domi *zqdomi,
 static int zhpe_mr_free(struct zhpeq_mr_desc_v1 *desc)
 {
     int                 ret = 0;
+    struct zhpeq_key_data *qkdata = &desc->qkdata;
     struct dev_mr_tree_entry *mre;
     int                 rc;
 
     mutex_lock(&dev_mutex);
 
-    mre = container_of(desc->qkdata.active_uptr, struct dev_mr_tree_entry,
-                       active);
+    mre = container_of(qkdata->active_uptr, struct dev_mr_tree_entry, active);
+    zhpe_stats_stamp_dbg(__func__, __LINE__,
+                         (uintptr_t)qkdata, (uintptr_t)qkdata->active_uptr,
+                         atm_load_rlx(qkdata->active_uptr), 0);
+    zhpe_stats_stamp_dbgc(qkdata->z.vaddr, qkdata->z.len,
+                          mre->qkdata.z.vaddr, mre->qkdata.z.len, mre->ref, 0);
     assert(mre->ref > 0);
     if (--(mre->ref))
         goto done;
@@ -1135,8 +1067,6 @@ static int zhpe_mr_free(struct zhpeq_mr_desc_v1 *desc)
     (void)tdelete(&mre->qkdata, &dev_mr_tree, compare_qkdata);
     ret = __do_mr_free(mre->qkdata.z.vaddr, mre->qkdata.z.len,
                        mre->qkdata.z.access, mre->qkdata.z.zaddr);
-    if (ret >= 0)
-        ret = do_munlock(mre->qkdata.z.vaddr, mre->qkdata.z.len);
     free(mre);
 
     if (!dev_mr_tree && big_rsp_zaddr) {

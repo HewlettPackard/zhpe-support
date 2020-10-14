@@ -93,6 +93,7 @@ struct zhpe_stats {
     size_t                      flushed;
     size_t                      head_gdb;
     size_t                      tail_gdb;
+    pid_t                       pid;
     pid_t                       tid;
     uint8_t                     enabled;
 };

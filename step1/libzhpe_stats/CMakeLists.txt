@@ -7,8 +7,17 @@ if (ZSTA)
 endif(ZSTA)
 
 install(TARGETS zhpe_stats DESTINATION lib)
-install(FILES
+install(
+  FILES
   ${CMAKE_SOURCE_DIR}/include/zhpe_stats.h
   ${CMAKE_SOURCE_DIR}/include/zhpe_stats_types.h
   DESTINATION include)
-install(PROGRAMS extract_overheads.sh matchem.awk stats_unpack.sh unpackdata.py DESTINATION libexec/zhpe_stats)
+install(
+  PROGRAMS
+  extract_overheads.sh
+  matchem.awk
+  stats_core.sh
+  stats_func.sh
+  stats_unpack.sh
+  unpackdata.py
+  DESTINATION libexec/zhpe_stats)

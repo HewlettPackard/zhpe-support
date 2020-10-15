@@ -244,8 +244,6 @@ static void stats_cmn_close(struct zhpe_stats *zstats)
 {
     struct zhpe_stats   **zsprev;
 
-    zstats->zhpe_stats_ops->recordme(zstats, 0, ZHPE_STATS_OP_CLOSE);
-
     stats_flush(zstats);
     if (zstats->fd != -1)
         close(zstats->fd);
@@ -811,6 +809,8 @@ static void rdpmc_stats_close(struct zhpe_stats *zstats)
     int                 i;
     int                 err;
 
+    zstats->zhpe_stats_ops->recordme(zstats, 0, ZHPE_STATS_OP_CLOSE);
+
     if (prctl(PR_TASK_PERF_EVENTS_DISABLE) == -1) {
         err = -errno;
         print_func_err(__func__, __LINE__, "prctl", "DISABLE", err);
@@ -828,6 +828,8 @@ static void rdpmc_stats_close(struct zhpe_stats *zstats)
 
 static void stats_stamp_dbg_close(struct zhpe_stats *zstats)
 {
+    zstats->zhpe_stats_ops->recordme(zstats, 0, ZHPE_STATS_OP_CLOSE);
+
     stats_cmn_close(zstats);
 }
 
@@ -835,6 +837,8 @@ static void stats_stamp_dbg_close(struct zhpe_stats *zstats)
 static void sim_stats_close(struct zhpe_stats *zstats)
 {
     int64_t             ret;
+
+    zstats->zhpe_stats_ops->recordme(zstats, 0, ZHPE_STATS_OP_CLOSE);
 
     ret = sim_api_data_rec(DATA_REC_END, zstats->uid,
                            (uintptr_t)zstats->sim_buf);

@@ -1,3 +1,5 @@
+This work has been supported in part by the U.S. Department of Energy under LLNS Subcontract B621301.
+
 Support for the Libfabric [zhpe](https://github.com/HewlettPackard/zhpe-libfabric/tree/zhpe) Provider
 -----------------------------------------------------
 # What is libzhpeq ?
